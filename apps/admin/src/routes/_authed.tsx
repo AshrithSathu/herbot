@@ -33,7 +33,7 @@ function Layout() {
       <AppSidebar />
       <SidebarInset id="content" tabIndex={-1} className="min-w-0 outline-none">
         <SiteHeader />
-        <div className="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-8 px-4 pt-6 pb-16 md:px-8 md:pt-8">
+        <div className="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-8 pt-6 pr-[max(1rem,env(safe-area-inset-right))] pb-[max(4rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] md:px-8 md:pt-8">
           <Outlet />
         </div>
       </SidebarInset>
