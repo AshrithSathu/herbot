@@ -19,6 +19,9 @@ pub struct TelegramConfig {
     pub token: String,
     /// The only Telegram user the bot answers (`HERBOT_ADMIN_TELEGRAM_ID`).
     pub admin_user_id: u64,
+    /// The one group Herbot works in (`HERBOT_HOME_CHAT_ID`). `None` allows
+    /// any group the admin adds it to.
+    pub home_chat_id: Option<i64>,
 }
 
 // Never print the token, even in debug output.
@@ -27,6 +30,7 @@ impl std::fmt::Debug for TelegramConfig {
         f.debug_struct("TelegramConfig")
             .field("token", &"<redacted>")
             .field("admin_user_id", &self.admin_user_id)
+            .field("home_chat_id", &self.home_chat_id)
             .finish()
     }
 }
@@ -53,6 +57,10 @@ pub enum ConfigError {
         "HERBOT_ADMIN_TELEGRAM_ID {0:?} is not a Telegram user ID (expected a positive number)"
     )]
     InvalidAdminId(String),
+    #[error(
+        "HERBOT_HOME_CHAT_ID {0:?} is not a group chat ID (expected a negative number like -1004447072305)"
+    )]
+    InvalidHomeChatId(String),
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -91,9 +99,21 @@ impl Config {
                     .ok()
                     .filter(|id| *id > 0)
                     .ok_or_else(|| ConfigError::InvalidAdminId(raw.clone()))?;
+                let home_chat_id = match get("HERBOT_HOME_CHAT_ID").filter(|v| !v.trim().is_empty())
+                {
+                    None => None,
+                    Some(raw) => Some(
+                        raw.trim()
+                            .parse::<i64>()
+                            .ok()
+                            .filter(|id| *id < 0)
+                            .ok_or_else(|| ConfigError::InvalidHomeChatId(raw.clone()))?,
+                    ),
+                };
                 Some(TelegramConfig {
                     token: token.trim().to_string(),
                     admin_user_id,
+                    home_chat_id,
                 })
             }
         };
@@ -207,10 +227,42 @@ mod tests {
     }
 
     #[test]
+    fn home_chat_id_must_be_a_group_id() {
+        let base = [
+            ("DATABASE_URL", "postgres://x"),
+            ("TELEGRAM_BOT_TOKEN", "123:abc"),
+            ("HERBOT_ADMIN_TELEGRAM_ID", "42"),
+        ];
+        let none = Config::from_lookup(lookup(&base))
+            .unwrap()
+            .telegram
+            .unwrap();
+        assert_eq!(none.home_chat_id, None);
+
+        let mut pairs = base.to_vec();
+        pairs.push(("HERBOT_HOME_CHAT_ID", "-1004447072305"));
+        let set = Config::from_lookup(lookup(&pairs))
+            .unwrap()
+            .telegram
+            .unwrap();
+        assert_eq!(set.home_chat_id, Some(-1004447072305));
+
+        for bad in ["42", "herbot", "0"] {
+            let mut pairs = base.to_vec();
+            pairs.push(("HERBOT_HOME_CHAT_ID", bad));
+            assert_eq!(
+                Config::from_lookup(lookup(&pairs)).unwrap_err(),
+                ConfigError::InvalidHomeChatId(bad.into())
+            );
+        }
+    }
+
+    #[test]
     fn debug_output_never_contains_the_token() {
         let telegram = TelegramConfig {
             token: "123:super-secret".into(),
             admin_user_id: 1,
+            home_chat_id: None,
         };
         let shown = format!("{telegram:?}");
         assert!(!shown.contains("super-secret"), "{shown}");

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use herbot_core::{app, config::Config, db, poller, telemetry};
+use herbot_core::{app, config::Config, db, policy, poller, telemetry};
 use teloxide::prelude::*;
 use tokio::sync::watch;
 
@@ -33,14 +33,23 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("Telegram getMe failed (is TELEGRAM_BOT_TOKEN correct?)")?;
             let username = me.username().to_string();
-            poller::register_commands(&bot)
+            let rules = policy::Rules {
+                admin_user_id: tg.admin_user_id,
+                home_chat_id: tg.home_chat_id,
+            };
+            poller::register_commands(&bot, &rules)
                 .await
                 .context("could not register the Telegram command menu")?;
-            tracing::info!(bot = %username, admin = tg.admin_user_id, "telegram connected");
+            tracing::info!(
+                bot = %username,
+                admin = tg.admin_user_id,
+                home_chat = ?tg.home_chat_id,
+                "telegram connected"
+            );
             poller_task = Some(tokio::spawn(poller::run(
                 bot,
                 pool.clone(),
-                tg.admin_user_id,
+                rules,
                 username.clone(),
                 shutdown_rx.clone(),
             )));
