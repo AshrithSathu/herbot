@@ -4,7 +4,7 @@
 
 The bot lives in one private Telegram group with Topics turned on: your Herbot group, just you and the bot. **General** is the everyday chat. **Every other topic is its own agent**: the first time you write in a new topic, the bot asks openly what it should be. Your answer, typed at any length or sent as a **voice note**, becomes that topic's `AGENTS.md`, and the topic keeps its own long-running memory, like separate Grok chats. Voice notes work everywhere: they're transcribed to English and the bot shows what it heard. The bot answers only you, stays silent in DMs, and leaves any other group.
 
-> **Status:** Steps 1–6 are done. Step 7 (herbot-mcp: agents see your history, General works across topics) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** Steps 1–7 are done. Step 8 (the admin panel) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## How it works
 
@@ -48,6 +48,8 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 5. `make run`, then send `/status` in General.
 6. Give agents their tools: add `HERBOT_INTERNAL_TOKEN` (any 64 hex characters) to `.env`, run `cargo build --release -p herbot-mcp`, then `./scripts/codex-mcp-config.sh >> ~/.codex/config.toml`. `codex mcp list` should show `herbot`.
 
+7. Optional, the admin panel: add `HERBOT_ADMIN_TOKEN` and `HERBOT_SESSION_SECRET` (each 64 hex characters, e.g. `openssl rand -hex 32`) and `HERBOT_ADMIN_PASSWORD` (12+ characters, your sign-in password) to `.env`, restart herbot-core, then `make admin` and open http://127.0.0.1:3300.
+
 Without `TELEGRAM_BOT_TOKEN`, herbot-core still starts (for tests and local work). `/ready` then reports `"telegram": "disabled"`.
 
 ## Repository layout
@@ -56,7 +58,7 @@ Without `TELEGRAM_BOT_TOKEN`, herbot-core still starts (for tests and local work
 |---|---|---|
 | `crates/herbot-core` | Telegram adapter, admin-only policy, conversations, T3 adapter, admin API (Rust) | 🟡 Step 3 |
 | `crates/herbot-mcp` | MCP tools for agents: `list_topics`, `search_messages`, `read_topic`, and General's `ask_topic` and `post_to_topic` (Rust, `rmcp`) | 🟡 Step 7 |
-| `apps/admin` | Admin panel (TanStack Start) | ⏳ Step 8 |
+| `apps/admin` | Admin panel: TanStack Start + TanStack Query, shadcn/ui on Tailwind v4, Playwright tests | 🟡 Step 8 |
 | `bots/` | One T3 project per bot persona | ⏳ Step 4 |
 | `docs/ROADMAP.md` | Build plan with "Done when" checks | |
 | `AGENTS.md` | Rules for coding agents working on this repo | |
@@ -74,7 +76,21 @@ make run               # run herbot-core with pretty logs on 127.0.0.1:8787
 make check             # fmt + clippy (warnings are errors) + tests
 make test-voice        # real OpenAI transcription of generated speech (fractions of a cent)
 make db-down           # stop Postgres (make db-reset also deletes data)
+make admin             # admin panel on 127.0.0.1:3300 (needs pnpm and the admin settings above)
+make admin-e2e         # panel tests in your installed Google Chrome, on a throwaway DB and ports
 ```
+
+### Admin panel
+
+`apps/admin` is a TanStack Start app on `127.0.0.1` only (on the VPS it goes behind Tailscale). You sign in with `HERBOT_ADMIN_PASSWORD`; the session is a signed, httpOnly cookie. The panel's server talks to herbot-core's `/admin/api` with `HERBOT_ADMIN_TOKEN`, which never reaches the browser.
+
+- **Overview**: topics answering, active T3 threads, messages, errors in the last 24 hours, the last error. Refreshes every 15 seconds.
+- **Topics**: each topic's purpose (saving rewrites its `AGENTS.md`, like `/setup`), an on/off switch, its `AGENTS.md`, its last 50 messages (refreshing every 10 seconds), and the same clean slates as `/new` and `/forget`, behind a confirm dialog.
+- **Logs**: search failures by `E-1042`, kind or words, as you type. Each error shows its context JSON.
+
+Data goes through TanStack Query: route loaders fill the cache on the server, so pages arrive rendered, hovering a link prefetches its page, the on/off switch updates optimistically and rolls back if herbot-core refuses, and a failed background refresh keeps the last data on screen with a warning. UI parts are [shadcn/ui](https://ui.shadcn.com) on Tailwind v4 with an OKLCH palette: blue for actions, green, amber and red for status only, and light and dark modes that follow the system.
+
+`make admin-e2e` builds everything and runs Playwright in your installed Chrome (no browser download) against a real herbot-core with its own database (`herbot_e2e`), ports 8789 and 3399, no Telegram and a T3 that refuses everything. It never touches the live bot. To capture every page in light and dark, on desktop and phone: `SCREENSHOTS=/some/dir ./scripts/admin-e2e.sh e2e/screenshots.spec.ts`.
 
 | Endpoint | Meaning |
 |---|---|
