@@ -62,8 +62,8 @@ Built as part of Step 4: typing indicator, secret scrubbing, splitting, quoted r
 - [x] herbot-core `/internal/post` and `/internal/ask` (token-protected): General's question shows in the topic, that topic's lane runs it, and the answer comes back
 - [x] AGENTS.md v4: General and topics each get their own tools section
 - [x] `scripts/codex-mcp-config.sh` registers herbot-mcp with Codex
-- [x] Clean sweeps: `/new` deletes the topic's T3 project (all its threads) and its history, and keeps the purpose. `/forget` also clears the purpose. T3 is deleted first and only by verified project id; a project holding threads Herbot didn't start is never touched.
-- Done when: ✅ 156 tests (hub permissions, internal API, real MCP over stdio against the binary, clean-sweep safety). ✅ Real T3: `project remove --force` deletes a project with its threads. ✅ Real Codex (GPT-6.1 Terra) called `list_topics` and `read_topic` on live data. ⏳ Manual in Telegram: ask General about other topics and have it `ask_topic`.
+- [x] Clean sweeps: `/new` deletes the topic's T3 project (all its threads) and its history, and keeps the purpose. `/forget` also clears the purpose. Both confirm with Yes / Cancel buttons that expire after 10 minutes and only work in their own topic. T3 is deleted first and only by verified project id; a project holding threads Herbot didn't start is never touched.
+- Done when: ✅ 163 tests (hub permissions, internal API, real MCP over stdio against the binary, clean-sweep safety). ✅ Real T3: `project remove --force` deletes a project with its threads. ✅ Real Codex (GPT-6.1 Terra) called `list_topics` and `read_topic` on live data. ⏳ Manual in Telegram: ask General about other topics and have it `ask_topic`.
 
 ## Step 8: Admin panel (TanStack Start)
 - [ ] Chats and topics, personas, per-conversation settings, threads

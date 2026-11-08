@@ -29,8 +29,8 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 | `/setup` | Tell it (again) what this topic is for, typed or by voice |
 | `/status` | Shows this conversation's place, purpose, AGENTS.md path, model and message count |
 | `/help` | Lists commands |
-| `/new` | Clean slate: deletes this topic's T3 threads and its stored history, and keeps its purpose (asks first; `/new yes` confirms) |
-| `/forget` | Same, and also clears the purpose, so the topic sets up again (`/forget yes` confirms) |
+| `/new` | Clean slate: deletes this topic's T3 threads and its stored history, and keeps its purpose. Confirm with the **🧹 Yes** button (expires after 10 minutes) or **Cancel** |
+| `/forget` | Same, and also clears the purpose, so the topic sets up again. Same Yes / Cancel buttons |
 
 ## Setup
 
