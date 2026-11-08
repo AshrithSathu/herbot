@@ -264,6 +264,16 @@ pub enum HandleError {
     T3(#[from] AgentError),
 }
 
+impl From<wipe::WipeError> for HandleError {
+    fn from(err: wipe::WipeError) -> Self {
+        match err {
+            wipe::WipeError::Db(e) => HandleError::Db(e),
+            wipe::WipeError::T3(e) => HandleError::T3(e),
+            wipe::WipeError::Io(e) => HandleError::AgentsMd(e),
+        }
+    }
+}
+
 impl HandleError {
     fn kind(&self) -> &'static str {
         match self {
@@ -638,44 +648,6 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     Ok(())
 }
 
-/// Deletes the conversation's T3 project (with all its threads) first, and
-/// only then its Herbot history, so the two never disagree.
-///
-/// The project is found through Herbot's own threads and removed by exact
-/// id, and only if every thread in it is one Herbot started. A project
-/// holding anything else (say, the herbot repo's own project) is never touched.
-async fn clean_sweep<A: TelegramApi, T: Transcriber>(
-    ctx: &Ctx<'_, A, T>,
-    status: &ConversationStatus,
-) -> Result<store::Wiped, HandleError> {
-    let ours = store::all_thread_ids(ctx.pool, status.conversation_id).await?;
-    let mut projects = std::collections::BTreeSet::new();
-    for thread in &ours {
-        if let Some(project) = ctx.projects.project_of_thread(thread).await? {
-            projects.insert(project);
-        }
-    }
-    for project in &projects {
-        let inside = ctx.projects.threads_in_project(project).await?;
-        if let Some(foreign) = inside.iter().find(|t| !ours.contains(t)) {
-            return Err(AgentError::Project(format!(
-                "T3 project {project} also holds thread {foreign}, which Herbot didn't start; not deleting it"
-            ))
-            .into());
-        }
-        ctx.projects.remove_project(project).await?;
-    }
-    let wiped = store::wipe_conversation(ctx.pool, status.conversation_id).await?;
-    tracing::info!(
-        conversation_id = status.conversation_id,
-        projects = projects.len(),
-        threads = wiped.threads,
-        messages = wiped.messages,
-        "wiped conversation"
-    );
-    Ok(wiped)
-}
-
 /// `/new` or `/forget`: explains what will be deleted, with Yes / Cancel buttons.
 async fn ask_to_wipe<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
@@ -695,22 +667,13 @@ async fn ask_to_wipe<A: TelegramApi, T: Transcriber>(
     Ok(())
 }
 
-/// Wipes the conversation and returns what to tell the admin.
+/// Wipes the conversation (see [`wipe::run`]) and returns what to tell the admin.
 async fn perform_wipe<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     status: &ConversationStatus,
     kind: wipe::WipeKind,
 ) -> Result<String, HandleError> {
-    let wiped = clean_sweep(ctx, status).await?;
-    if kind == wipe::WipeKind::Forget
-        && let Some(path) = store::reset_setup(ctx.pool, status.conversation_id).await?
-    {
-        match tokio::fs::remove_file(ctx.agents_dir.join(path)).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
+    let wiped = wipe::run(ctx.pool, ctx.projects, ctx.agents_dir, status, kind).await?;
     Ok(wipe::done(kind, wiped))
 }
 
