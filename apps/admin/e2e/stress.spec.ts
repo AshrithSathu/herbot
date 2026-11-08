@@ -168,7 +168,7 @@ test('scrolling up loads older pages, keeps your place, and reaches the start', 
   // The first day has its heading; scrolled down, a label says which day you're in.
   await expect(log.getByRole('heading', { level: 3 }).first()).toBeVisible()
   await log.evaluate((el) => (el.scrollTop = el.scrollHeight / 2))
-  await expect(page.locator('[aria-hidden] > span').filter({ hasText: /\d{4}|Today|Yesterday/ })).toBeVisible()
+  await expect(page.locator('[data-floating-day] > span').filter({ hasText: /\d{4}|Today|Yesterday/ })).toBeVisible()
   // Flick to the end, as a person would, until the last rows are measured.
   await expect
     .poll(async () => {
@@ -179,7 +179,7 @@ test('scrolling up loads older pages, keeps your place, and reaches the start', 
   await expect(messages(log).last()).toHaveAttribute('data-message-id', '600')
   // The day's heading has scrolled out of the page; the floating label and
   // each message's own screen-reader label still say which day it is.
-  await expect(page.locator('[aria-hidden] > span').filter({ hasText: /Today|Yesterday/ })).toBeVisible()
+  await expect(page.locator('[data-floating-day] > span').filter({ hasText: /Today|Yesterday/ })).toBeVisible()
   await expect(messages(log).last().locator('.sr-only')).toHaveText(/^Herbot, (Today|Yesterday) at \d\d:\d\d:$/)
   await close()
 })

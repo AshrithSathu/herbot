@@ -83,5 +83,5 @@ else
   seed seed.sql
   run e2e/panel.spec.ts
   seed seed-stress.sql
-  run e2e/stress.spec.ts e2e/a11y.spec.ts
+  run e2e/stress.spec.ts e2e/a11y.spec.ts e2e/principles.spec.ts
 fi
