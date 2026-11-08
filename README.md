@@ -62,7 +62,7 @@ make db-down           # stop Postgres (make db-reset also deletes data)
 | `GET /health` | The process is up |
 | `GET /ready` | Postgres answers (returns 503 when it doesn't) |
 
-CI runs formatting, clippy and the full test suite against Postgres on every push and pull request.
+CI (formatting, clippy, tests against Postgres) is **manual only**: `gh workflow run ci.yml`. Day to day, run `make check` locally.
 
 ## Workflow
 

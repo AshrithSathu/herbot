@@ -1,9 +1,8 @@
 name: CI
 
+# Manual only: run with `gh workflow run ci.yml` when asked. Never on push or PR.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   rust:
