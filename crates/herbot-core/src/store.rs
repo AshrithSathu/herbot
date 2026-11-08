@@ -23,6 +23,7 @@ pub enum StoreOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationStatus {
     pub conversation_id: i64,
+    pub tg_chat_id: i64,
     pub chat_title: String,
     pub chat_kind: String,
     pub is_forum: bool,
@@ -230,6 +231,7 @@ pub async fn conversation_status_by_id(
         Option<DateTime<Utc>>,
         bool,
         Option<String>,
+        i64,
     ) = sqlx::query_as(
         "SELECT c.title, c.kind, c.is_forum, v.tg_topic_id, v.name,
                 (SELECT count(*) FROM messages m WHERE m.conversation_id = v.id),
@@ -239,7 +241,8 @@ pub async fn conversation_status_by_id(
                 v.purpose, v.setup_state, v.agents_md_path,
                 v.agents_md_updated_at, v.t3_project_registered,
                 (SELECT t.t3_link FROM agent_threads t
-                  WHERE t.conversation_id = v.id AND t.status = 'active')
+                  WHERE t.conversation_id = v.id AND t.status = 'active'),
+                c.tg_chat_id
          FROM conversations v
          JOIN chats c ON c.id = v.chat_id
          LEFT JOIN bots b ON b.id = v.bot_id
@@ -250,6 +253,7 @@ pub async fn conversation_status_by_id(
     .await?;
     Ok(ConversationStatus {
         conversation_id,
+        tg_chat_id: row.14,
         chat_title: row.0,
         chat_kind: row.1,
         is_forum: row.2,
@@ -314,7 +318,7 @@ pub async fn set_purpose(
     let prompt: Option<Option<i32>> = sqlx::query_scalar(
         "UPDATE conversations c
          SET purpose = $2, setup_state = 'ready', setup_prompt_tg_message_id = NULL,
-             agents_md_path = $3, agents_md_updated_at = now()
+             agents_md_path = $3, agents_md_updated_at = now(), agents_md_version = $4
          FROM (SELECT id, setup_prompt_tg_message_id AS old FROM conversations WHERE id = $1) o
          WHERE c.id = o.id
          RETURNING o.old",
@@ -322,6 +326,7 @@ pub async fn set_purpose(
     .bind(conversation_id)
     .bind(purpose)
     .bind(agents_md_path)
+    .bind(crate::agents_md::TEMPLATE_VERSION)
     .fetch_optional(pool)
     .await?;
     Ok(prompt.flatten())
@@ -486,4 +491,131 @@ pub async fn store_bot_message(
     .execute(pool)
     .await
     .map(|_| ())
+}
+
+/// Conversations whose AGENTS.md was written by an older template.
+pub async fn outdated_agents_md(pool: &PgPool, version: i32) -> Result<Vec<i64>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT id FROM conversations
+         WHERE agents_md_path IS NOT NULL AND purpose IS NOT NULL AND agents_md_version < $1
+         ORDER BY id",
+    )
+    .bind(version)
+    .fetch_all(pool)
+    .await
+}
+
+/// Records that AGENTS.md was regenerated (threads are told to reread it).
+pub async fn mark_agents_md_rewritten(
+    pool: &PgPool,
+    conversation_id: i64,
+    version: i32,
+    path: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE conversations
+         SET agents_md_version = $2, agents_md_path = $3, agents_md_updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(conversation_id)
+    .bind(version)
+    .bind(path)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+/// Opens a button question for an agent reply; returns its id (used in the
+/// buttons' callback data).
+pub async fn create_question(
+    pool: &PgPool,
+    thread_row_id: i64,
+    question: &str,
+    options: &[String],
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "INSERT INTO pending_questions (thread_id, source, question, options)
+         VALUES ($1, 'ask_admin', $2, $3) RETURNING id",
+    )
+    .bind(thread_row_id)
+    .bind(question)
+    .bind(json!(options))
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn set_question_message(
+    pool: &PgPool,
+    question_id: i64,
+    tg_message_id: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE pending_questions SET tg_message_id = $2 WHERE id = $1")
+        .bind(question_id)
+        .bind(tg_message_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+/// A tapped answer, once claimed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedAnswer {
+    pub conversation_id: i64,
+    pub question: String,
+    pub answer: String,
+}
+
+/// Atomically marks a question answered with option `index`, but only if it
+/// is still open and belongs to this chat and topic. `None` means it was
+/// already answered, is someone else's, or the index is out of range.
+pub async fn claim_answer(
+    pool: &PgPool,
+    question_id: i64,
+    index: usize,
+    tg_chat_id: i64,
+    topic_id: Option<i32>,
+) -> Result<Option<ClaimedAnswer>, sqlx::Error> {
+    let row: Option<(i64, String, String)> = sqlx::query_as(
+        "UPDATE pending_questions q
+         SET status = 'answered', answer = q.options ->> $2::int, answered_at = now()
+         FROM agent_threads t
+         JOIN conversations v ON v.id = t.conversation_id
+         JOIN chats c ON c.id = v.chat_id
+         WHERE q.id = $1 AND q.status = 'open' AND t.id = q.thread_id
+           AND c.tg_chat_id = $3 AND v.tg_topic_id IS NOT DISTINCT FROM $4
+           AND $2::int < jsonb_array_length(q.options)
+         RETURNING v.id, q.question, q.answer",
+    )
+    .bind(question_id)
+    .bind(index as i32)
+    .bind(tg_chat_id)
+    .bind(topic_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(
+        row.map(|(conversation_id, question, answer)| ClaimedAnswer {
+            conversation_id,
+            question,
+            answer,
+        }),
+    )
+}
+
+/// A typed message answers any open button question in the conversation:
+/// closes them and returns their Telegram message ids (to remove the buttons).
+pub async fn supersede_open_questions(
+    pool: &PgPool,
+    conversation_id: i64,
+) -> Result<Vec<i32>, sqlx::Error> {
+    let ids: Vec<Option<i32>> = sqlx::query_scalar(
+        "UPDATE pending_questions q
+         SET status = 'superseded', answered_at = now()
+         FROM agent_threads t
+         WHERE t.id = q.thread_id AND t.conversation_id = $1 AND q.status = 'open'
+         RETURNING q.tg_message_id",
+    )
+    .bind(conversation_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(ids.into_iter().flatten().collect())
 }

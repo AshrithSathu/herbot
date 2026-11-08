@@ -126,6 +126,7 @@ pub struct ButtonPress {
     /// The bot message the button belongs to.
     pub message_id: i32,
     pub from_user_id: u64,
+    pub from_name: String,
     pub data: String,
     /// Must be answered so Telegram stops the button's loading spinner.
     pub callback_id: String,
@@ -165,6 +166,7 @@ fn normalize_callback(query: &CallbackQuery) -> Option<Inbound> {
         topic_id,
         message_id: message.id().0,
         from_user_id: query.from.id.0,
+        from_name: query.from.first_name.clone(),
         data: query.data.clone()?,
         callback_id: query.id.0.clone(),
     }))

@@ -4,7 +4,7 @@
 
 The bot lives in one private Telegram group with Topics turned on: your Herbot group, just you and the bot. **General** is the everyday chat. **Every other topic is its own agent**: the first time you write in a new topic, the bot asks openly what it should be. Your answer, typed at any length or sent as a **voice note**, becomes that topic's `AGENTS.md`, and the topic keeps its own long-running memory, like separate Grok chats. Voice notes work everywhere: they're transcribed to English and the bot shows what it heard. The bot answers only you, stays silent in DMs, and leaves any other group.
 
-> **Status:** Steps 1–3 are done. Step 4 (agent threads: the bot answers) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** Steps 1–4 are done (the bot answers). Step 6 (choices as buttons) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## How it works
 
@@ -18,7 +18,7 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 1. **herbot-core** long-polls the Telegram Bot API. It drops anything outside your Herbot group or not sent by your account, ignores DMs, and leaves any other group. Every message of yours gets a 👀 reaction the moment it arrives, so you know the bot saw it.
 2. Your message (or voice note, transcribed by OpenAI `gpt-transcribe`) is stored under its **conversation**: General, or the topic it was sent in. A new topic first asks what it should be and writes `agents/chat_<id>/topic_<n>/AGENTS.md`.
 3. It goes to that conversation's **T3 Code thread**, running Codex on **GPT-6.1 Terra at medium effort** (your Codex subscription). Each conversation folder is a T3 project, so Codex reads its `AGENTS.md`. Turns in one topic run in order; different topics run in parallel. While Codex works the topic shows "typing…", then the reply arrives quoting your message, with secrets scrubbed and long answers split.
-4. If Codex has a question, it appears with **tap-to-answer buttons**, and the thread continues once you answer.
+4. When the agent wants you to pick, its reply ends with **buttons** (from an `[[ask: A | B | C]]` line). Tap one, or just type your own answer, and the thread continues. If Codex ever blocks inside T3, you get a direct link to the thread.
 5. If anything fails, you get `❌ Failed (E-1042)` and the details are in the logs. There's no silent fallback.
 
 ### Commands

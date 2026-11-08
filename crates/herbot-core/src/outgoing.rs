@@ -51,6 +51,42 @@ pub fn scrub(text: &str) -> String {
     out
 }
 
+/// Most options an `[[ask: …]]` line may offer, and the longest label.
+pub const MAX_CHOICES: usize = 6;
+pub const MAX_CHOICE_CHARS: usize = 60;
+
+static ASK_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^[ \t]*\[\[ask:\s*(.+?)\s*\]\][ \t]*$").expect("ask pattern is valid")
+});
+
+/// Pulls a trailing `[[ask: A | B | C]]` line out of an agent reply.
+/// Returns the reply without it, and the options (2 to 6, trimmed, deduped)
+/// if the line was valid. An invalid line is left in the text as-is.
+pub fn extract_choices(text: &str) -> (String, Option<Vec<String>>) {
+    let Some(m) = ASK_LINE.captures_iter(text).last() else {
+        return (text.to_string(), None);
+    };
+    let whole = m.get(0).expect("match");
+    let mut options: Vec<String> = Vec::new();
+    for raw in m[1].split('|') {
+        let option = raw.trim();
+        if !option.is_empty() && !options.iter().any(|o| o.eq_ignore_ascii_case(option)) {
+            options.push(option.to_string());
+        }
+    }
+    let valid = (2..=MAX_CHOICES).contains(&options.len())
+        && options
+            .iter()
+            .all(|o| o.chars().count() <= MAX_CHOICE_CHARS);
+    if !valid {
+        return (text.to_string(), None);
+    }
+    let mut rest = String::with_capacity(text.len());
+    rest.push_str(&text[..whole.start()]);
+    rest.push_str(&text[whole.end()..]);
+    (rest.trim().to_string(), Some(options))
+}
+
 /// Splits text into Telegram-sized messages, preferring paragraph, then line,
 /// then word boundaries. Never splits inside a character.
 pub fn split(text: &str, max_chars: usize) -> Vec<String> {
@@ -126,6 +162,42 @@ mod tests {
         ] {
             assert_eq!(scrub(text), text);
         }
+    }
+
+    #[test]
+    fn extracts_a_trailing_ask_line() {
+        let (text, choices) = extract_choices(
+            "Two ways to do this.\n\n[[ask: Delete all 42 | Only older than 30 days | Keep them]]",
+        );
+        assert_eq!(text, "Two ways to do this.");
+        assert_eq!(
+            choices.unwrap(),
+            ["Delete all 42", "Only older than 30 days", "Keep them"]
+        );
+    }
+
+    #[test]
+    fn ask_lines_are_case_insensitive_trimmed_and_deduped() {
+        let (text, choices) = extract_choices("Pick:\n  [[ASK:  yes |  no | Yes ]]  \nthanks");
+        assert_eq!(choices.unwrap(), ["yes", "no"]);
+        assert_eq!(text, "Pick:\n\nthanks");
+    }
+
+    #[test]
+    fn invalid_ask_lines_stay_as_text() {
+        for bad in [
+            "[[ask: only one]]",
+            "[[ask: a | b | c | d | e | f | g]]",
+            &format!("[[ask: ok | {}]]", "x".repeat(61)),
+            "inline [[ask: a | b]] is not a line",
+        ] {
+            let (text, choices) = extract_choices(bad);
+            assert_eq!((text.as_str(), choices), (bad, None), "{bad}");
+        }
+        assert_eq!(
+            extract_choices("no question here"),
+            ("no question here".into(), None)
+        );
     }
 
     #[test]

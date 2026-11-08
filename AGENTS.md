@@ -26,6 +26,7 @@ A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no 
 - Voice notes are transcribed by OpenAI **`gpt-transcribe`**, English only (`language=en`), with `OPENAI_API_KEY`. This key is used for nothing else. No local speech models.
 - Voice notes longer than 10 minutes are refused before download, to cap cost.
 - Everything is English.
+- Agents offer choices by ending a reply with `[[ask: A | B | C]]` (2–6 options, ≤ 60 chars). Herbot turns it into buttons. A tap or a typed reply answers it. `agents_md::TEMPLATE_VERSION` versions the ground rules, and older AGENTS.md files are regenerated at startup.
 
 ## Security invariants (never weaken these)
 

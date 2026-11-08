@@ -58,8 +58,28 @@ pub struct TurnDeps<A: TelegramApi, R: AgentRunner> {
 
 pub const TYPING_EVERY: Duration = Duration::from_secs(4);
 
-pub const NEEDS_ANSWER_TEXT: &str = "❓ The agent is waiting for an answer from you in T3 Code. \
-Answering from Telegram arrives in Step 6; for now, open the thread in T3 (link in /status).";
+/// When Codex blocks on a question inside T3 (rare in full-access mode),
+/// point Ashrith straight at the thread.
+pub fn needs_answer_text(link: Option<&str>) -> String {
+    match link {
+        Some(link) => format!("❓ The agent is waiting for your answer inside T3 Code: {link}"),
+        None => {
+            "❓ The agent is waiting for your answer inside T3 Code (link in /status).".to_string()
+        }
+    }
+}
+
+/// Callback data for answer buttons: `ans:<question id>:<option index>`.
+pub fn answer_button_data(question_id: i64, index: usize) -> String {
+    format!("ans:{question_id}:{index}")
+}
+
+pub fn parse_answer_button(data: &str) -> Option<(i64, usize)> {
+    let mut parts = data.strip_prefix("ans:")?.split(':');
+    let question_id = parts.next()?.parse().ok()?;
+    let index = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((question_id, index))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum TurnError {
@@ -226,12 +246,15 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
             Ok(())
         }
         TurnOutcome::NeedsAnswer => {
+            let link = store::conversation_status_by_id(&deps.pool, job.conversation_id)
+                .await?
+                .thread_link;
             deps.api
                 .send_text(
                     job.tg_chat_id,
                     job.topic_id,
                     Some(job.reply_to),
-                    NEEDS_ANSWER_TEXT,
+                    &needs_answer_text(link.as_deref()),
                 )
                 .await?;
             Ok(())
@@ -240,7 +263,8 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
     }
 }
 
-/// Scrubs secrets, splits for Telegram, sends, and stores the reply.
+/// Scrubs secrets, splits for Telegram, sends, and stores the reply. A
+/// trailing `[[ask: …]]` line becomes buttons under the last part.
 async fn deliver<A: TelegramApi, R: AgentRunner>(
     deps: &TurnDeps<A, R>,
     job: &TurnJob,
@@ -253,15 +277,19 @@ async fn deliver<A: TelegramApi, R: AgentRunner>(
             "scrubbed something secret-looking from a reply"
         );
     }
-    for (i, part) in outgoing::split(&clean, outgoing::MAX_MESSAGE_CHARS)
-        .iter()
-        .enumerate()
-    {
+    let (body, choices) = outgoing::extract_choices(&clean);
+    let parts = outgoing::split(&body, outgoing::MAX_MESSAGE_CHARS);
+    let last = parts.len().saturating_sub(1);
+    for (i, part) in parts.iter().enumerate() {
         let reply_to = (i == 0).then_some(job.reply_to);
-        let sent_id = deps
-            .api
-            .send_text(job.tg_chat_id, job.topic_id, reply_to, part)
-            .await?;
+        let sent_id = match (&choices, i == last) {
+            (Some(options), true) => send_with_choices(deps, job, reply_to, part, options).await?,
+            _ => {
+                deps.api
+                    .send_text(job.tg_chat_id, job.topic_id, reply_to, part)
+                    .await?
+            }
+        };
         store::store_bot_message(
             &deps.pool,
             job.conversation_id,
@@ -272,6 +300,40 @@ async fn deliver<A: TelegramApi, R: AgentRunner>(
         .await?;
     }
     Ok(())
+}
+
+/// Sends the last part of a reply with one button per option, and opens a
+/// question so a tap can be matched back to this conversation.
+async fn send_with_choices<A: TelegramApi, R: AgentRunner>(
+    deps: &TurnDeps<A, R>,
+    job: &TurnJob,
+    reply_to: Option<i32>,
+    text: &str,
+    options: &[String],
+) -> Result<i32, TurnError> {
+    let thread = store::active_thread(&deps.pool, job.conversation_id)
+        .await?
+        .ok_or_else(|| {
+            TurnError::RunFailed("reply offered choices but the thread is gone".into())
+        })?;
+    let question_id = store::create_question(&deps.pool, thread.id, text, options).await?;
+    let rows: Vec<Vec<(String, String)>> = options
+        .iter()
+        .enumerate()
+        .map(|(i, option)| vec![(option.clone(), answer_button_data(question_id, i))])
+        .collect();
+    let sent_id = deps
+        .api
+        .send_buttons(job.tg_chat_id, job.topic_id, reply_to, text, &rows)
+        .await?;
+    store::set_question_message(&deps.pool, question_id, sent_id).await?;
+    tracing::info!(
+        conversation_id = job.conversation_id,
+        question_id,
+        options = options.len(),
+        "offered choices"
+    );
+    Ok(sent_id)
 }
 
 async fn thread_link<A: TelegramApi, R: AgentRunner>(

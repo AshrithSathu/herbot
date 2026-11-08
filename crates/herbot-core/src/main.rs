@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use herbot_core::{agent, app, config::Config, db, policy, poller, telemetry, voice};
+use herbot_core::{agent, agents_md, app, config::Config, db, policy, poller, telemetry, voice};
 use teloxide::prelude::*;
 use tokio::sync::watch;
 
@@ -61,6 +61,15 @@ async fn main() -> anyhow::Result<()> {
             };
             let agents_dir = absolute_agents_dir(&config.agents_dir)?;
             check_t3_cli(&config.t3_bin).await?;
+            let refreshed = agents_md::refresh_outdated(&pool, &agents_dir)
+                .await
+                .context("could not update older AGENTS.md files")?;
+            if refreshed > 0 {
+                tracing::info!(
+                    refreshed,
+                    "rewrote AGENTS.md files with the current ground rules"
+                );
+            }
             warn_if_codex_effort_differs(&config.agent_effort);
             let runner = agent::T3Cli {
                 bin: config.t3_bin.clone(),
