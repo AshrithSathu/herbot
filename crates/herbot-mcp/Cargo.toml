@@ -1,0 +1,24 @@
+[package]
+name = "herbot-mcp"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "MCP tools for Herbot agents: topic history and General's cross-topic actions"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4.45"
+herbot-core = { version = "0.1.0", path = "../herbot-core" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rmcp = { version = "3.9.0", features = ["server", "transport-io", "macros"] }
+schemars = { version = "1", features = ["chrono04"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono"] }
+tokio = { version = "1.54.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
