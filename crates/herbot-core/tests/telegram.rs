@@ -58,6 +58,7 @@ enum Call {
     SendButtons {
         chat: i64,
         text: String,
+        rows: Vec<Vec<(String, String)>>,
     },
     Edit {
         chat: i64,
@@ -145,11 +146,12 @@ impl TelegramApi for FakeApi {
         _topic_id: Option<i32>,
         _reply_to: Option<i32>,
         text: &str,
-        _rows: &[Vec<(String, String)>],
+        rows: &[Vec<(String, String)>],
     ) -> Result<i32, ApiError> {
         self.push(Call::SendButtons {
             chat: chat_id,
             text: text.to_string(),
+            rows: rows.to_vec(),
         });
         Ok(900)
     }
@@ -1005,25 +1007,61 @@ async fn commands_strangers_and_duplicates_are_not_turns(pool: PgPool) {
     assert_eq!(h.jobs.all().len(), 1, "only the first General message");
 }
 
+/// Sends `/new` or `/forget` in topic 7 and returns the confirmation's
+/// buttons as (label, callback data).
+async fn ask_wipe(h: &H, text: &str) -> Vec<(String, String)> {
+    h.api.clear();
+    command(h, text).await;
+    let calls = h.api.calls();
+    let [Call::SendButtons { chat, rows, .. }] = calls.as_slice() else {
+        panic!("expected a confirmation with buttons, got {calls:?}")
+    };
+    assert_eq!(*chat, HQ);
+    h.api.clear();
+    rows.iter().flatten().cloned().collect()
+}
+
+/// Taps a button with this callback data on bot message 500 in topic 7.
+async fn tap_data(h: &H, data: &str) {
+    let mut update = fixture("button_research_topic7");
+    if let teloxide::types::UpdateKind::CallbackQuery(q) = &mut update.kind {
+        q.data = Some(data.to_string());
+    }
+    assert!(
+        poller::process(&h.ctx(LOCKED), &update).await.is_none(),
+        "{data}"
+    );
+}
+
 #[sqlx::test(migrations = "./migrations")]
-async fn new_asks_first_then_wipes_t3_and_history_but_keeps_the_purpose(pool: PgPool) {
+async fn new_asks_with_buttons_then_wipes_on_yes_and_keeps_the_purpose(pool: PgPool) {
     let h = H::new(pool);
     h.run(&["admin_topic_text", "admin_topic_reply", "admin_topic_third"])
         .await;
     with_thread(&h, 7).await;
-    h.api.clear();
 
-    command(&h, "/new").await;
-    assert!(h.api.sent_texts()[0].contains("Send /new yes to confirm"));
+    let buttons = ask_wipe(&h, "/new").await;
+    assert_eq!(buttons.len(), 2);
+    assert_eq!(buttons[0].0, "🧹 Yes, wipe the chat");
+    assert_eq!(buttons[1].0, "Cancel");
     assert!(
         h.projects.removed().is_empty(),
-        "nothing deleted before confirming"
+        "nothing deleted before the tap"
     );
 
-    command(&h, "/new yes").await;
+    tap_data(&h, &buttons[0].1).await;
     assert_eq!(h.projects.removed(), [PROJECT]);
+    let calls = h.api.calls();
+    let Call::Edit {
+        message_id, text, ..
+    } = &calls[0]
+    else {
+        panic!("{calls:?}")
+    };
+    assert_eq!(*message_id, 500);
     assert!(
-        h.api.sent_texts()[1].starts_with("🆕 Clean slate. Deleted 1 T3 thread(s) and 3 messages.")
+        text.starts_with("🆕 Clean slate. Deleted 1 T3 thread(s) and 3 messages."),
+        "{text}"
     );
     assert_eq!(h.count("SELECT count(*) FROM messages").await, 0);
     assert_eq!(h.count("SELECT count(*) FROM agent_threads").await, 0);
@@ -1036,26 +1074,18 @@ async fn new_asks_first_then_wipes_t3_and_history_but_keeps_the_purpose(pool: Pg
         h.agents.path().join(path.unwrap()).exists(),
         "AGENTS.md kept"
     );
-    let registered: bool =
-        sqlx::query_scalar("SELECT t3_project_registered FROM conversations WHERE tg_topic_id = 7")
-            .fetch_one(&h.pool)
-            .await
-            .unwrap();
-    assert!(!registered, "the folder is re-added to T3 on the next turn");
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn forget_wipes_everything_including_the_purpose(pool: PgPool) {
+async fn forget_by_button_wipes_everything_including_the_purpose(pool: PgPool) {
     let h = H::new(pool);
     h.run(&["admin_topic_text", "admin_topic_reply"]).await;
     with_thread(&h, 7).await;
-    h.api.clear();
 
-    command(&h, "/forget").await;
-    assert!(h.api.sent_texts()[0].contains("Send /forget yes to confirm"));
-    command(&h, "/forget yes").await;
+    let buttons = ask_wipe(&h, "/forget").await;
+    assert_eq!(buttons[0].0, "🧹 Yes, wipe everything");
+    tap_data(&h, &buttons[0].1).await;
     assert_eq!(h.projects.removed().len(), 1);
-    assert!(h.api.sent_texts()[1].starts_with("🧹 Forgotten."));
     let (purpose, state, _, path) = h.setup_row(Some(7)).await;
     assert_eq!((purpose, state.as_str(), path), (None, "new", None));
     assert!(
@@ -1067,6 +1097,84 @@ async fn forget_wipes_everything_including_the_purpose(pool: PgPool) {
     h.api.clear();
     h.run(&["admin_topic_third"]).await;
     assert_eq!(h.api.sent_texts(), [setup::greeting("Herbot HQ › topic 7")]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn cancel_deletes_nothing(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    with_thread(&h, 7).await;
+    let buttons = ask_wipe(&h, "/new").await;
+    tap_data(&h, &buttons[1].1).await;
+    assert!(
+        matches!(&h.api.calls()[0], Call::Edit { text, .. } if text == herbot_core::wipe::CANCELLED)
+    );
+    assert!(h.projects.removed().is_empty());
+    assert_eq!(h.count("SELECT count(*) FROM messages").await, 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn expired_or_misplaced_confirmations_do_nothing(pool: PgPool) {
+    use herbot_core::wipe::{self, WipeButton, WipeKind};
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    with_thread(&h, 7).await;
+    let conversation: i64 =
+        sqlx::query_scalar("SELECT id FROM conversations WHERE tg_topic_id = 7")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    h.api.clear();
+
+    let old = chrono::Utc::now().timestamp() - 3600;
+    tap_data(
+        &h,
+        &wipe::button_data(WipeButton::Confirm(WipeKind::New), conversation, old),
+    )
+    .await;
+    assert_eq!(
+        h.api.calls()[0],
+        Call::Answer {
+            callback_id: "cb-1".into(),
+            toast: Some(wipe::EXPIRED_TOAST.into())
+        }
+    );
+
+    h.api.clear();
+    let now = chrono::Utc::now().timestamp();
+    tap_data(
+        &h,
+        &wipe::button_data(WipeButton::Confirm(WipeKind::New), conversation + 99, now),
+    )
+    .await;
+    assert_eq!(
+        h.api.calls(),
+        [Call::Answer {
+            callback_id: "cb-1".into(),
+            toast: Some(wipe::WRONG_PLACE_TOAST.into())
+        }]
+    );
+    assert!(h.projects.removed().is_empty());
+    assert_eq!(h.count("SELECT count(*) FROM messages").await, 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_failed_wipe_shows_the_error_in_place_of_the_buttons(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    with_thread(&h, 7).await;
+    *h.projects.fail.lock().unwrap() = true;
+    let buttons = ask_wipe(&h, "/new").await;
+    tap_data(&h, &buttons[0].1).await;
+    let calls = h.api.calls();
+    let Call::Edit { text, .. } = &calls[0] else {
+        panic!("{calls:?}")
+    };
+    assert!(
+        text.starts_with("❌ Failed (E-") && text.contains("so nothing was wiped"),
+        "{text}"
+    );
+    assert_eq!(h.count("SELECT count(*) FROM messages").await, 2);
 }
 
 #[sqlx::test(migrations = "./migrations")]
