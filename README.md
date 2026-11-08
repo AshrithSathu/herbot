@@ -1,43 +1,54 @@
 # Herbot
 
-**Ashrith's bot**: a Grok-style AI assistant that lives in WhatsApp.
+**Ashrith's bot**: a private, Grok-style AI assistant on Telegram, running on T3 Code + Codex.
 
-Tag it in a group or reply to one of its messages, and it reads the conversation and answers. In Ashrith's private WhatsApp community, each group works like a separate long-running chat with its own memory. Under the hood, every group is one T3 Code thread running Codex.
+You add the bot to your own Telegram groups, or open topics in one private supergroup. Each chat or topic becomes its own long-running conversation with full memory, like separate Grok chats. The bot answers only you and ignores everyone else.
 
-> **Status:** Step 1 of 10 (foundation) is done. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** Step 1 of 10 is done, and Step 2 (Telegram adapter) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## How it works
 
 ```
-WhatsApp ⇄ wa-bridge (Go) ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
-                                 │                     └─ herbot-mcp (Rust)
-                                 ├─ Postgres (messages, threads, queue, errors)
-                                 └─ admin API ⇄ admin panel (TanStack Start)
+Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
+                        │                  └─ herbot-mcp (Rust)
+                        ├─ Postgres (chats, conversations, messages, threads, errors)
+                        └─ admin API ⇄ admin panel (TanStack Start)
 ```
 
-1. **wa-bridge** is logged in as the bot's own WhatsApp number. It forwards every message to herbot-core and sends replies back.
-2. **herbot-core** decides whether to answer. The group must be approved and the sender allowed, and in shared groups the bot also has to be tagged or replied to.
-3. It sends the new messages to that group's **T3 Code thread**, waits for Codex, scrubs the reply, and posts it in the group as a quoted reply.
-4. If Codex has a question, the bot **DMs Ashrith**. His reply goes back into the thread, which continues on its own.
-5. If anything fails, the bot replies with an error ID like `E-1042` and logs the details. There's no silent fallback.
+1. **herbot-core** long-polls the Telegram Bot API. It drops anything not sent by your Telegram account, and leaves any group someone else adds it to.
+2. Your message is stored under its **conversation**: the chat, plus the topic if the group has topics.
+3. It goes to that conversation's **T3 Code thread**. Herbot waits for Codex, then posts the reply in the same chat or topic.
+4. If Codex has a question, it appears with **tap-to-answer buttons**, and the thread continues once you answer.
+5. If anything fails, you get `❌ Failed (E-1042)` and the details are in the logs. There's no silent fallback.
 
-### Groups
+### Commands
 
-| | Private (Ashrith's community) | Shared (other people) |
-|---|---|---|
-| Answers | Every message from Ashrith | @mentions and replies to the bot |
-| Who can use it | Ashrith | Everyone in the group, or only listed numbers |
-| Memory | Full thread history plus searchable message archive | Same, plus all messages since its last reply |
+| Command | Does |
+|---|---|
+| `/status` | Shows this conversation's chat, topic and message count |
+| `/help` | Lists commands |
+| `/new` | Starts a fresh thread for this conversation (Step 4) |
+| `/forget` | Wipes this conversation's thread and history (Step 4) |
 
-New groups are **pending** until approved in the admin panel. Dangerous actions (shell, files, secrets) only ever run for the admin number, and that's enforced in code, not just in the prompt.
+## Setup
+
+1. In Telegram, talk to [@BotFather](https://t.me/BotFather): run `/newbot`, then `/setprivacy` → **Disable**, so the bot sees every message in your groups, not only commands.
+2. Find your own Telegram user ID, for example by messaging [@userinfobot](https://t.me/userinfobot).
+3. Put both in `.env` (see `.env.example`):
+   ```
+   TELEGRAM_BOT_TOKEN=123456:ABC…
+   HERBOT_ADMIN_TELEGRAM_ID=123456789
+   ```
+4. `make run`, then DM your bot `/status`.
+
+Without `TELEGRAM_BOT_TOKEN`, herbot-core still starts (for tests and local work). `/ready` then reports `"telegram": "disabled"`.
 
 ## Repository layout
 
 | Path | What | Status |
 |---|---|---|
-| `crates/herbot-core` | Router, approvals, roles, lanes, T3 adapter, admin API (Rust) | 🟡 foundation |
-| `crates/herbot-mcp` | Group-scoped tools for bot threads (Rust) | ⏳ Step 7 |
-| `apps/wa-bridge` | Fork of the [lharries/whatsapp-mcp](https://github.com/lharries/whatsapp-mcp) bridge (Go) | ⏳ Step 2 |
+| `crates/herbot-core` | Telegram adapter, admin-only policy, conversations, T3 adapter, admin API (Rust) | 🟡 Step 2 |
+| `crates/herbot-mcp` | Conversation-scoped tools for bot threads (Rust) | ⏳ Step 7 |
 | `apps/admin` | Admin panel (TanStack Start) | ⏳ Step 8 |
 | `bots/` | One T3 project per bot persona | ⏳ Step 4 |
 | `docs/ROADMAP.md` | Build plan with "Done when" checks | |
@@ -48,7 +59,7 @@ New groups are **pending** until approved in the admin panel. Dangerous actions 
 Requires Rust (stable, edition 2024), Docker (OrbStack works) and Make.
 
 ```bash
-cp .env.example .env   # optional, for local overrides
+cp .env.example .env   # add your bot token and Telegram ID
 make db-up             # Postgres 18 on 127.0.0.1:5433
 make test              # unit + integration tests (each gets a fresh database)
 make smoke             # boot the real binary, check /health, /ready and shutdown
@@ -60,7 +71,7 @@ make db-down           # stop Postgres (make db-reset also deletes data)
 | Endpoint | Meaning |
 |---|---|
 | `GET /health` | The process is up |
-| `GET /ready` | Postgres answers (returns 503 when it doesn't) |
+| `GET /ready` | Postgres answers (returns 503 when it doesn't), plus Telegram status |
 
 CI (formatting, clippy, tests against Postgres) is **manual only**: `gh workflow run ci.yml`. Day to day, run `make check` locally.
 
