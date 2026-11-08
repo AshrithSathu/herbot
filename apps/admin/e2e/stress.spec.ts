@@ -138,8 +138,8 @@ test('scrolling up loads older pages, keeps your place, and reaches the start', 
   await expect(messages(log)).toHaveCount(600)
   await expect(messages(log).first()).toHaveAttribute('data-message-id', '1')
   // A week of history is split by day, and the labels say which day.
-  expect(await log.getByRole('separator').count()).toBeGreaterThanOrEqual(6)
-  await expect(log.getByRole('separator').last()).toHaveAccessibleName(/Today|Yesterday/)
+  expect(await log.getByRole('heading', { level: 3 }).count()).toBeGreaterThanOrEqual(6)
+  await expect(log.getByRole('heading', { level: 3 }).last()).toHaveText(/Today|Yesterday/)
   await close()
 })
 
@@ -196,6 +196,7 @@ test('new messages arrive live: followed at the bottom, counted when you scrolle
   await pill.click()
   await expect(log.getByText('live two')).toBeInViewport()
   await expect(pill).toBeHidden()
+  await expect(log).toBeFocused() // the pill vanished; focus landed in the log, not on <body>
   await close()
 })
 
