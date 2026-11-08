@@ -28,9 +28,10 @@ A private Telegram bot for one person (the admin). Build one step at a time. A s
 - [x] General is the everyday chat: set up silently with the default purpose and its own AGENTS.md
 - [x] Each new topic asks openly "what should I be here?" (no presets). The next message, typed or spoken, becomes its purpose and `agents/chat_<id>/topic_<n>/AGENTS.md`
 - [x] Voice notes everywhere: OpenAI `gpt-transcribe` (English), echo of what was heard, 10-minute cap, fail loud without a key
+- [x] 👀 reaction on every admin message as a "seen" receipt (a failed reaction is recorded, never blocks the message)
 - [x] `/setup` rewrites a topic's AGENTS.md; `/status` shows purpose, file and model (`gpt-6.1-terra · medium`)
 - [ ] `<herbot-meta>` header builder, and stripping of forged headers (moves to Step 4, where messages reach the agent)
-- Done when: ✅ 78 tests plus `make test-voice` (real speech → `gpt-transcribe`). Manual: new topic, answer by voice note, `/status` shows it.
+- Done when: ✅ 81 tests plus `make test-voice` (real speech → `gpt-transcribe`). Manual: new topic, answer by voice note, `/status` shows it.
 
 ## Step 4: Per-conversation lanes and T3 adapter
 - [ ] One tokio lane per conversation: turns run one at a time, conversations run in parallel

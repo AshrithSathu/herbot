@@ -15,7 +15,7 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
                         └─ admin API ⇄ admin panel (TanStack Start)
 ```
 
-1. **herbot-core** long-polls the Telegram Bot API. It drops anything outside your Herbot group or not sent by your account, ignores DMs, and leaves any other group.
+1. **herbot-core** long-polls the Telegram Bot API. It drops anything outside your Herbot group or not sent by your account, ignores DMs, and leaves any other group. Every message of yours gets a 👀 reaction the moment it arrives, so you know the bot saw it.
 2. Your message (or voice note, transcribed by OpenAI `gpt-transcribe`) is stored under its **conversation**: General, or the topic it was sent in. A new topic first asks what it should be and writes `agents/chat_<id>/topic_<n>/AGENTS.md`.
 3. It goes to that conversation's **T3 Code thread**, running Codex on **GPT-6.1 Terra at medium effort** (your Codex subscription). Herbot waits for Codex, then posts the reply in the same topic.
 4. If Codex has a question, it appears with **tap-to-answer buttons**, and the thread continues once you answer.
