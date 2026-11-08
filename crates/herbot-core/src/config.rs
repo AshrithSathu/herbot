@@ -9,6 +9,26 @@ pub struct Config {
     pub database_url: String,
     /// Log output format (`HERBOT_LOG_FORMAT`: `json` or `pretty`).
     pub log_format: LogFormat,
+    /// Telegram settings; `None` when `TELEGRAM_BOT_TOKEN` is unset or empty.
+    pub telegram: Option<TelegramConfig>,
+}
+
+#[derive(Clone)]
+pub struct TelegramConfig {
+    /// Bot token from @BotFather (`TELEGRAM_BOT_TOKEN`).
+    pub token: String,
+    /// The only Telegram user the bot answers (`HERBOT_ADMIN_TELEGRAM_ID`).
+    pub admin_user_id: u64,
+}
+
+// Never print the token, even in debug output.
+impl std::fmt::Debug for TelegramConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramConfig")
+            .field("token", &"<redacted>")
+            .field("admin_user_id", &self.admin_user_id)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +45,14 @@ pub enum ConfigError {
     InvalidBind(String),
     #[error("HERBOT_LOG_FORMAT {0:?} is not valid (expected `json` or `pretty`)")]
     InvalidLogFormat(String),
+    #[error(
+        "TELEGRAM_BOT_TOKEN is set but HERBOT_ADMIN_TELEGRAM_ID is not; the bot must know who its admin is"
+    )]
+    MissingAdminId,
+    #[error(
+        "HERBOT_ADMIN_TELEGRAM_ID {0:?} is not a Telegram user ID (expected a positive number)"
+    )]
+    InvalidAdminId(String),
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -51,10 +79,30 @@ impl Config {
             Some(other) => return Err(ConfigError::InvalidLogFormat(other.to_string())),
         };
 
+        let telegram = match get("TELEGRAM_BOT_TOKEN").filter(|t| !t.trim().is_empty()) {
+            None => None,
+            Some(token) => {
+                let raw = get("HERBOT_ADMIN_TELEGRAM_ID")
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or(ConfigError::MissingAdminId)?;
+                let admin_user_id = raw
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|id| *id > 0)
+                    .ok_or_else(|| ConfigError::InvalidAdminId(raw.clone()))?;
+                Some(TelegramConfig {
+                    token: token.trim().to_string(),
+                    admin_user_id,
+                })
+            }
+        };
+
         Ok(Self {
             bind,
             database_url,
             log_format,
+            telegram,
         })
     }
 }
@@ -117,5 +165,55 @@ mod tests {
         ]))
         .unwrap_err();
         assert_eq!(err, ConfigError::InvalidLogFormat("yaml".into()));
+    }
+
+    #[test]
+    fn telegram_is_disabled_without_a_token() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("TELEGRAM_BOT_TOKEN", ""),
+            ("HERBOT_ADMIN_TELEGRAM_ID", "123"),
+        ]))
+        .unwrap();
+        assert!(config.telegram.is_none());
+    }
+
+    #[test]
+    fn telegram_token_requires_a_valid_admin_id() {
+        let base = [
+            ("DATABASE_URL", "postgres://x"),
+            ("TELEGRAM_BOT_TOKEN", "123:abc"),
+        ];
+        assert_eq!(
+            Config::from_lookup(lookup(&base)).unwrap_err(),
+            ConfigError::MissingAdminId
+        );
+        for bad in ["abc", "-5", "0"] {
+            let mut pairs = base.to_vec();
+            pairs.push(("HERBOT_ADMIN_TELEGRAM_ID", bad));
+            assert_eq!(
+                Config::from_lookup(lookup(&pairs)).unwrap_err(),
+                ConfigError::InvalidAdminId(bad.into()),
+            );
+        }
+        let mut pairs = base.to_vec();
+        pairs.push(("HERBOT_ADMIN_TELEGRAM_ID", " 987654321 "));
+        let telegram = Config::from_lookup(lookup(&pairs))
+            .unwrap()
+            .telegram
+            .unwrap();
+        assert_eq!(telegram.admin_user_id, 987654321);
+        assert_eq!(telegram.token, "123:abc");
+    }
+
+    #[test]
+    fn debug_output_never_contains_the_token() {
+        let telegram = TelegramConfig {
+            token: "123:super-secret".into(),
+            admin_user_id: 1,
+        };
+        let shown = format!("{telegram:?}");
+        assert!(!shown.contains("super-secret"), "{shown}");
+        assert!(shown.contains("<redacted>"));
     }
 }

@@ -1,4 +1,10 @@
 SHELL := /bin/bash
+
+# Load .env (bot token, admin ID) when present.
+ifneq (,$(wildcard .env))
+include .env
+export
+endif
 export DATABASE_URL ?= postgres://herbot:herbot@127.0.0.1:5433/herbot
 
 .PHONY: help db-up db-down db-reset run test check fmt lint smoke
