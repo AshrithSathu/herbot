@@ -12,7 +12,10 @@ use sqlx::PgPool;
 use herbot_core::agent::{AgentError, AgentRunner, T3Cli, ThreadInfo, TurnOutcome, TurnResult};
 use herbot_core::outgoing::REDACTED;
 use herbot_core::poller::{ApiError, TelegramApi};
-use herbot_core::turns::{Lanes, NEEDS_ANSWER_TEXT, TurnDeps, TurnJob, TurnQueue, run_turn};
+use herbot_core::turns::{
+    Lanes, TurnDeps, TurnJob, TurnQueue, answer_button_data, needs_answer_text,
+    parse_answer_button, run_turn,
+};
 
 const HQ: i64 = -1001234567890;
 const BOT_ID: u64 = 999;
@@ -22,9 +25,19 @@ const BOT_ID: u64 = 999;
 /// (chat, topic, reply_to, text) of one sent message.
 type Sent = (i64, Option<i32>, Option<i32>, String);
 
+/// (chat, topic, reply_to, text, buttons) of a message sent with buttons.
+type SentButtons = (
+    i64,
+    Option<i32>,
+    Option<i32>,
+    String,
+    Vec<Vec<(String, String)>>,
+);
+
 #[derive(Default)]
 struct FakeApi {
     sent: Mutex<Vec<Sent>>,
+    with_buttons: Mutex<Vec<SentButtons>>,
     typing: AtomicU32,
     next_id: AtomicI32,
 }
@@ -60,13 +73,20 @@ impl TelegramApi for FakeApi {
     }
     async fn send_buttons(
         &self,
-        _: i64,
-        _: Option<i32>,
-        _: Option<i32>,
-        _: &str,
-        _: &[Vec<(String, String)>],
+        chat: i64,
+        topic: Option<i32>,
+        reply_to: Option<i32>,
+        text: &str,
+        rows: &[Vec<(String, String)>],
     ) -> Result<i32, ApiError> {
-        unreachable!("turns never send buttons")
+        self.with_buttons.lock().unwrap().push((
+            chat,
+            topic,
+            reply_to,
+            text.to_string(),
+            rows.to_vec(),
+        ));
+        Ok(800 + self.next_id.fetch_add(1, Ordering::SeqCst))
     }
     async fn edit_text(&self, _: i64, _: i32, _: &str) -> Result<(), ApiError> {
         unreachable!()
@@ -460,7 +480,12 @@ async fn a_question_from_the_agent_points_to_t3(pool: PgPool) {
     let h = H::new(pool).await;
     h.deps.runner.then(Ok(TurnOutcome::NeedsAnswer));
     run_turn(&h.deps, job(1, Some(7), 30, "delete the old logs")).await;
-    assert_eq!(h.deps.api.texts(), [NEEDS_ANSWER_TEXT]);
+    assert_eq!(
+        h.deps.api.texts(),
+        [needs_answer_text(Some(
+            "https://app.t3.codes/threads/env/t3-1"
+        ))]
+    );
     assert_eq!(
         h.count("SELECT count(*) FROM errors").await,
         0,
@@ -512,6 +537,77 @@ async fn after_new_the_next_message_starts_a_fresh_thread(pool: PgPool) {
             .await,
         1
     );
+}
+
+// ---- choices as buttons (Step 6) ----
+
+#[test]
+fn answer_button_data_round_trips() {
+    assert_eq!(answer_button_data(42, 3), "ans:42:3");
+    assert_eq!(parse_answer_button("ans:42:3"), Some((42, 3)));
+    for bad in ["ans:42", "ans:x:1", "ans:1:2:3", "setup:research", ""] {
+        assert_eq!(parse_answer_button(bad), None, "{bad}");
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn an_ask_line_becomes_buttons_and_an_open_question(pool: PgPool) {
+    let h = H::new(pool).await;
+    h.deps.runner.then(Ok(TurnOutcome::Replied(
+        "There are 42 old logs.\n\n[[ask: Delete all | Only older than 30 days | Keep them]]"
+            .into(),
+    )));
+    run_turn(&h.deps, job(1, Some(7), 30, "clean up the logs")).await;
+
+    assert!(
+        h.deps.api.texts().is_empty(),
+        "the whole reply went out with buttons"
+    );
+    let sent = h.deps.api.with_buttons.lock().unwrap().clone();
+    let [(chat, topic, reply_to, text, rows)] = sent.as_slice() else {
+        panic!("{sent:?}")
+    };
+    assert_eq!(
+        (*chat, *topic, *reply_to, text.as_str()),
+        (HQ, Some(7), Some(30), "There are 42 old logs.")
+    );
+    let (question_id, status, tg_message_id): (i64, String, Option<i32>) =
+        sqlx::query_as("SELECT id, status, tg_message_id FROM pending_questions")
+            .fetch_one(&h.deps.pool)
+            .await
+            .unwrap();
+    assert_eq!((status.as_str(), tg_message_id), ("open", Some(800)));
+    assert_eq!(
+        *rows,
+        [
+            vec![("Delete all".to_string(), answer_button_data(question_id, 0))],
+            vec![(
+                "Only older than 30 days".to_string(),
+                answer_button_data(question_id, 1)
+            )],
+            vec![("Keep them".to_string(), answer_button_data(question_id, 2))],
+        ]
+    );
+    let body: String = sqlx::query_scalar("SELECT body FROM messages WHERE from_bot")
+        .fetch_one(&h.deps.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        body, "There are 42 old logs.",
+        "the ask line isn't stored as text"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_long_reply_gets_buttons_on_its_last_part(pool: PgPool) {
+    let h = H::new(pool).await;
+    let long = format!("{}\n\n[[ask: Yes | No]]", "word ".repeat(1500));
+    h.deps.runner.then(Ok(TurnOutcome::Replied(long)));
+    run_turn(&h.deps, job(1, Some(7), 30, "go")).await;
+    assert!(!h.deps.api.texts().is_empty());
+    let buttons = h.deps.api.with_buttons.lock().unwrap().clone();
+    assert_eq!(buttons.len(), 1);
+    assert_eq!(buttons[0].2, None, "the first part quoted the question");
 }
 
 // ---- lanes ----

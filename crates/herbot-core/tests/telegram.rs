@@ -20,7 +20,8 @@ use teloxide::types::Update;
 use herbot_core::errors::ErrorId;
 use herbot_core::policy::{LEFT_ADDED_BY_STRANGER, LEFT_OUTSIDE_HOME, Rules};
 use herbot_core::poller::{
-    self, ApiError, Ctx, HELP_TEXT, SEEN_REACTION, TelegramApi, WELCOME_TEXT,
+    self, ALREADY_ANSWERED_TOAST, ApiError, Ctx, HELP_TEXT, SEEN_REACTION, TelegramApi,
+    WELCOME_TEXT,
 };
 use herbot_core::setup;
 use herbot_core::store;
@@ -994,6 +995,180 @@ fn set_text(update: &mut Update, text: &str) {
     } else {
         panic!("not a text message fixture");
     }
+}
+
+// ---- answering the agent's choices (Step 6) ----
+
+/// Topic 7 set up, with an active thread and an open question whose buttons
+/// sit on bot message 500 (the message `button_research_topic7` taps).
+async fn open_question(h: &H) -> i64 {
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    sqlx::query(
+        "INSERT INTO agent_threads (conversation_id, t3_thread_id)
+         SELECT id, 't3-q' FROM conversations WHERE tg_topic_id = 7",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    let id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO pending_questions (thread_id, source, question, options, tg_message_id)
+           SELECT id, 'ask_admin', 'There are 42 old logs.',
+                  '["Delete all", "Only older than 30 days", "Keep them"]', 500
+           FROM agent_threads WHERE t3_thread_id = 't3-q' RETURNING id"#,
+    )
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    h.api.clear();
+    id
+}
+
+fn tap(question_id: i64, index: usize) -> Update {
+    let mut update = fixture("button_research_topic7");
+    if let teloxide::types::UpdateKind::CallbackQuery(q) = &mut update.kind {
+        q.data = Some(format!("ans:{question_id}:{index}"));
+    }
+    update
+}
+
+async fn question_status(h: &H, id: i64) -> (String, Option<String>) {
+    sqlx::query_as("SELECT status, answer FROM pending_questions WHERE id = $1")
+        .bind(id)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn tapping_a_choice_sends_it_to_the_agent(pool: PgPool) {
+    let h = H::new(pool);
+    let q = open_question(&h).await;
+    assert!(poller::process(&h.ctx(LOCKED), &tap(q, 1)).await.is_none());
+
+    assert_eq!(
+        h.api.calls(),
+        [
+            Call::Edit {
+                chat: HQ,
+                message_id: 500,
+                text: "There are 42 old logs.\n\n👉 Only older than 30 days".into()
+            },
+            Call::Answer {
+                callback_id: "cb-1".into(),
+                toast: Some("Sent".into())
+            },
+        ]
+    );
+    let jobs = h.jobs.all();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        (jobs[0].text.as_str(), jobs[0].reply_to, jobs[0].topic_id),
+        ("Only older than 30 days", 500, Some(7))
+    );
+    assert_eq!(
+        question_status(&h, q).await,
+        ("answered".into(), Some("Only older than 30 days".into()))
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_second_tap_does_nothing(pool: PgPool) {
+    let h = H::new(pool);
+    let q = open_question(&h).await;
+    assert!(poller::process(&h.ctx(LOCKED), &tap(q, 0)).await.is_none());
+    h.api.clear();
+    assert!(poller::process(&h.ctx(LOCKED), &tap(q, 2)).await.is_none());
+    assert_eq!(
+        h.api.calls(),
+        [
+            Call::Answer {
+                callback_id: "cb-1".into(),
+                toast: Some(ALREADY_ANSWERED_TOAST.into())
+            },
+            Call::RemoveButtons {
+                chat: HQ,
+                message_id: 500
+            },
+        ]
+    );
+    assert_eq!(
+        h.jobs.all().len(),
+        1,
+        "only the first tap reached the agent"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn taps_out_of_range_or_from_another_topic_are_refused(pool: PgPool) {
+    let h = H::new(pool);
+    let q = open_question(&h).await;
+    assert!(poller::process(&h.ctx(LOCKED), &tap(q, 9)).await.is_none());
+    let mut elsewhere = tap(q, 0);
+    if let teloxide::types::UpdateKind::CallbackQuery(cb) = &mut elsewhere.kind
+        && let Some(teloxide::types::MaybeInaccessibleMessage::Regular(m)) = &mut cb.message
+    {
+        m.thread_id = Some(teloxide::types::ThreadId(teloxide::types::MessageId(9)));
+    }
+    assert!(poller::process(&h.ctx(LOCKED), &elsewhere).await.is_none());
+    assert!(h.jobs.all().is_empty());
+    assert_eq!(question_status(&h, q).await, ("open".into(), None));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn typing_an_answer_closes_the_buttons(pool: PgPool) {
+    let h = H::new(pool);
+    let q = open_question(&h).await;
+    h.run(&["admin_topic_third"]).await;
+    assert_eq!(
+        h.api.calls(),
+        [Call::RemoveButtons {
+            chat: HQ,
+            message_id: 500
+        }]
+    );
+    assert_eq!(h.jobs.all()[0].text, "what about rmcp?");
+    assert_eq!(question_status(&h, q).await.0, "superseded");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn older_agents_md_files_get_the_new_ground_rules(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    // Pretend topic 7 was set up by the previous template.
+    std::fs::write(h.agents.path().join(TOPIC7_MD), "old file without buttons").unwrap();
+    sqlx::query(
+        "UPDATE conversations SET agents_md_version = 1,
+                agents_md_updated_at = now() - interval '1 day'
+         WHERE tg_topic_id = 7",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+
+    let refreshed = herbot_core::agents_md::refresh_outdated(&h.pool, h.agents.path())
+        .await
+        .unwrap();
+    assert_eq!(refreshed, 1);
+    let md = h.agents_md(TOPIC7_MD);
+    assert!(
+        md.contains("and compare them") && md.contains("[[ask:"),
+        "{md}"
+    );
+    let (version, fresh): (i32, bool) = sqlx::query_as(
+        "SELECT agents_md_version, agents_md_updated_at > now() - interval '1 minute'
+         FROM conversations WHERE tg_topic_id = 7",
+    )
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (version, fresh),
+        (herbot_core::agents_md::TEMPLATE_VERSION, true)
+    );
+    let again = herbot_core::agents_md::refresh_outdated(&h.pool, h.agents.path())
+        .await
+        .unwrap();
+    assert_eq!(again, 0, "nothing left to do");
 }
 
 // ---- 👀 "seen it" reactions ----
