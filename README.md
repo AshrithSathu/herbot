@@ -29,8 +29,8 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 | `/setup` | Tell it (again) what this topic is for, typed or by voice |
 | `/status` | Shows this conversation's place, purpose, AGENTS.md path, model and message count |
 | `/help` | Lists commands |
-| `/new` | Starts a fresh thread here (the old one stays in T3 Code) |
-| `/forget` | Deletes this conversation's stored messages and starts fresh (asks first; `/forget yes` confirms) |
+| `/new` | Clean slate: deletes this topic's T3 threads and its stored history, and keeps its purpose (asks first; `/new yes` confirms) |
+| `/forget` | Same, and also clears the purpose, so the topic sets up again (`/forget yes` confirms) |
 
 ## Setup
 
