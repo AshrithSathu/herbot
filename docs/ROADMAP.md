@@ -47,17 +47,22 @@ A private Telegram bot for one person (the admin). Build one step at a time. A s
 ## Step 5: Reply path and fail-loud errors ✅
 Built as part of Step 4: typing indicator, secret scrubbing, splitting, quoted replies, `❌ Failed (E-<id>)` on every failure.
 
-## Step 6: Choices from the agent, answered in Telegram
+## Step 6: Choices from the agent, answered in Telegram ✅
 - [x] Agents end a reply with `[[ask: A | B | C]]` (rule in every AGENTS.md); Herbot strips it and shows buttons on the reply's last part
 - [x] A tap claims the question atomically (one answer only, same topic only), shows "👉 choice", and sends it to the agent as the next turn
 - [x] A typed reply closes any open buttons in that topic and goes to the agent as the answer
 - [x] AGENTS.md template versions: older files are rewritten at startup, and threads are told to reread them
 - [x] If Codex blocks waiting inside T3 (rare in full access), the reply links straight to the thread
-- Done when: ✅ 131 tests (ask-line parsing, buttons on long replies, taps, double taps, wrong topic, typed answers, template upgrade). ⏳ Manual: ask the Testing agent to offer choices, tap one.
+- Done when: ✅ 131 tests. ✅ Manual (2026-11-09): the agent offered Yes/No buttons on its own, a voice reply superseded them, and a tapped option reached the agent.
 
-## Step 7: herbot-mcp (Rust)
-- [ ] `search_history` (Postgres full-text search, fixed to the current conversation) and `ask_admin`
-- Done when: tool tests prove conversation scoping, and Codex in a test thread finds an old message.
+## Step 7: herbot-mcp, so agents see history and General works across topics
+- [x] Each conversation has a secret caller token, sent in every `<herbot-meta>` header
+- [x] `hub.rs`: General lists, searches and reads its whole group; a topic only itself (plus the topic list); groups never leak into each other
+- [x] `herbot-mcp` (rmcp, stdio): `list_topics`, `search_messages`, `read_topic`, `ask_topic`, `post_to_topic`
+- [x] herbot-core `/internal/post` and `/internal/ask` (token-protected): General's question shows in the topic, that topic's lane runs it, and the answer comes back
+- [x] AGENTS.md v4: General and topics each get their own tools section
+- [x] `scripts/codex-mcp-config.sh` registers herbot-mcp with Codex
+- Done when: ✅ 151 tests (hub permissions, internal API, real MCP over stdio against the binary). ✅ Real Codex (GPT-6.1 Terra) called `list_topics` and `read_topic` on live data. ⏳ Manual in Telegram: ask General about other topics and have it `ask_topic`.
 
 ## Step 8: Admin panel (TanStack Start)
 - [ ] Chats and topics, personas, per-conversation settings, threads
