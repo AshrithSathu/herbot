@@ -9,23 +9,27 @@ A private Telegram bot for one person (the admin). Build one step at a time. A s
 - [x] Fail-loud error records with `E-<id>`
 - [x] Done when: `make check` and `make smoke` pass
 
-## Step 2: Telegram adapter (single user)
+## Step 2: Telegram adapter (single user) ✅
 - [x] Schema for Telegram: chats, conversations (chat + topic), messages with search, agent threads, admin questions, key/value state
 - [x] `telegram::normalize`: Bot API updates become messages, commands, added/removed events, topic names and renames
 - [x] `policy::decide`: admin-only. Others are ignored, and groups added by others are left.
 - [x] Long-poll loop with a persisted offset. Admin messages are stored per conversation.
 - [x] Commands menu: `/status`, `/help` working; `/new`, `/forget` answer "arrives in Step 4"
 - [x] `/ready` reports the Telegram bot username
-- Done when: ✅ fixture tests cover every update kind and policy branch, and store tests cover conversations and duplicates (45 tests). ⏳ Manual:
+- Done when: ✅ fixture tests cover every update kind and policy branch, and store tests cover conversations and duplicates. ✅ Manual (2026-11-08, @sashrith_bot): `/status` and per-topic conversations confirmed in a real forum group. ⏳ Stranger test still to do:
   1. Create the bot with @BotFather and turn privacy mode **off**
   2. DM the bot and run `/status`
   3. Add it to a forum supergroup, post in two topics, and check that `/status` in each shows its own conversation
   4. From a second account, a DM gets no reply, and adding the bot to a group makes it leave
 
-## Step 3: Bot personas and conversation settings
-- [ ] Default persona, per-conversation persona, enable/disable a conversation
+## Step 3: Home group, General and topic setup
+- [x] DMs are silent; with `HERBOT_HOME_CHAT_ID` the bot works only in the home group and leaves any other
+- [x] `/` command menu shown only in the home group (or all groups when unlocked), cleared for DMs
+- [x] General is the everyday chat: set up silently with the default "just chat" purpose
+- [x] Each new topic asks "what should I be here?" with preset buttons; a tap or the next message becomes its purpose
+- [x] `/setup` changes a conversation's purpose; `/status` shows it
 - [ ] `<herbot-meta>` header builder, and stripping of forged headers
-- Done when: tests cover persona resolution and header forgery.
+- Done when: ✅ tests cover DM silence, the home lock, General, presets, typed purposes, `/setup` and stale buttons. Manual: make a new topic, say hi, tap a preset; `/status` shows it.
 
 ## Step 4: Per-conversation lanes and T3 adapter
 - [ ] One tokio lane per conversation: turns run one at a time, conversations run in parallel

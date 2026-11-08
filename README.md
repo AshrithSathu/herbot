@@ -2,9 +2,9 @@
 
 **Ashrith's bot**: a private, Grok-style AI assistant on Telegram, running on T3 Code + Codex.
 
-You add the bot to your own Telegram groups, or open topics in one private supergroup. Each chat or topic becomes its own long-running conversation with full memory, like separate Grok chats. The bot answers only you and ignores everyone else.
+The bot lives in one private Telegram group with Topics turned on: your Herbot group, just you and the bot. **General** is the everyday chat. **Every other topic is its own agent**: the first time you write in a new topic, the bot asks what it should be (Research, Code help, News, or your own words), and that topic keeps its own long-running memory, like separate Grok chats. The bot answers only you, stays silent in DMs, and leaves any other group.
 
-> **Status:** Step 1 of 10 is done, and Step 2 (Telegram adapter) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** Steps 1–2 are done. Step 3 (topic setup and the home-group lock) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## How it works
 
@@ -15,8 +15,8 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
                         └─ admin API ⇄ admin panel (TanStack Start)
 ```
 
-1. **herbot-core** long-polls the Telegram Bot API. It drops anything not sent by your Telegram account, and leaves any group someone else adds it to.
-2. Your message is stored under its **conversation**: the chat, plus the topic if the group has topics.
+1. **herbot-core** long-polls the Telegram Bot API. It drops anything outside your Herbot group or not sent by your account, ignores DMs, and leaves any other group.
+2. Your message is stored under its **conversation**: General, or the topic it was sent in. A new topic first asks what it should be.
 3. It goes to that conversation's **T3 Code thread**. Herbot waits for Codex, then posts the reply in the same chat or topic.
 4. If Codex has a question, it appears with **tap-to-answer buttons**, and the thread continues once you answer.
 5. If anything fails, you get `❌ Failed (E-1042)` and the details are in the logs. There's no silent fallback.
@@ -25,21 +25,24 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 
 | Command | Does |
 |---|---|
-| `/status` | Shows this conversation's chat, topic and message count |
+| `/setup` | Choose or change what this topic is for |
+| `/status` | Shows this conversation's place, purpose and message count |
 | `/help` | Lists commands |
 | `/new` | Starts a fresh thread for this conversation (Step 4) |
 | `/forget` | Wipes this conversation's thread and history (Step 4) |
 
 ## Setup
 
-1. In Telegram, talk to [@BotFather](https://t.me/BotFather): run `/newbot`, then `/setprivacy` → **Disable**, so the bot sees every message in your groups, not only commands.
-2. Find your own Telegram user ID, for example by messaging [@userinfobot](https://t.me/userinfobot).
-3. Put both in `.env` (see `.env.example`):
+1. In Telegram, talk to [@BotFather](https://t.me/BotFather): run `/newbot`, then `/setprivacy` → **Disable**, so the bot sees every message in your group, not only commands.
+2. Find your own numeric Telegram user ID, for example by messaging [@userinfobot](https://t.me/userinfobot).
+3. Create a group, turn on **Topics**, and add the bot.
+4. Put the values in `.env` (see `.env.example`):
    ```
    TELEGRAM_BOT_TOKEN=123456:ABC…
    HERBOT_ADMIN_TELEGRAM_ID=123456789
+   HERBOT_HOME_CHAT_ID=-100…   # your group; the log shows it as "registered chat" when you add the bot
    ```
-4. `make run`, then DM your bot `/status`.
+5. `make run`, then send `/status` in General.
 
 Without `TELEGRAM_BOT_TOKEN`, herbot-core still starts (for tests and local work). `/ready` then reports `"telegram": "disabled"`.
 
@@ -47,7 +50,7 @@ Without `TELEGRAM_BOT_TOKEN`, herbot-core still starts (for tests and local work
 
 | Path | What | Status |
 |---|---|---|
-| `crates/herbot-core` | Telegram adapter, admin-only policy, conversations, T3 adapter, admin API (Rust) | 🟡 Step 2 |
+| `crates/herbot-core` | Telegram adapter, admin-only policy, conversations, T3 adapter, admin API (Rust) | 🟡 Step 3 |
 | `crates/herbot-mcp` | Conversation-scoped tools for bot threads (Rust) | ⏳ Step 7 |
 | `apps/admin` | Admin panel (TanStack Start) | ⏳ Step 8 |
 | `bots/` | One T3 project per bot persona | ⏳ Step 4 |

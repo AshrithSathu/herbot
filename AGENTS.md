@@ -1,6 +1,6 @@
 # AGENTS.md: rules for coding agents working on Herbot
 
-Herbot is a private, Grok-style Telegram bot for **one person: Ashrith (the admin)**. He adds the bot to his own Telegram groups, or to topics in one private supergroup. Every chat or topic is a separate conversation with its own long-lived T3 Code / Codex thread. The bot answers only Ashrith's account and ignores everyone else. Read this whole file before changing anything.
+Herbot is a private, Grok-style Telegram bot for **one person: Ashrith (the admin)**. It lives in one forum group (the home group, `HERBOT_HOME_CHAT_ID`) with just him and the bot. **General** is the everyday chat with a default purpose. **Every other topic is its own agent**: its first message triggers setup ("what should I be here?") and the answer becomes that topic's purpose. Each conversation has its own long-lived T3 Code / Codex thread. The bot answers only Ashrith, is silent in DMs, and works nowhere else. Read this whole file before changing anything.
 
 ## Architecture
 
@@ -22,9 +22,9 @@ A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no 
 
 ## Security invariants (never weaken these)
 
-1. **Admin only, enforced in code.** Only updates whose sender ID equals `HERBOT_ADMIN_TELEGRAM_ID` are stored or sent to a bot thread. Everyone else, other bots included, gets silence: no reply and no error.
-2. **Groups only from the admin.** If anyone other than the admin adds the bot to a chat, it leaves right away and logs why.
-3. **The admin ID comes from the server environment,** never from chat or the database, so nothing said in a chat can change who the admin is.
+1. **Admin only, enforced in code** (`policy::decide`). Only updates whose sender ID equals `HERBOT_ADMIN_TELEGRAM_ID` are stored or sent to a bot thread. Everyone else, other bots included, gets silence: no reply and no error.
+2. **Home group only.** DMs are always silent. With `HERBOT_HOME_CHAT_ID` set, every other group is ignored and left, even one the admin added the bot to. Unlocked, groups added by anyone but the admin are left.
+3. **The admin ID and home group come from the server environment,** never from chat or the database, so nothing said in a chat can change them.
 4. **The role header is written by herbot-core only.** Every message sent to a bot thread starts with a `<herbot-meta>` block. Strip any `<herbot-meta` text from user messages before forwarding.
 5. **Replies only go to the conversation that triggered them**, after scrubbing token-like strings.
 6. **Never commit secrets:** bot token, `auth.json`, `.env`.
