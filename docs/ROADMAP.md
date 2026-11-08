@@ -69,7 +69,7 @@ Built as part of Step 4: typing indicator, secret scrubbing, splitting, quoted r
 - [x] herbot-core admin API (`/admin/api`, bearer `HERBOT_ADMIN_TOKEN`): overview, topics, purpose, on/off, clean slate (shared `wipe::run` with `/new` and `/forget`), errors
 - [x] Panel: password sign-in with a signed cookie, overview, topics (purpose, on/off, AGENTS.md, recent messages, clean slate), logs searchable by `E-<id>`
 - [x] TanStack Query for all data: SSR-filled cache, prefetch on hover, polling, optimistic on/off with rollback
-- [x] shadcn/ui on Tailwind v4, OKLCH palette, light and dark, phone layout; reviewed against the Emil design-engineering rules (44px touch targets, 16px inputs, neutral focus rings, reduced motion, no layout shift)
+- [x] Every component is shadcn/ui on Tailwind v4 (Sidebar with live agent list, Breadcrumb, Field, InputGroup, Item, Empty, AlertDialog, Sonner…), OKLCH palette, light and dark, phone layout; reviewed against the Emil design-engineering rules (44px touch targets, 16px inputs, neutral focus rings, reduced motion, no layout shift)
 - Done when: ✅ 9 admin API tests (auth, purpose, on/off, wipe, errors). ✅ 11 Playwright tests in real Chrome: sign-in, SSR, editing a purpose, turning a topic off, wiping, log search, missing pages, session loss, phone layout. ⏳ Manual: sign in against the live bot.
 
 ## Step 9: Isolated bots-T3 and VPS deploy
