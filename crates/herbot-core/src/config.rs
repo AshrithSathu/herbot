@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 /// Runtime configuration, read from environment variables.
 #[derive(Debug, Clone)]
@@ -11,6 +12,35 @@ pub struct Config {
     pub log_format: LogFormat,
     /// Telegram settings; `None` when `TELEGRAM_BOT_TOKEN` is unset or empty.
     pub telegram: Option<TelegramConfig>,
+    /// OpenAI, used only to transcribe voice notes; `None` without `OPENAI_API_KEY`.
+    pub openai: Option<OpenAiConfig>,
+    /// Root folder for each conversation's AGENTS.md (`HERBOT_AGENTS_DIR`).
+    pub agents_dir: PathBuf,
+    /// Model the conversation agents run on (`HERBOT_AGENT_MODEL`).
+    pub agent_model: String,
+    /// Reasoning effort for that model (`HERBOT_AGENT_EFFORT`).
+    pub agent_effort: String,
+}
+
+pub const DEFAULT_AGENTS_DIR: &str = "agents";
+pub const DEFAULT_AGENT_MODEL: &str = "gpt-6.1-terra";
+pub const DEFAULT_AGENT_EFFORT: &str = "medium";
+pub const AGENT_EFFORTS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
+
+#[derive(Clone)]
+pub struct OpenAiConfig {
+    pub api_key: String,
+    /// `HERBOT_TRANSCRIBE_MODEL`, default `gpt-transcribe`.
+    pub transcribe_model: String,
+}
+
+impl std::fmt::Debug for OpenAiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiConfig")
+            .field("api_key", &"<redacted>")
+            .field("transcribe_model", &self.transcribe_model)
+            .finish()
+    }
 }
 
 #[derive(Clone)]
@@ -61,6 +91,10 @@ pub enum ConfigError {
         "HERBOT_HOME_CHAT_ID {0:?} is not a group chat ID (expected a negative number like -1004447072305)"
     )]
     InvalidHomeChatId(String),
+    #[error(
+        "HERBOT_AGENT_EFFORT {0:?} is not valid (expected none, low, medium, high, xhigh or max)"
+    )]
+    InvalidAgentEffort(String),
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -118,11 +152,39 @@ impl Config {
             }
         };
 
+        let openai = get("OPENAI_API_KEY")
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .map(|api_key| OpenAiConfig {
+                api_key,
+                transcribe_model: get("HERBOT_TRANSCRIBE_MODEL")
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| crate::voice::DEFAULT_MODEL.to_string()),
+            });
+
+        let non_empty = |key: &str, default: &str| {
+            get(key)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| default.to_string())
+        };
+        let agents_dir = PathBuf::from(non_empty("HERBOT_AGENTS_DIR", DEFAULT_AGENTS_DIR));
+        let agent_model = non_empty("HERBOT_AGENT_MODEL", DEFAULT_AGENT_MODEL);
+        let agent_effort = non_empty("HERBOT_AGENT_EFFORT", DEFAULT_AGENT_EFFORT).to_lowercase();
+        if !AGENT_EFFORTS.contains(&agent_effort.as_str()) {
+            return Err(ConfigError::InvalidAgentEffort(agent_effort));
+        }
+
         Ok(Self {
             bind,
             database_url,
             log_format,
             telegram,
+            openai,
+            agents_dir,
+            agent_model,
+            agent_effort,
         })
     }
 }
@@ -255,6 +317,36 @@ mod tests {
                 ConfigError::InvalidHomeChatId(bad.into())
             );
         }
+    }
+
+    #[test]
+    fn agent_model_defaults_to_terra_on_medium() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert_eq!(config.agent_model, "gpt-6.1-terra");
+        assert_eq!(config.agent_effort, "medium");
+        assert_eq!(config.agents_dir, PathBuf::from("agents"));
+        assert!(config.openai.is_none(), "voice is off without a key");
+
+        let err = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("HERBOT_AGENT_EFFORT", "turbo"),
+        ]))
+        .unwrap_err();
+        assert_eq!(err, ConfigError::InvalidAgentEffort("turbo".into()));
+    }
+
+    #[test]
+    fn openai_key_turns_on_voice_with_a_default_model() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("OPENAI_API_KEY", " sk-test "),
+        ]))
+        .unwrap();
+        let openai = config.openai.unwrap();
+        assert_eq!(openai.api_key, "sk-test");
+        assert_eq!(openai.transcribe_model, "gpt-transcribe");
+        let shown = format!("{openai:?}");
+        assert!(!shown.contains("sk-test"), "{shown}");
     }
 
     #[test]

@@ -1,95 +1,67 @@
 //! Conversation setup: "what should I be here?"
 //!
-//! The first admin message in a new conversation gets a greeting with preset
-//! buttons. A tapped preset, or the admin's next message, becomes the
-//! conversation's purpose. Pure text and parsing only; see `poller` for the
-//! flow and `store` for the state.
+//! The first admin message in a new topic gets an open question, with no
+//! presets. The admin's next message, typed at any length or as a voice note,
+//! becomes the topic's purpose and its AGENTS.md. General skips this and uses
+//! the default purpose. Pure text only; see `poller` for the flow.
 
-/// Longest purpose we keep (also enforced by the database).
-pub const MAX_PURPOSE_CHARS: usize = 1000;
+/// Longest purpose we keep (also enforced by the database). A few minutes of
+/// voice note fits comfortably.
+pub const MAX_PURPOSE_CHARS: usize = 8000;
 
-/// A one-tap starting point. `purpose` is what gets stored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Preset {
-    pub key: &'static str,
-    pub label: &'static str,
-    pub purpose: &'static str,
-}
+/// What General (the group's main chat) is for, unless changed with /setup.
+pub const DEFAULT_GENERAL_PURPOSE: &str = "Everyday chat, Grok-style: a direct, curious, slightly witty \
+general assistant. Answer anything, search the web when facts matter, and keep it concise.";
 
-pub const PRESETS: &[Preset] = &[
-    Preset {
-        key: "research",
-        label: "🔎 Research",
-        purpose: "Research assistant: dig into my questions, search the web, compare sources and cite them.",
-    },
-    Preset {
-        key: "code",
-        label: "💻 Code help",
-        purpose: "Coding partner: explain, write, review and debug code with me.",
-    },
-    Preset {
-        key: "news",
-        label: "📰 News digest",
-        purpose: "News digest: find and summarise what's new on the topics I ask about.",
-    },
-    Preset {
-        key: "chat",
-        label: "💬 Just chat",
-        purpose: "General assistant, Grok-style: direct, curious, a bit witty, and concise.",
-    },
-];
-
-/// What General (a group's main chat, with no topic) is for, unless changed
-/// with /setup: the everyday Grok-style assistant. Topics ask instead.
-pub fn default_general_purpose() -> &'static str {
-    PRESETS
-        .iter()
-        .find(|p| p.key == "chat")
-        .map(|p| p.purpose)
-        .unwrap_or("General assistant, Grok-style: direct, curious, a bit witty, and concise.")
-}
-
-const BUTTON_PREFIX: &str = "setup:";
-
-/// Callback data for a preset button. Stays well under Telegram's 64-byte limit.
-pub fn button_data(preset: &Preset) -> String {
-    format!("{BUTTON_PREFIX}{}", preset.key)
-}
-
-/// The preset a button's callback data points to, if it is a setup button.
-pub fn preset_from_button(data: &str) -> Option<&'static Preset> {
-    let key = data.strip_prefix(BUTTON_PREFIX)?;
-    PRESETS.iter().find(|p| p.key == key)
-}
-
-/// Buttons for the greeting, as (label, callback data), two per row.
-pub fn preset_buttons() -> Vec<Vec<(String, String)>> {
-    PRESETS
-        .chunks(2)
-        .map(|row| {
-            row.iter()
-                .map(|p| (p.label.to_string(), button_data(p)))
-                .collect()
-        })
-        .collect()
-}
+/// Older versions of the greeting had preset buttons. Taps on those now get this.
+pub const STALE_BUTTON_TOAST: &str =
+    "Those buttons are gone. Just tell me what you want, in text or a voice note.";
 
 pub fn greeting(place: &str) -> String {
     format!(
-        "👋 Hi! Let's set up {place}.\n\n\
-         What should I be here? Pick one, or just type it in your own words, \
-         like \"help me plan a trip to Japan\" or \"roast my startup ideas\".\n\n\
+        "👋 Hi! This is {place}.\n\n\
+         What should I be here? Tell me in your own words, as long as you like. \
+         Type it or send a voice note: what this agent is for, how it should behave, \
+         what it should know.\n\n\
          You can change it anytime with /setup."
     )
 }
 
+/// Telegram caps messages at 4096 characters; echoes stay well under it.
+const ECHO_LIMIT: usize = 1500;
+
+/// Shortens text for display, marking the cut. Counts characters, not bytes.
+pub fn clip(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(limit).collect();
+    format!("{}… (cut here; the full text is saved)", cut.trim_end())
+}
+
 pub fn confirmation(place: &str, purpose: &str) -> String {
+    let purpose = clip(purpose, ECHO_LIMIT);
     format!(
-        "✅ Set. In {place} I'm:\n{purpose}\n\n\
-         The AI side connects in Step 4. Until then I keep saving your messages here. \
-         Change this anytime with /setup."
+        "✅ Got it. {place} is set up as:\n\n{purpose}\n\n\
+         Saved as this topic's AGENTS.md. The AI side connects in Step 4; \
+         until then I keep saving your messages here. Change it anytime with /setup."
     )
 }
+
+/// Reply to a voice note: what Herbot heard.
+pub fn heard(transcript: &str) -> String {
+    format!("🎙️ “{}”", clip(transcript, ECHO_LIMIT))
+}
+
+pub fn too_long(seconds: u32, max_seconds: u32) -> String {
+    format!(
+        "🎙️ That voice note is {} min long. I take up to {} min. Send a shorter one, or split it into parts.",
+        seconds.div_ceil(60),
+        max_seconds / 60
+    )
+}
+
+pub const NOTHING_HEARD: &str = "🎙️ I couldn't make out any words in that voice note. Try again?";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PurposeError {
@@ -100,18 +72,16 @@ pub enum PurposeError {
 impl std::fmt::Display for PurposeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PurposeError::Empty => {
-                write!(f, "That's empty. Tell me what this conversation is for.")
-            }
+            PurposeError::Empty => write!(f, "That's empty. Tell me what this topic is for."),
             PurposeError::TooLong { chars } => write!(
                 f,
-                "That's {chars} characters; keep it under {MAX_PURPOSE_CHARS}. A sentence or two is plenty."
+                "That's {chars} characters. Keep it under {MAX_PURPOSE_CHARS}, or split the details into later messages."
             ),
         }
     }
 }
 
-/// Cleans up a typed purpose.
+/// Cleans up a purpose (typed or transcribed).
 pub fn validate_purpose(text: &str) -> Result<String, PurposeError> {
     let trimmed = text.trim();
     let chars = trimmed.chars().count();
@@ -129,36 +99,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_preset_round_trips_through_its_button() {
-        for preset in PRESETS {
-            let data = button_data(preset);
-            assert!(data.len() <= 64, "{data} is over Telegram's 64-byte limit");
-            assert_eq!(preset_from_button(&data), Some(preset));
-            assert!(preset.purpose.chars().count() <= MAX_PURPOSE_CHARS);
-        }
-    }
-
-    #[test]
-    fn general_defaults_to_the_just_chat_preset() {
-        let chat = PRESETS.iter().find(|p| p.key == "chat").unwrap();
-        assert_eq!(default_general_purpose(), chat.purpose);
-    }
-
-    #[test]
-    fn unknown_or_foreign_button_data_is_rejected() {
-        for data in ["setup:", "setup:nope", "answer:research", "research", ""] {
-            assert_eq!(preset_from_button(data), None, "{data}");
-        }
-    }
-
-    #[test]
-    fn buttons_are_laid_out_two_per_row() {
-        let rows = preset_buttons();
-        assert_eq!(rows.len(), PRESETS.len().div_ceil(2));
-        assert!(rows.iter().all(|r| !r.is_empty() && r.len() <= 2));
-    }
-
-    #[test]
     fn purposes_are_trimmed_and_bounded() {
         assert_eq!(
             validate_purpose("  roast my ideas \n"),
@@ -172,19 +112,35 @@ mod tests {
                 chars: MAX_PURPOSE_CHARS + 1
             })
         );
-        // Multi-byte characters count as one each.
+        // Long, multi-paragraph answers are fine; characters, not bytes, count.
         assert!(validate_purpose(&"é".repeat(MAX_PURPOSE_CHARS)).is_ok());
     }
 
     #[test]
-    fn texts_name_the_place_and_mention_setup() {
-        assert!(greeting("HQ › Research").contains("HQ › Research"));
-        assert!(greeting("x").contains("/setup"));
-        let done = confirmation("HQ › Research", "Find papers");
-        assert!(
-            done.contains("HQ › Research")
-                && done.contains("Find papers")
-                && done.contains("/setup")
-        );
+    fn greeting_is_open_ended() {
+        let g = greeting("HQ › Ideas");
+        assert!(g.contains("HQ › Ideas") && g.contains("/setup") && g.contains("voice note"));
+    }
+
+    #[test]
+    fn confirmation_shows_the_whole_purpose() {
+        let done = confirmation("HQ › Ideas", "Roast my ideas.\nBe brutal.");
+        assert!(done.contains("HQ › Ideas") && done.contains("Roast my ideas.\nBe brutal."));
+        assert!(done.contains("AGENTS.md") && done.contains("/setup"));
+    }
+
+    #[test]
+    fn long_text_is_clipped_for_telegram() {
+        let long = "word ".repeat(2000);
+        let shown = confirmation("HQ", &long);
+        assert!(shown.chars().count() < 4096, "{}", shown.chars().count());
+        assert!(shown.contains("full text is saved"));
+        assert!(heard(&long).chars().count() < 4096);
+        assert_eq!(clip("short", 10), "short");
+    }
+
+    #[test]
+    fn default_general_purpose_fits() {
+        assert!(validate_purpose(DEFAULT_GENERAL_PURPOSE).is_ok());
     }
 }

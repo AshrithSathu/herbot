@@ -89,7 +89,7 @@ pub fn decide(inbound: Inbound, rules: &Rules) -> Action {
             }
             match msg.command.clone() {
                 Some(cmd) => Action::RunCommand(msg, cmd),
-                None if msg.text.trim().is_empty() => Action::Ignore {
+                None if msg.text.trim().is_empty() && msg.voice.is_none() => Action::Ignore {
                     reason: "empty message",
                 },
                 None => Action::Store(msg),
@@ -181,6 +181,7 @@ mod tests {
             from_user_id: from,
             from_is_bot: false,
             text: text.into(),
+            voice: None,
             reply_to_message_id: None,
             sent_at: Utc::now(),
             command,
@@ -276,6 +277,19 @@ mod tests {
         let mut m = msg(ADMIN, "hi", None);
         m.from_is_bot = true;
         assert!(is_ignore(&decide(Inbound::Message(m), &locked())));
+    }
+
+    #[test]
+    fn admin_voice_notes_are_stored_even_without_text() {
+        let mut m = msg(ADMIN, "", None);
+        m.voice = Some(crate::telegram::VoiceNote {
+            file_id: "AwAC".into(),
+            duration_secs: 4,
+        });
+        assert_eq!(
+            decide(Inbound::Message(m.clone()), &locked()),
+            Action::Store(m)
+        );
     }
 
     #[test]

@@ -32,6 +32,8 @@ pub struct ConversationStatus {
     pub thread_id: Option<String>,
     pub purpose: Option<String>,
     pub setup_state: SetupState,
+    /// Relative to the agents root, e.g. `chat_-100…/topic_5/AGENTS.md`.
+    pub agents_md_path: Option<String>,
 }
 
 impl ConversationStatus {
@@ -167,8 +169,8 @@ pub async fn store_message(
 
     let inserted: Option<i64> = sqlx::query_scalar(
         "INSERT INTO messages
-             (conversation_id, tg_message_id, from_tg_user_id, body, reply_to_tg_message_id, sent_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
+             (conversation_id, tg_message_id, from_tg_user_id, body, reply_to_tg_message_id, sent_at, is_voice)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (conversation_id, tg_message_id) DO NOTHING
          RETURNING id",
     )
@@ -178,6 +180,7 @@ pub async fn store_message(
     .bind(&msg.text)
     .bind(msg.reply_to_message_id)
     .bind(msg.sent_at)
+    .bind(msg.voice.is_some())
     .fetch_optional(pool)
     .await?;
 
@@ -218,13 +221,14 @@ pub async fn conversation_status_by_id(
         Option<String>,
         Option<String>,
         String,
+        Option<String>,
     ) = sqlx::query_as(
         "SELECT c.title, c.kind, c.is_forum, v.tg_topic_id, v.name,
                 (SELECT count(*) FROM messages m WHERE m.conversation_id = v.id),
                 b.name,
                 (SELECT t.t3_thread_id FROM agent_threads t
                   WHERE t.conversation_id = v.id AND t.status = 'active'),
-                v.purpose, v.setup_state
+                v.purpose, v.setup_state, v.agents_md_path
          FROM conversations v
          JOIN chats c ON c.id = v.chat_id
          LEFT JOIN bots b ON b.id = v.bot_id
@@ -245,6 +249,7 @@ pub async fn conversation_status_by_id(
         thread_id: row.7,
         purpose: row.8,
         setup_state: SetupState::parse(&row.9),
+        agents_md_path: row.10,
     })
 }
 
@@ -290,16 +295,19 @@ pub async fn set_purpose(
     pool: &PgPool,
     conversation_id: i64,
     purpose: &str,
+    agents_md_path: &str,
 ) -> Result<Option<i32>, sqlx::Error> {
     let prompt: Option<Option<i32>> = sqlx::query_scalar(
         "UPDATE conversations c
-         SET purpose = $2, setup_state = 'ready', setup_prompt_tg_message_id = NULL
+         SET purpose = $2, setup_state = 'ready', setup_prompt_tg_message_id = NULL,
+             agents_md_path = $3
          FROM (SELECT id, setup_prompt_tg_message_id AS old FROM conversations WHERE id = $1) o
          WHERE c.id = o.id
          RETURNING o.old",
     )
     .bind(conversation_id)
     .bind(purpose)
+    .bind(agents_md_path)
     .fetch_optional(pool)
     .await?;
     Ok(prompt.flatten())

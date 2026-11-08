@@ -66,12 +66,22 @@ pub struct InboundMessage {
     pub message_id: i32,
     pub from_user_id: u64,
     pub from_is_bot: bool,
-    /// Text, or the caption of a photo/document. Empty for stickers etc.
+    /// Text, or a photo/document/voice caption. For a voice note without a
+    /// caption this starts empty and the poller fills in the transcript.
     pub text: String,
+    /// Set for voice notes.
+    pub voice: Option<VoiceNote>,
     pub reply_to_message_id: Option<i32>,
     pub sent_at: DateTime<Utc>,
     /// Set when the text is a slash command addressed to this bot.
     pub command: Option<Command>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceNote {
+    /// Telegram file ID, used to download the audio.
+    pub file_id: String,
+    pub duration_secs: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,9 +229,20 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         });
     }
 
-    // Anything else needs a human-visible body and a sender.
+    // Anything else needs a sender and either words or a voice note.
     let from = from?;
-    let text = msg.text().or_else(|| msg.caption())?.to_string();
+    let voice = msg.voice().map(|v| VoiceNote {
+        file_id: v.file.id.0.clone(),
+        duration_secs: v.duration.seconds(),
+    });
+    let text = msg
+        .text()
+        .or_else(|| msg.caption())
+        .unwrap_or_default()
+        .to_string();
+    if text.is_empty() && voice.is_none() {
+        return None; // stickers, polls, plain photos, ...
+    }
     let command = match parse_command(&text, bot_username) {
         CommandParse::NotACommand => None,
         CommandParse::ForThisBot(cmd) => Some(cmd),
@@ -244,6 +265,7 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         from_user_id: from.id.0,
         from_is_bot: from.is_bot,
         text,
+        voice,
         reply_to_message_id,
         sent_at: msg.date,
         command,

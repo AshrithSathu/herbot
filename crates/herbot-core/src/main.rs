@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use herbot_core::{app, config::Config, db, policy, poller, telemetry};
+use herbot_core::{app, config::Config, db, policy, poller, telemetry, voice};
 use teloxide::prelude::*;
 use tokio::sync::watch;
 
@@ -46,11 +46,30 @@ async fn main() -> anyhow::Result<()> {
                 home_chat = ?tg.home_chat_id,
                 "telegram connected"
             );
+            let transcriber = match &config.openai {
+                Some(openai) => {
+                    tracing::info!(model = %openai.transcribe_model, "voice notes on (OpenAI, English)");
+                    voice::AnyTranscriber::OpenAi(voice::OpenAiTranscriber::new(
+                        openai.api_key.clone(),
+                        openai.transcribe_model.clone(),
+                    ))
+                }
+                None => {
+                    tracing::warn!("OPENAI_API_KEY not set; voice notes will fail with an error");
+                    voice::AnyTranscriber::Off(voice::NoTranscriber)
+                }
+            };
+            let settings = poller::RunSettings {
+                rules,
+                bot_username: username.clone(),
+                transcriber,
+                agents_dir: config.agents_dir.clone(),
+                agent_label: format!("{} · {}", config.agent_model, config.agent_effort),
+            };
             poller_task = Some(tokio::spawn(poller::run(
                 bot,
                 pool.clone(),
-                rules,
-                username.clone(),
+                settings,
                 shutdown_rx.clone(),
             )));
             telegram_username = Some(username);

@@ -4,22 +4,28 @@
 //! handler against a fake API and a real database.
 
 use std::future::Future;
+use std::path::Path;
 use std::time::Duration;
+
+use chrono::Utc;
 
 use serde_json::json;
 use sqlx::PgPool;
+use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types::{
-    AllowedUpdate, BotCommand, BotCommandScope, CallbackQueryId, ChatId as TgChatId,
+    AllowedUpdate, BotCommand, BotCommandScope, CallbackQueryId, ChatId as TgChatId, FileId,
     InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ReplyParameters, ThreadId,
 };
 use tokio::sync::watch;
 
+use crate::agents_md;
 use crate::errors::{self, ErrorId};
 use crate::policy::{self, Action, Rules};
 use crate::setup;
-use crate::store::{self, SetupState, StoreOutcome};
+use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
 use crate::telegram::{self, ButtonPress, ChatKind, Command, Inbound, InboundMessage};
+use crate::voice::{MAX_VOICE_SECONDS, Transcriber, VoiceError};
 
 /// How long one `getUpdates` call waits for new updates. Kept under
 /// teloxide's default 17 s HTTP timeout.
@@ -76,6 +82,12 @@ pub trait TelegramApi: Sync {
     ) -> impl Future<Output = Result<(), ApiError>> + Send;
 
     fn leave_chat(&self, chat_id: i64) -> impl Future<Output = Result<(), ApiError>> + Send;
+
+    /// Downloads a file the admin sent (e.g. a voice note) into memory.
+    fn download_file(
+        &self,
+        file_id: &str,
+    ) -> impl Future<Output = Result<Vec<u8>, ApiError>> + Send;
 }
 
 fn api_err(e: teloxide::RequestError) -> ApiError {
@@ -166,14 +178,33 @@ impl TelegramApi for BotApi {
             .map(|_| ())
             .map_err(api_err)
     }
+
+    async fn download_file(&self, file_id: &str) -> Result<Vec<u8>, ApiError> {
+        let file = self
+            .0
+            .get_file(FileId(file_id.to_string()))
+            .await
+            .map_err(api_err)?;
+        let mut bytes = Vec::new();
+        self.0
+            .download_file(&file.path, &mut bytes)
+            .await
+            .map_err(|e| ApiError(e.to_string()))?;
+        Ok(bytes)
+    }
 }
 
 /// Everything the handler needs.
-pub struct Ctx<'a, A: TelegramApi> {
+pub struct Ctx<'a, A: TelegramApi, T: Transcriber> {
     pub pool: &'a PgPool,
     pub api: &'a A,
+    pub transcriber: &'a T,
     pub rules: Rules,
     pub bot_username: &'a str,
+    /// Root folder for each conversation's AGENTS.md.
+    pub agents_dir: &'a Path,
+    /// Shown in /status, e.g. "gpt-6.1-terra · medium".
+    pub agent_label: &'a str,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -182,6 +213,10 @@ pub enum HandleError {
     Db(#[from] sqlx::Error),
     #[error(transparent)]
     Api(#[from] ApiError),
+    #[error(transparent)]
+    Voice(#[from] VoiceError),
+    #[error("could not write AGENTS.md: {0}")]
+    AgentsMd(#[from] std::io::Error),
 }
 
 impl HandleError {
@@ -189,6 +224,8 @@ impl HandleError {
         match self {
             HandleError::Db(_) => "telegram.handle_db",
             HandleError::Api(_) => "telegram.handle_api",
+            HandleError::Voice(_) => "voice.transcribe",
+            HandleError::AgentsMd(_) => "agents_md.write",
         }
     }
 }
@@ -204,8 +241,8 @@ General is the everyday chat. Every other topic is its own agent with its own me
 pub const WELCOME_TEXT: &str = "👋 Herbot is here. General is our everyday chat. Every other topic is its own agent: say anything in a new topic and I'll ask what it should be.";
 
 /// Handles one update: normalize, decide, act.
-pub async fn handle_update<A: TelegramApi>(
-    ctx: &Ctx<'_, A>,
+pub async fn handle_update<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
     update: &Update,
 ) -> Result<(), HandleError> {
     let Some(inbound) = telegram::normalize(update, ctx.bot_username) else {
@@ -217,7 +254,10 @@ pub async fn handle_update<A: TelegramApi>(
     apply(ctx, action).await
 }
 
-async fn apply<A: TelegramApi>(ctx: &Ctx<'_, A>, action: Action) -> Result<(), HandleError> {
+async fn apply<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    action: Action,
+) -> Result<(), HandleError> {
     match action {
         Action::Ignore { reason } => {
             tracing::info!(reason, "ignored update");
@@ -263,102 +303,170 @@ async fn apply<A: TelegramApi>(ctx: &Ctx<'_, A>, action: Action) -> Result<(), H
         Action::RenameChat { chat, title } => {
             store::rename_chat(ctx.pool, chat.tg_chat_id, &title).await?;
         }
-        Action::Store(msg) => match store::store_message(ctx.pool, &msg).await? {
-            StoreOutcome::Stored {
-                conversation_id,
-                message_row_id,
-            } => {
-                tracing::info!(conversation_id, message_row_id, "stored admin message");
-                continue_setup(ctx, &msg, conversation_id).await?;
-            }
-            StoreOutcome::Duplicate { conversation_id } => {
-                tracing::debug!(conversation_id, "duplicate message ignored");
-            }
-            StoreOutcome::Disabled => {
+        Action::Store(mut msg) => {
+            // Voice notes become English text before anything else sees them.
+            if let Some(voice) = msg.voice.clone() {
+                if voice.duration_secs > MAX_VOICE_SECONDS {
+                    let text = setup::too_long(voice.duration_secs, MAX_VOICE_SECONDS);
+                    reply(ctx, &msg, &text).await?;
+                    return Ok(());
+                }
+                let audio = ctx.api.download_file(&voice.file_id).await?;
+                let transcript = ctx.transcriber.transcribe(audio).await?;
+                if transcript.trim().is_empty() {
+                    reply(ctx, &msg, setup::NOTHING_HEARD).await?;
+                    return Ok(());
+                }
                 tracing::info!(
-                    chat_id = msg.chat.tg_chat_id,
-                    "conversation disabled; not stored"
+                    seconds = voice.duration_secs,
+                    chars = transcript.len(),
+                    "transcribed voice note"
                 );
+                msg.text = if msg.text.trim().is_empty() {
+                    transcript
+                } else {
+                    format!("{}\n\n{}", msg.text.trim(), transcript)
+                };
             }
-        },
+            store_and_continue(ctx, &msg).await?;
+        }
         Action::RunCommand(msg, cmd) => run_command(ctx, &msg, cmd).await?,
         Action::Button(press) => handle_button(ctx, &press).await?,
     }
     Ok(())
 }
 
-/// Moves a conversation's setup along after an admin message was stored:
-/// a new conversation gets the greeting, and while we're waiting for a
-/// purpose, the message becomes it.
-async fn continue_setup<A: TelegramApi>(
-    ctx: &Ctx<'_, A>,
+async fn reply<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    msg: &InboundMessage,
+    text: &str,
+) -> Result<(), HandleError> {
+    ctx.api
+        .send_text(
+            msg.chat.tg_chat_id,
+            msg.topic_id,
+            Some(msg.message_id),
+            text,
+        )
+        .await?;
+    Ok(())
+}
+
+async fn store_and_continue<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    msg: &InboundMessage,
+) -> Result<(), HandleError> {
+    match store::store_message(ctx.pool, msg).await? {
+        StoreOutcome::Stored {
+            conversation_id,
+            message_row_id,
+        } => {
+            tracing::info!(conversation_id, message_row_id, "stored admin message");
+            continue_setup(ctx, msg, conversation_id).await?;
+        }
+        StoreOutcome::Duplicate { conversation_id } => {
+            tracing::debug!(conversation_id, "duplicate message ignored");
+        }
+        StoreOutcome::Disabled => {
+            tracing::info!(
+                chat_id = msg.chat.tg_chat_id,
+                "conversation disabled; not stored"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Moves a conversation's setup along after an admin message was stored.
+/// General sets itself up with the default purpose; a new topic asks what it
+/// should be; while waiting, the message (typed or spoken) becomes the purpose
+/// and the topic's AGENTS.md. Voice notes also get a "here's what I heard".
+async fn continue_setup<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     conversation_id: i64,
 ) -> Result<(), HandleError> {
     let status = store::conversation_status_by_id(ctx.pool, conversation_id).await?;
+    let is_voice = msg.voice.is_some();
     match status.setup_state {
         // General (no topic) is the everyday chat: set it up silently.
         SetupState::New if status.tg_topic_id.is_none() => {
-            store::set_purpose(ctx.pool, conversation_id, setup::default_general_purpose()).await?;
+            save_purpose(ctx, msg, &status, setup::DEFAULT_GENERAL_PURPOSE).await?;
             tracing::info!(
                 conversation_id,
                 "general chat set up with the default purpose"
             );
-            Ok(())
+            if is_voice {
+                reply(ctx, msg, &setup::heard(&msg.text)).await?;
+            }
         }
         // A new topic: ask what this agent should be.
-        SetupState::New => send_greeting(ctx, msg, &status).await,
+        SetupState::New => {
+            if is_voice {
+                reply(ctx, msg, &setup::heard(&msg.text)).await?;
+            }
+            send_greeting(ctx, msg, &status).await?;
+        }
         SetupState::AwaitingPurpose => match setup::validate_purpose(&msg.text) {
             Ok(purpose) => {
-                let old_prompt = store::set_purpose(ctx.pool, conversation_id, &purpose).await?;
+                let old_prompt = save_purpose(ctx, msg, &status, &purpose).await?;
                 if let Some(prompt) = old_prompt {
+                    // A greeting from before setup became open-ended still has buttons.
                     ctx.api.remove_buttons(msg.chat.tg_chat_id, prompt).await?;
                 }
-                tracing::info!(conversation_id, "conversation purpose set (typed)");
-                let text = setup::confirmation(&status.place(), &purpose);
-                ctx.api
-                    .send_text(
-                        msg.chat.tg_chat_id,
-                        msg.topic_id,
-                        Some(msg.message_id),
-                        &text,
-                    )
-                    .await?;
-                Ok(())
+                tracing::info!(
+                    conversation_id,
+                    voice = is_voice,
+                    "conversation purpose set"
+                );
+                reply(ctx, msg, &setup::confirmation(&status.place(), &purpose)).await?;
             }
-            Err(problem) => {
-                ctx.api
-                    .send_text(
-                        msg.chat.tg_chat_id,
-                        msg.topic_id,
-                        Some(msg.message_id),
-                        &problem.to_string(),
-                    )
-                    .await?;
-                Ok(())
-            }
+            Err(problem) => reply(ctx, msg, &problem.to_string()).await?,
         },
         // Step 4 sends the message to the conversation's T3 thread here.
-        SetupState::Ready => Ok(()),
+        SetupState::Ready => {
+            if is_voice {
+                reply(ctx, msg, &setup::heard(&msg.text)).await?;
+            }
+        }
     }
+    Ok(())
 }
 
-async fn send_greeting<A: TelegramApi>(
-    ctx: &Ctx<'_, A>,
+/// Writes the conversation's AGENTS.md, then records the purpose. Returns the
+/// old greeting's message ID if it still has buttons.
+async fn save_purpose<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
-    status: &store::ConversationStatus,
+    status: &ConversationStatus,
+    purpose: &str,
+) -> Result<Option<i32>, HandleError> {
+    let path = agents_md::write(
+        ctx.agents_dir,
+        msg.chat.tg_chat_id,
+        msg.topic_id,
+        &status.place(),
+        purpose,
+        Utc::now(),
+    )
+    .await?;
+    let old_prompt = store::set_purpose(
+        ctx.pool,
+        status.conversation_id,
+        purpose,
+        &path.to_string_lossy(),
+    )
+    .await?;
+    Ok(old_prompt)
+}
+
+async fn send_greeting<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    msg: &InboundMessage,
+    status: &ConversationStatus,
 ) -> Result<(), HandleError> {
-    let prompt_id = ctx
-        .api
-        .send_buttons(
-            msg.chat.tg_chat_id,
-            msg.topic_id,
-            Some(msg.message_id),
-            &setup::greeting(&status.place()),
-            &setup::preset_buttons(),
-        )
-        .await?;
-    store::begin_setup(ctx.pool, status.conversation_id, Some(prompt_id)).await?;
+    reply(ctx, msg, &setup::greeting(&status.place())).await?;
+    store::begin_setup(ctx.pool, status.conversation_id, None).await?;
     tracing::info!(
         conversation_id = status.conversation_id,
         "asked what this conversation is for"
@@ -366,60 +474,24 @@ async fn send_greeting<A: TelegramApi>(
     Ok(())
 }
 
-/// A tapped inline button. Today only setup presets exist; Step 6 adds
-/// answers to the bot's questions.
-async fn handle_button<A: TelegramApi>(
-    ctx: &Ctx<'_, A>,
+/// A tapped inline button. None are in use right now (Step 6 adds answers to
+/// the bot's questions); old setup greetings still have preset buttons, so
+/// say they're gone and remove them.
+async fn handle_button<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
     press: &ButtonPress,
 ) -> Result<(), HandleError> {
-    let Some(preset) = setup::preset_from_button(&press.data) else {
-        ctx.api
-            .answer_button(
-                &press.callback_id,
-                Some("That button doesn't do anything anymore."),
-            )
-            .await?;
-        return Ok(());
-    };
-    let Some(conversation_id) =
-        store::find_conversation(ctx.pool, press.chat.tg_chat_id, press.topic_id).await?
-    else {
-        ctx.api
-            .answer_button(
-                &press.callback_id,
-                Some("I don't know this conversation yet."),
-            )
-            .await?;
-        return Ok(());
-    };
-
-    let status = store::conversation_status_by_id(ctx.pool, conversation_id).await?;
-    let old_prompt = store::set_purpose(ctx.pool, conversation_id, preset.purpose).await?;
-    tracing::info!(
-        conversation_id,
-        preset = preset.key,
-        "conversation purpose set (preset)"
-    );
-
-    // Turn the tapped greeting into the confirmation (this also drops its
-    // buttons), and clear buttons from any other pending greeting.
-    let text = setup::confirmation(&status.place(), preset.purpose);
     ctx.api
-        .edit_text(press.chat.tg_chat_id, press.message_id, &text)
+        .answer_button(&press.callback_id, Some(setup::STALE_BUTTON_TOAST))
         .await?;
-    if let Some(prompt) = old_prompt.filter(|p| *p != press.message_id) {
-        ctx.api
-            .remove_buttons(press.chat.tg_chat_id, prompt)
-            .await?;
-    }
     ctx.api
-        .answer_button(&press.callback_id, Some("Saved"))
+        .remove_buttons(press.chat.tg_chat_id, press.message_id)
         .await?;
     Ok(())
 }
 
-async fn run_command<A: TelegramApi>(
-    ctx: &Ctx<'_, A>,
+async fn run_command<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     cmd: Command,
 ) -> Result<(), HandleError> {
@@ -431,12 +503,19 @@ async fn run_command<A: TelegramApi>(
         }
         Command::Status => {
             let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            let purpose = s
+                .purpose
+                .as_deref()
+                .map(|p| setup::clip(p, 300))
+                .unwrap_or_else(|| "not set yet (send /setup)".to_string());
             format!(
-                "📍 {}\nConversation #{} · {} messages stored\nPurpose: {}\nThread: {}",
+                "📍 {}\nConversation #{} · {} messages stored\nPurpose: {}\nAgent file: {}\nModel: {}\nThread: {}",
                 s.place(),
                 s.conversation_id,
                 s.message_count,
-                s.purpose.as_deref().unwrap_or("not set yet (send /setup)"),
+                purpose,
+                s.agents_md_path.as_deref().unwrap_or("not written yet"),
+                ctx.agent_label,
                 s.thread_id.as_deref().unwrap_or("none yet (Step 4)"),
             )
         }
@@ -458,7 +537,10 @@ async fn run_command<A: TelegramApi>(
 
 /// Handles an update and, if that fails, records the error and tells the
 /// admin in the same conversation. Never panics or stops the loop.
-pub async fn process<A: TelegramApi>(ctx: &Ctx<'_, A>, update: &Update) -> Option<ErrorId> {
+pub async fn process<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    update: &Update,
+) -> Option<ErrorId> {
     let err = match handle_update(ctx, update).await {
         Ok(()) => return None,
         Err(err) => err,
@@ -501,6 +583,9 @@ fn short_reason(err: &HandleError) -> &'static str {
     match err {
         HandleError::Db(_) => "database error",
         HandleError::Api(_) => "Telegram API error",
+        HandleError::Voice(VoiceError::NotConfigured) => "voice notes are off (no OPENAI_API_KEY)",
+        HandleError::Voice(_) => "couldn't transcribe that voice note",
+        HandleError::AgentsMd(_) => "couldn't save AGENTS.md",
     }
 }
 
@@ -528,19 +613,31 @@ pub async fn register_commands(bot: &Bot, rules: &Rules) -> Result<(), teloxide:
 }
 
 /// Long-polls Telegram until `shutdown` flips to true.
-pub async fn run(
+/// What the poller needs besides the bot and database.
+pub struct RunSettings<T: Transcriber> {
+    pub rules: Rules,
+    pub bot_username: String,
+    pub transcriber: T,
+    pub agents_dir: std::path::PathBuf,
+    pub agent_label: String,
+}
+
+pub async fn run<T: Transcriber>(
     bot: Bot,
     pool: PgPool,
-    rules: Rules,
-    bot_username: String,
+    settings: RunSettings<T>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let api = BotApi(bot.clone());
+    let bot_username = settings.bot_username.clone();
     let ctx = Ctx {
         pool: &pool,
         api: &api,
-        rules,
+        transcriber: &settings.transcriber,
+        rules: settings.rules,
         bot_username: &bot_username,
+        agents_dir: &settings.agents_dir,
+        agent_label: &settings.agent_label,
     };
 
     let mut offset = match store::load_offset(&pool).await {

@@ -5,3 +5,6 @@
 node_modules/
 # Codex logins must never be committed
 **/auth.json
+
+# Per-conversation AGENTS.md files (personal content, never committed)
+/agents
