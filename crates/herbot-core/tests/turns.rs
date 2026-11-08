@@ -835,6 +835,75 @@ async fn t3_cli_times_out_and_kills_the_process() {
 }
 
 #[tokio::test]
+async fn t3_cli_finds_a_threads_project_and_removes_it_by_id_only() {
+    use herbot_core::agent::ProjectCleaner;
+    const ID: &str = "c8b83136-53e8-401b-8de5-85361fc43bcd";
+
+    let dir = tempfile::tempdir().unwrap();
+    let show = fake_t3(
+        dir.path(),
+        &format!(
+            r#"echo '{{"thread":{{"threadId":"t1","projectId":"{ID}","title":"HQ"}},"messages":[]}}'"#
+        ),
+    );
+    assert_eq!(
+        cli(show, Duration::from_secs(10))
+            .project_of_thread("t1")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(ID)
+    );
+
+    let dir2 = tempfile::tempdir().unwrap();
+    let gone = fake_t3(
+        dir2.path(),
+        "echo 'Thread t1 is no longer available.' >&2\nexit 1",
+    );
+    assert_eq!(
+        cli(gone, Duration::from_secs(10))
+            .project_of_thread("t1")
+            .await
+            .unwrap(),
+        None
+    );
+
+    let dir3 = tempfile::tempdir().unwrap();
+    let log = dir3.path().join("argv");
+    let ok = fake_t3(
+        dir3.path(),
+        &format!("printf '%s\\n' \"$@\" > {}", log.display()),
+    );
+    cli(ok.clone(), Duration::from_secs(10))
+        .remove_project(ID)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["project", "remove", "--force", ID]
+    );
+
+    // Never a path, even if asked.
+    std::fs::remove_file(&log).unwrap();
+    for not_an_id in ["/Users/ashrith/Desktop/herbot", "."] {
+        let err = cli(ok.clone(), Duration::from_secs(10))
+            .remove_project(not_an_id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AgentError::Project(_)), "{err:?}");
+        let err = cli(ok.clone(), Duration::from_secs(10))
+            .threads_in_project(not_an_id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AgentError::Project(_)), "{err:?}");
+    }
+    assert!(!log.exists(), "the CLI was never even called with a path");
+}
+
+#[tokio::test]
 async fn t3_cli_project_add_accepts_already_registered() {
     let dir = tempfile::tempdir().unwrap();
     let already = fake_t3(
