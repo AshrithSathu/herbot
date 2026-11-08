@@ -1,6 +1,7 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { MessagesSquareIcon } from 'lucide-react'
+import { compact, exact } from '../../../format'
 import { topicsQuery } from '../../../queries'
 import { EmptyState, PageHeader, StaleWarning, Time, TopicState } from '../../../ui'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -41,15 +42,17 @@ function TopicsPage() {
             <TableBody>
               {topics.map((t) => (
                 <TableRow key={t.id}>
-                  <TableHead scope="row" className="pl-4 font-medium text-foreground">
-                    <Link to="/topics/$id" params={{ id: t.id }} className="whitespace-normal">
+                  <TableHead scope="row" className="max-w-[18rem] min-w-[8rem] pl-4 font-medium whitespace-normal text-foreground">
+                    <Link to="/topics/$id" params={{ id: t.id }} className="whitespace-normal wrap-anywhere">
                       {t.place}
                     </Link>
                   </TableHead>
                   <TableCell className="hidden max-w-[44ch] whitespace-normal text-muted-foreground md:table-cell">
-                    <span className="line-clamp-2">{t.purpose ?? '—'}</span>
+                    <span className="line-clamp-2 wrap-anywhere">{t.purpose ?? '—'}</span>
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{t.messages.toLocaleString('en-GB')}</TableCell>
+                  <TableCell className="text-right tabular-nums" title={exact(t.messages)}>
+                    {compact(t.messages)}
+                  </TableCell>
                   <TableCell className="hidden text-muted-foreground sm:table-cell">
                     <Time iso={t.last_activity} relative />
                   </TableCell>

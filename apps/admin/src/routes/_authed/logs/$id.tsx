@@ -2,6 +2,7 @@ import { useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { errorQuery } from '../../../queries'
 import { CopyButton, PageHeader, Section, Time } from '../../../ui'
+import { ClampedText } from '@/components/clamped-text'
 import { Badge } from '@/components/ui/badge'
 
 export const Route = createFileRoute('/_authed/logs/$id')({
@@ -22,7 +23,9 @@ function ErrorPage() {
     <>
       <PageHeader title={<span className="font-mono">{e.error_id}</span>}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-muted-foreground">
-          <Badge variant="danger">{e.kind}</Badge>
+          <Badge variant="danger" title={e.kind} className="max-w-full">
+            <span className="truncate">{e.kind}</span>
+          </Badge>
           <Time iso={e.created_at} />
           <span>
             (<Time iso={e.created_at} relative />)
@@ -30,7 +33,11 @@ function ErrorPage() {
           <CopyButton text={e.error_id} label="Copy id" />
         </div>
       </PageHeader>
-      <p className="max-w-[65ch] text-base">{e.message}</p>
+      <div className="flex max-w-[65ch] flex-col gap-2 text-base">
+        <ClampedText lines={10} toggleClassName="text-sm">
+          {e.message}
+        </ClampedText>
+      </div>
       <Section id="context" title="Context" action={<CopyButton text={context} label="Copy JSON" />}>
         <pre
           tabIndex={0}

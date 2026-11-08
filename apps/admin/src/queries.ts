@@ -2,8 +2,8 @@
 // `ensureQueryData` with these (so pages render on the server and links
 // prefetch on hover); components read the same keys with `useSuspenseQuery`,
 // so a page never fetches the same thing twice and mutations update in place.
-import { queryOptions } from '@tanstack/react-query'
-import { getError, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
+import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
+import { ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
 
 export const keys = {
   session: ['session'] as const,
@@ -13,6 +13,8 @@ export const keys = {
   topics: ['topics'] as const,
   topicList: ['topics', 'list'] as const,
   topic: (id: number) => ['topics', 'detail', id] as const,
+  /** Not under `topics`: editing a topic shouldn't reload its whole history. */
+  messages: (id: number) => ['messages', id] as const,
   errors: ['errors'] as const,
   errorSearch: (q: string) => ['errors', 'search', q] as const,
   error: (id: string) => ['errors', 'detail', id] as const,
@@ -49,14 +51,29 @@ export const topicQuery = (id: number) =>
   queryOptions({
     queryKey: keys.topic(id),
     queryFn: () => getTopic({ data: id }),
-    // New messages show up while you watch.
+    // Small (no messages), so polling is cheap. A changed message count is
+    // what tells the chat log to fetch what's new.
     refetchInterval: 10_000,
   })
 
+/** A topic's history, newest page first; each next page is older. Pages
+ * never refetch on their own: new messages are merged in by `after`. */
+export const messagesQuery = (id: number) =>
+  infiniteQueryOptions({
+    queryKey: keys.messages(id),
+    queryFn: ({ pageParam }) => getMessages({ data: { id, before: pageParam } }),
+    initialPageParam: null as number | null,
+    getNextPageParam: (page) => (page.has_more ? (page.messages[0]?.id ?? null) : null),
+    staleTime: Infinity,
+  })
+
+/** Newest first, 50 at a time; "Load older" asks for the next 50. */
 export const errorSearchQuery = (q: string) =>
-  queryOptions({
+  infiniteQueryOptions({
     queryKey: keys.errorSearch(q),
-    queryFn: () => searchErrors({ data: q }),
+    queryFn: ({ pageParam }) => searchErrors({ data: { q, before: pageParam } }),
+    initialPageParam: null as number | null,
+    getNextPageParam: (page) => (page.length === ERROR_PAGE ? (page.at(-1)?.id ?? null) : null),
   })
 
 export const errorQuery = (id: string) =>

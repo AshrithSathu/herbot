@@ -35,12 +35,14 @@ export function SiteHeader() {
         <BreadcrumbList>
           {crumbs.map((c, i) => (
             <Fragment key={c.id}>
-              {i > 0 && <BreadcrumbSeparator />}
+              {i > 0 && <BreadcrumbSeparator className="hidden sm:flex" />}
               <BreadcrumbItem className={i < crumbs.length - 1 ? 'hidden sm:inline-flex' : undefined}>
                 {i === crumbs.length - 1 ? (
-                  <BreadcrumbPage className="max-w-[24ch] truncate">{c.label}</BreadcrumbPage>
+                  <BreadcrumbPage className="block max-w-[min(32ch,55vw)] truncate" title={c.label}>
+                    {c.label}
+                  </BreadcrumbPage>
                 ) : (
-                  <BreadcrumbLink asChild>
+                  <BreadcrumbLink asChild className="max-w-[20ch] truncate">
                     <Link to={c.path}>{c.label}</Link>
                   </BreadcrumbLink>
                 )}

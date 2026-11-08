@@ -1,7 +1,7 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { ArrowRightIcon, CircleCheckIcon } from 'lucide-react'
-import { plural } from '../../format'
+import { compact, exact, plural } from '../../format'
 import { overviewQuery } from '../../queries'
 import { EmptyState, PageHeader, Section, StaleWarning, Time } from '../../ui'
 import { Badge } from '@/components/ui/badge'
@@ -33,7 +33,7 @@ function OverviewPage() {
         <Stat label="Topics answering" value={o.enabled_conversations} of={o.conversations} />
         <Stat label="Active T3 threads" value={o.active_threads} />
         <Stat label="Messages stored" value={o.messages} />
-        <Stat label="Errors in the last 24 h" value={o.errors_last_24h} alarm={o.errors_last_24h > 0} />
+        <Stat label={"Errors in the last 24\u00a0h"} value={o.errors_last_24h} alarm={o.errors_last_24h > 0} />
       </div>
 
       <Section
@@ -55,9 +55,13 @@ function OverviewPage() {
                   {o.last_error.error_id}
                 </Link>
               </CardTitle>
-              <CardDescription className="max-w-[65ch] text-base text-foreground">{o.last_error.message}</CardDescription>
-              <CardAction className="flex flex-col items-end gap-1.5">
-                <Badge variant="danger">{o.last_error.kind}</Badge>
+              <CardDescription className="line-clamp-3 max-w-[65ch] text-base text-foreground wrap-anywhere">
+                {o.last_error.message}
+              </CardDescription>
+              <CardAction className="flex max-w-[12rem] flex-col items-end gap-1.5 sm:max-w-[16rem]">
+                <Badge variant="danger" title={o.last_error.kind} className="max-w-full">
+                  <span className="truncate">{o.last_error.kind}</span>
+                </Badge>
                 <span className="text-xs text-muted-foreground">
                   <Time iso={o.last_error.created_at} relative />
                 </span>
@@ -80,11 +84,16 @@ function Stat({ label, value, of, alarm }: { label: string; value: number; of?: 
     <Card data-testid="stat" className="gap-1.5 py-5 shadow-xs">
       <CardHeader className="gap-1.5 px-5">
         <CardDescription>{label}</CardDescription>
-        <CardTitle className={cn('text-3xl font-semibold tracking-tight tabular-nums', alarm && 'text-destructive')}>
-          {value.toLocaleString('en-GB')}
+        <CardTitle
+          title={exact(value)}
+          className={cn('text-2xl font-semibold tracking-tight tabular-nums sm:text-3xl', alarm && 'text-destructive')}
+        >
+          {compact(value)}
           {of !== undefined && ' '}
           {of !== undefined && (
-            <span className="text-sm font-normal tracking-normal text-muted-foreground">of {plural(of, 'topic')}</span>
+            <span className="text-sm font-normal tracking-normal whitespace-nowrap text-muted-foreground">
+              of {of < 100_000 ? plural(of, 'topic') : `${compact(of)} topics`}
+            </span>
           )}
         </CardTitle>
       </CardHeader>

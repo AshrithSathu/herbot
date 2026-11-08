@@ -51,8 +51,8 @@ export function PageHeader({ title, description, children, className }: {
 }) {
   return (
     <header className={cn('flex flex-col gap-1.5', className)}>
-      <h1 className="text-2xl leading-tight font-semibold tracking-tight">{title}</h1>
-      {description && <p className="max-w-[65ch] text-muted-foreground">{description}</p>}
+      <h1 className="text-2xl leading-tight font-semibold tracking-tight wrap-anywhere">{title}</h1>
+      {description && <p className="max-w-[65ch] text-muted-foreground wrap-anywhere">{description}</p>}
       {children}
     </header>
   )
@@ -110,7 +110,7 @@ export function ErrorNote({ title, children }: { title: string; children: ReactN
     <Alert variant="destructive">
       <CircleAlertIcon aria-hidden />
       <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>{children}</AlertDescription>
+      <AlertDescription className="wrap-anywhere">{children}</AlertDescription>
     </Alert>
   )
 }

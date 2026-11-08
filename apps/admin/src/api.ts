@@ -42,8 +42,24 @@ export interface TopicDetail {
   agents_md_path: string | null
   agents_md: string | null
   thread_id: string | null
-  recent_messages: { sent_at: string; from_bot: boolean; is_voice: boolean; body: string }[]
 }
+
+export interface Message {
+  id: number
+  sent_at: string
+  from_bot: boolean
+  is_voice: boolean
+  body: string
+}
+
+/** Oldest first. `has_more`: another page exists in the direction asked. */
+export interface MessagePage {
+  messages: Message[]
+  has_more: boolean
+}
+
+/** A row in the error list: no context, message capped at 300 characters. */
+export type ErrorSummary = Omit<ErrorRow, 'context'>
 
 export interface WipeResult {
   threads: number
@@ -129,11 +145,29 @@ export const wipeTopic = createServerFn({ method: 'POST' })
     return core<WipeResult>(`/conversations/${data.id}/wipe`, { method: 'POST', body: { kind: data.kind } })
   })
 
-export const searchErrors = createServerFn({ method: 'GET' })
-  .validator((q: string) => q)
-  .handler(async ({ data: q }) => {
+export const getMessages = createServerFn({ method: 'GET' })
+  .validator((data: { id: number; before?: number | null; after?: number | null; limit?: number }) => data)
+  .handler(async ({ data }) => {
     const core = await serverSide()
-    return core<ErrorRow[]>(`/errors${q ? `?q=${encodeURIComponent(q)}` : ''}`)
+    const params = new URLSearchParams()
+    if (data.before != null) params.set('before', String(data.before))
+    if (data.after != null) params.set('after', String(data.after))
+    if (data.limit != null) params.set('limit', String(data.limit))
+    const query = params.size ? `?${params}` : ''
+    return core<MessagePage>(`/conversations/${data.id}/messages${query}`)
+  })
+
+/** Page size for the error list; a full page means there may be more. */
+export const ERROR_PAGE = 50
+
+export const searchErrors = createServerFn({ method: 'GET' })
+  .validator((data: { q: string; before?: number | null }) => data)
+  .handler(async ({ data }) => {
+    const core = await serverSide()
+    const params = new URLSearchParams({ limit: String(ERROR_PAGE) })
+    if (data.q) params.set('q', data.q)
+    if (data.before != null) params.set('before', String(data.before))
+    return core<ErrorSummary[]>(`/errors?${params}`)
   })
 
 export const getError = createServerFn({ method: 'GET' })

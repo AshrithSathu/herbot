@@ -107,8 +107,8 @@ function TopicLinks({ onPick }: { onPick: () => void }) {
               ))
             : (topics.data ?? []).map((t) => (
                 <SidebarMenuItem key={t.id}>
-                  <SidebarMenuButton asChild isActive={pathname === `/topics/${t.id}`}>
-                    <Link to="/topics/$id" params={{ id: t.id }} onClick={onPick}>
+                  <SidebarMenuButton asChild className="pr-7" isActive={pathname === `/topics/${t.id}`}>
+                    <Link to="/topics/$id" params={{ id: t.id }} onClick={onPick} title={t.place}>
                       {t.is_general ? <MessageCircleIcon aria-hidden /> : <HashIcon aria-hidden />}
                       <span className={cn(!t.enabled && 'text-muted-foreground line-through decoration-1')}>
                         {shortName(t.place)}

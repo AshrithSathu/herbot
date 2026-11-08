@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute, notFound } from '@tanstack/react-router'
-import { BrushCleaningIcon, ExternalLinkIcon, FileTextIcon, InboxIcon, MicIcon, Trash2Icon } from 'lucide-react'
+import { BrushCleaningIcon, ExternalLinkIcon, FileTextIcon, Trash2Icon } from 'lucide-react'
 import { savePurpose, setEnabled, wipeTopic, type Topic, type TopicDetail } from '../../../api'
 import { PURPOSE_MAX, charCount, plural, purposeProblem } from '../../../format'
-import { keys, topicQuery } from '../../../queries'
+import { keys, messagesQuery, topicQuery } from '../../../queries'
+import { ChatLog } from '@/components/chat-log'
 import { CopyButton, EmptyState, ErrorNote, PageHeader, Section, StaleWarning, Time, TopicState, notify } from '../../../ui'
 import {
   AlertDialog,
@@ -45,7 +46,13 @@ export const Route = createFileRoute('/_authed/topics/$id')({
     },
     stringify: ({ id }) => ({ id: String(id) }),
   },
-  loader: ({ context, params }) => context.queryClient.ensureQueryData(topicQuery(params.id)),
+  loader: async ({ context, params }) => {
+    const [detail] = await Promise.all([
+      context.queryClient.ensureQueryData(topicQuery(params.id)),
+      context.queryClient.ensureInfiniteQueryData(messagesQuery(params.id)),
+    ])
+    return detail
+  },
   staticData: {
     crumbParent: { label: 'Topics', to: '/topics' },
     crumb: (data) => (data as TopicDetail | undefined)?.conversation.place.split('›').pop()?.trim(),
@@ -65,7 +72,7 @@ function TopicPage() {
       <PageHeader title={t.place}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-muted-foreground">
           <TopicState topic={t} />
-          <span>{plural(t.messages, 'message')}</span>
+          <span className="tabular-nums">{plural(t.messages, 'message')}</span>
           <span>
             last active <Time iso={t.last_activity} relative />
           </span>
@@ -108,7 +115,13 @@ function TopicPage() {
         )}
       </Section>
 
-      <Messages detail={detail} />
+      <Section
+        id="messages"
+        title="Messages"
+        action={<span className="text-sm text-muted-foreground tabular-nums">{plural(t.messages, 'message')} stored</span>}
+      >
+        <ChatLog topicId={t.id} total={t.messages} />
+      </Section>
       <CleanSlate topic={t} />
     </>
   )
@@ -130,6 +143,7 @@ function useTopicCache(id: number) {
       return Promise.all([
         queryClient.invalidateQueries({ queryKey: keys.topics }),
         queryClient.invalidateQueries({ queryKey: keys.overview }),
+        queryClient.invalidateQueries({ queryKey: keys.messages(id) }),
       ])
     },
   }
@@ -229,7 +243,7 @@ function Purpose({ topic }: { topic: Topic }) {
               <Textarea
                 id="purpose"
                 value={value}
-                className="field-sizing-fixed min-h-40 resize-y leading-relaxed"
+                className="field-sizing-fixed max-h-[60dvh] min-h-40 resize-y leading-relaxed wrap-anywhere"
                 aria-invalid={invalid || undefined}
                 aria-describedby={invalid ? 'purpose-help purpose-error' : 'purpose-help'}
                 onChange={(e) => {
@@ -285,54 +299,6 @@ function Purpose({ topic }: { topic: Topic }) {
           </form>
         </CardContent>
       </Card>
-    </Section>
-  )
-}
-
-function Messages({ detail }: { detail: TopicDetail }) {
-  const messages = detail.recent_messages
-  return (
-    <Section
-      id="recent"
-      title="Recent messages"
-      action={
-        messages.length > 0 && (
-          <span className="text-sm text-muted-foreground">Last {messages.length}, newest at the bottom</span>
-        )
-      }
-    >
-      {messages.length === 0 ? (
-        <EmptyState icon={InboxIcon} title="Nothing stored yet">
-          Messages appear here a few seconds after you send them.
-        </EmptyState>
-      ) : (
-        <ol className="flex flex-col gap-2">
-          {messages.map((m, i) => (
-            <li
-              key={`${m.sent_at}-${i}`}
-              className={cn(
-                'flex max-w-[min(65ch,85%)] flex-col gap-0.5 rounded-2xl px-3.5 py-2.5',
-                m.from_bot
-                  ? 'self-end rounded-br-md bg-accent text-accent-foreground'
-                  : 'self-start rounded-bl-md border bg-card',
-              )}
-            >
-              <span className="text-xs text-muted-foreground">
-                {m.from_bot ? 'Herbot' : 'You'}
-                {m.is_voice && (
-                  <>
-                    {' · '}
-                    <MicIcon className="inline size-3 align-[-2px]" aria-hidden /> voice note
-                  </>
-                )}
-                {' · '}
-                <Time iso={m.sent_at} />
-              </span>
-              <p className="break-words whitespace-pre-wrap">{m.body}</p>
-            </li>
-          ))}
-        </ol>
-      )}
     </Section>
   )
 }
@@ -393,7 +359,7 @@ function CleanSlate({ topic }: { topic: Topic }) {
                     </AlertDialogTrigger>
                     <AlertDialogContent>
                       <AlertDialogHeader>
-                        <AlertDialogTitle>
+                        <AlertDialogTitle className="wrap-anywhere">
                           {WIPE[kind].title} in {topic.place}?
                         </AlertDialogTitle>
                         <AlertDialogDescription>{WIPE[kind].what} This can’t be undone.</AlertDialogDescription>
