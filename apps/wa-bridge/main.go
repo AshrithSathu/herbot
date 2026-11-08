@@ -2241,14 +2241,15 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	hasImage := mediaType == "image"
 
 	if shouldForward && (hasText || hasImage) {
+		meta := messageMetaFor(msg.Info, resolvedSender) // Herbot
 		if hasImage {
 			SendWebhookWithMedia(
 				sender, content, chatJID, msg.Info.IsFromMe,
 				quotedMessageId, quotedSender, quotedContent, quotedIsFromMe, mentionedJIDs,
-				msg.Info.ID, mediaType, imageMimeType, filename, imageDownloadPath,
+				msg.Info.ID, mediaType, imageMimeType, filename, imageDownloadPath, meta,
 			)
 		} else {
-			SendWebhookWithMessageID(sender, content, chatJID, msg.Info.IsFromMe, quotedMessageId, quotedSender, quotedContent, quotedIsFromMe, mentionedJIDs, msg.Info.ID)
+			SendWebhookWithMessageID(sender, content, chatJID, msg.Info.IsFromMe, quotedMessageId, quotedSender, quotedContent, quotedIsFromMe, mentionedJIDs, msg.Info.ID, meta)
 		}
 	}
 
@@ -2933,7 +2934,8 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 
 	// Start the server with proper timeouts. Bind to loopback so the bridge is
 	// not reachable from the LAN; MCP clients talk to it over localhost.
-	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	// Herbot: WHATSAPP_BRIDGE_BIND overrides the loopback default (Docker).
+	serverAddr := fmt.Sprintf("%s:%d", bridgeBindHost(), port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 
 	// Create server with timeouts for stability
@@ -3209,7 +3211,14 @@ func main() {
 				}
 			}
 
+		case *events.JoinedGroup:
+			// Herbot: the bot's number was added to a group.
+			sendGroupWebhooks(groupJoinedPayload(v))
+
 		case *events.GroupInfo:
+			// Herbot: report the bot being removed and group renames.
+			selfPN, selfLID := selfJIDs(client.Store.ID, client.Store.LID)
+			sendGroupWebhooks(groupInfoPayloads(v, selfPN, selfLID)...)
 			if v.Ephemeral != nil {
 				expiration := uint32(0)
 				if v.Ephemeral.IsEphemeral {

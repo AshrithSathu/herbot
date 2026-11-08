@@ -160,9 +160,14 @@ func checkBearerToken(authHeader, expected string) bool {
 // MCP server's choice of WHATSAPP_API_URL determines which Host header the
 // underlying HTTP client emits.
 func buildAllowedHosts(port int) map[string]struct{} {
-	return map[string]struct{}{
+	allowed := map[string]struct{}{
 		fmt.Sprintf("127.0.0.1:%d", port): {},
 		fmt.Sprintf("localhost:%d", port): {},
 		fmt.Sprintf("[::1]:%d", port):     {},
 	}
+	// Herbot: extra Host headers for a Docker network, e.g. "wa-bridge:8080".
+	for _, h := range extraAllowedHosts() {
+		allowed[h] = struct{}{}
+	}
+	return allowed
 }

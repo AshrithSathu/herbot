@@ -71,6 +71,13 @@ type WebhookPayload struct {
 	ReactionToMessageID string  `json:"reactionToMessageId,omitempty"`
 	ReactionEmoji       *string `json:"reactionEmoji,omitempty"`
 	ReactionRemoved     *bool   `json:"reactionRemoved,omitempty"`
+	// Herbot fields (see herbot.go).
+	SenderJID    string `json:"senderJid,omitempty"`
+	Timestamp    int64  `json:"timestamp,omitempty"`
+	IsGroup      bool   `json:"isGroup,omitempty"`
+	GroupName    string `json:"groupName,omitempty"`
+	CommunityJID string `json:"communityJid,omitempty"`
+	JoinReason   string `json:"joinReason,omitempty"`
 }
 
 // webhooksEnabled reports whether webhook processing is enabled. Keep this
@@ -144,8 +151,8 @@ func SendWebhook(sender, content, chatJID string, isFromMe bool, quotedMessageId
 
 // SendWebhookWithMessageID sends a text-only message and preserves the native
 // WhatsApp message ID in the payload for downstream idempotency.
-func SendWebhookWithMessageID(sender, content, chatJID string, isFromMe bool, quotedMessageId, quotedSender, quotedContent string, quotedIsFromMe *bool, mentionedJIDs []string, messageID string) {
-	sendWebhookPayload(WebhookPayload{
+func SendWebhookWithMessageID(sender, content, chatJID string, isFromMe bool, quotedMessageId, quotedSender, quotedContent string, quotedIsFromMe *bool, mentionedJIDs []string, messageID string, meta ...MessageMeta) {
+	payload := WebhookPayload{
 		Sender:          sender,
 		Content:         content,
 		ChatJID:         chatJID,
@@ -156,7 +163,9 @@ func SendWebhookWithMessageID(sender, content, chatJID string, isFromMe bool, qu
 		QuotedIsFromMe:  quotedIsFromMe,
 		MentionedJIDs:   mentionedJIDs,
 		MessageID:       messageID,
-	})
+	}
+	applyMessageMeta(&payload, meta)
+	sendWebhookPayload(payload)
 }
 
 // SendWebhookWithMedia sends a message to the webhook endpoint including base64-encoded
@@ -168,6 +177,7 @@ func SendWebhookWithMedia(
 	quotedMessageId, quotedSender, quotedContent string,
 	quotedIsFromMe *bool, mentionedJIDs []string,
 	messageID, mediaType, mimeType, mediaFilename, localPath string,
+	meta ...MessageMeta,
 ) {
 	if !webhooksEnabled() {
 		return
@@ -187,7 +197,7 @@ func SendWebhookWithMedia(
 		}
 	}
 
-	sendWebhookPayload(WebhookPayload{
+	payload := WebhookPayload{
 		Sender:          sender,
 		Content:         content,
 		ChatJID:         chatJID,
@@ -202,7 +212,9 @@ func SendWebhookWithMedia(
 		MimeType:        mimeType,
 		MediaFilename:   mediaFilename,
 		MediaBase64:     mediaBase64,
-	})
+	}
+	applyMessageMeta(&payload, meta)
+	sendWebhookPayload(payload)
 }
 
 // SendReactionWebhook sends a typed reaction event to the webhook endpoint.
