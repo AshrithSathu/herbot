@@ -10,13 +10,13 @@ A private Telegram bot for one person (the admin). Build one step at a time. A s
 - [x] Done when: `make check` and `make smoke` pass
 
 ## Step 2: Telegram adapter (single user)
-- [ ] Schema for Telegram: chats, conversations (chat + topic), messages with search, agent threads, admin questions, key/value state
-- [ ] `telegram::normalize`: Bot API updates become messages, commands, added/removed events, topic names and renames
-- [ ] `policy::decide`: admin-only. Others are ignored, and groups added by others are left.
-- [ ] Long-poll loop with a persisted offset. Admin messages are stored per conversation.
-- [ ] Commands menu: `/status`, `/help` working; `/new`, `/forget` answer "arrives in Step 4"
-- [ ] `/ready` reports the Telegram bot username
-- Done when: fixture tests cover every update kind and policy branch, and store tests cover conversations and duplicates. Manual:
+- [x] Schema for Telegram: chats, conversations (chat + topic), messages with search, agent threads, admin questions, key/value state
+- [x] `telegram::normalize`: Bot API updates become messages, commands, added/removed events, topic names and renames
+- [x] `policy::decide`: admin-only. Others are ignored, and groups added by others are left.
+- [x] Long-poll loop with a persisted offset. Admin messages are stored per conversation.
+- [x] Commands menu: `/status`, `/help` working; `/new`, `/forget` answer "arrives in Step 4"
+- [x] `/ready` reports the Telegram bot username
+- Done when: ✅ fixture tests cover every update kind and policy branch, and store tests cover conversations and duplicates (45 tests). ⏳ Manual:
   1. Create the bot with @BotFather and turn privacy mode **off**
   2. DM the bot and run `/status`
   3. Add it to a forum supergroup, post in two topics, and check that `/status` in each shows its own conversation
