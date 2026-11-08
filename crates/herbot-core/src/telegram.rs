@@ -44,7 +44,10 @@ pub enum Command {
     Help,
     Status,
     Setup,
-    New,
+    /// `/new` asks first; `/new yes` wipes this topic's chat.
+    New {
+        confirmed: bool,
+    },
     /// `/forget` asks first; `/forget yes` does it.
     Forget {
         confirmed: bool,
@@ -56,8 +59,11 @@ pub enum Command {
 pub const COMMAND_MENU: &[(&str, &str)] = &[
     ("setup", "Set what this conversation is for"),
     ("status", "Show this conversation's details"),
-    ("new", "Start a fresh thread for this conversation"),
-    ("forget", "Wipe this conversation's thread and history"),
+    (
+        "new",
+        "Wipe this topic's chat and start fresh (keeps its purpose)",
+    ),
+    ("forget", "Wipe this topic completely, purpose included"),
     ("help", "List commands"),
 ];
 
@@ -299,6 +305,13 @@ enum CommandParse {
     ForAnotherBot,
 }
 
+/// `/new yes` or `/forget yes`: the word after the command is "yes".
+fn confirmed_with_yes(rest: &str) -> bool {
+    rest.split_whitespace()
+        .nth(1)
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("yes"))
+}
+
 /// Parses `/cmd`, `/cmd args` and `/cmd@botname args`. The `@botname` part
 /// must match this bot (case-insensitive) or the command belongs to another bot.
 fn parse_command(text: &str, bot_username: &str) -> CommandParse {
@@ -324,12 +337,11 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
         "help" => Command::Help,
         "status" => Command::Status,
         "setup" => Command::Setup,
-        "new" => Command::New,
+        "new" => Command::New {
+            confirmed: confirmed_with_yes(rest),
+        },
         "forget" => Command::Forget {
-            confirmed: rest
-                .split_whitespace()
-                .nth(1)
-                .is_some_and(|arg| arg.eq_ignore_ascii_case("yes")),
+            confirmed: confirmed_with_yes(rest),
         },
         other => Command::Unknown(other.to_string()),
     };
@@ -345,7 +357,20 @@ mod tests {
         let bot = "Herbot_Bot";
         assert_eq!(
             parse_command("/new", bot),
-            CommandParse::ForThisBot(Command::New)
+            CommandParse::ForThisBot(Command::New { confirmed: false })
+        );
+        assert_eq!(
+            parse_command("/new yes", bot),
+            CommandParse::ForThisBot(Command::New { confirmed: true })
+        );
+        assert_eq!(
+            parse_command("/forget@herbot_bot YES", bot),
+            CommandParse::ForThisBot(Command::Forget { confirmed: true })
+        );
+        assert_eq!(
+            parse_command("/new please", bot),
+            CommandParse::ForThisBot(Command::New { confirmed: false }),
+            "only an explicit yes confirms"
         );
         assert_eq!(
             parse_command("/status@herbot_bot", bot),

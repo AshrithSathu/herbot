@@ -88,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
                 agents_dir = %agents_dir.display(),
                 "agents run as T3 Code threads"
             );
+            let projects: Arc<dyn agent::ProjectCleaner> = Arc::new(runner.clone());
             let api = Arc::new(poller::BotApi(bot.clone()));
             let lanes = Arc::new(turns::Lanes::new(turns::TurnDeps {
                 pool: pool.clone(),
@@ -122,6 +123,7 @@ async fn main() -> anyhow::Result<()> {
                 agent_label: format!("{} · {}", config.agent_model, config.agent_effort),
                 api,
                 turns: shared_turns,
+                projects,
             };
             poller_task = Some(tokio::spawn(poller::run(
                 bot,

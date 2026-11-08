@@ -95,6 +95,37 @@ pub fn codex_config_effort(config_toml: &str) -> Option<String> {
     None
 }
 
+/// Boxed future, so [`ProjectCleaner`] stays object-safe.
+pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// What `/new` and `/forget` need from T3 to delete a conversation's threads.
+/// Deletion is only ever by exact project id, never by path: the agents
+/// folder sits inside other T3 projects (like the herbot repo), and T3
+/// resolves a path to the nearest enclosing project.
+pub trait ProjectCleaner: Send + Sync {
+    /// The project a thread belongs to; `None` if T3 no longer has the thread.
+    fn project_of_thread<'a>(
+        &'a self,
+        thread_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, AgentError>>;
+    /// Every thread id in a project.
+    fn threads_in_project<'a>(
+        &'a self,
+        project_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<String>, AgentError>>;
+    /// Deletes a project and all its threads.
+    fn remove_project<'a>(&'a self, project_id: &'a str) -> BoxFuture<'a, Result<(), AgentError>>;
+}
+
+/// T3 project ids are UUIDs. Anything else (a path!) is refused.
+pub fn is_project_id(id: &str) -> bool {
+    id.len() == 36
+        && id.chars().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
 /// T3 Code's host CLI.
 #[derive(Debug, Clone)]
 pub struct T3Cli {
@@ -238,6 +269,84 @@ impl T3Cli {
 }
 
 const QUICK: Duration = Duration::from_secs(60);
+
+impl ProjectCleaner for T3Cli {
+    fn project_of_thread<'a>(
+        &'a self,
+        thread_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, AgentError>> {
+        Box::pin(async move {
+            let out = self
+                .run(&["thread", "show", thread_id, "--json"], None, QUICK)
+                .await?;
+            let all = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
+            if out.exit != Some(0) {
+                return if all.contains("no longer available") || all.contains("not found") {
+                    Ok(None)
+                } else {
+                    Err(AgentError::BadOutput {
+                        exit: out.exit,
+                        detail: first_line(&out.stderr, &out.stdout),
+                    })
+                };
+            }
+            let value: serde_json::Value =
+                serde_json::from_str(out.stdout.trim()).map_err(|e| AgentError::BadOutput {
+                    exit: out.exit,
+                    detail: format!("thread show: {e}"),
+                })?;
+            Ok(value["thread"]["projectId"].as_str().map(str::to_string))
+        })
+    }
+
+    fn threads_in_project<'a>(
+        &'a self,
+        project_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<String>, AgentError>> {
+        Box::pin(async move {
+            if !is_project_id(project_id) {
+                return Err(AgentError::Project(format!(
+                    "{project_id:?} is not a T3 project id"
+                )));
+            }
+            let out = self
+                .run(
+                    &["thread", "list", "--project", project_id, "--json"],
+                    None,
+                    QUICK,
+                )
+                .await?;
+            if out.exit != Some(0) {
+                return Err(AgentError::BadOutput {
+                    exit: out.exit,
+                    detail: first_line(&out.stderr, &out.stdout),
+                });
+            }
+            Ok(parse_list(&out.stdout)?
+                .into_iter()
+                .map(|t| t.thread_id)
+                .collect())
+        })
+    }
+
+    fn remove_project<'a>(&'a self, project_id: &'a str) -> BoxFuture<'a, Result<(), AgentError>> {
+        Box::pin(async move {
+            if !is_project_id(project_id) {
+                return Err(AgentError::Project(format!(
+                    "refusing to remove {project_id:?}: not a T3 project id"
+                )));
+            }
+            let out = self
+                .run(&["project", "remove", "--force", project_id], None, QUICK)
+                .await?;
+            if out.exit == Some(0) {
+                Ok(())
+            } else {
+                Err(AgentError::Project(first_line(&out.stderr, &out.stdout)))
+            }
+        })
+    }
+}
 
 impl AgentRunner for T3Cli {
     async fn ensure_project(&self, folder: &Path, title: &str) -> Result<(), AgentError> {
@@ -383,6 +492,20 @@ mod tests {
             "only top level"
         );
         assert_eq!(codex_config_effort("model = \"x\""), None);
+    }
+
+    #[test]
+    fn only_uuids_count_as_project_ids() {
+        assert!(is_project_id("c8b83136-53e8-401b-8de5-85361fc43bcd"));
+        for bad in [
+            "/Users/ashrith/Desktop/herbot",
+            ".",
+            "c8b83136-53e8-401b-8de5-85361fc43bc",
+            "c8b83136x53e8-401b-8de5-85361fc43bcd",
+            "",
+        ] {
+            assert!(!is_project_id(bad), "{bad}");
+        }
     }
 
     #[test]
