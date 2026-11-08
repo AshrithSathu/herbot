@@ -13,12 +13,19 @@ Telegram Bot API ⇄ crates/herbot-core (Rust, teloxide) ⇄ bots-T3 (Codex, ful
 
 | Path | What | Language |
 |---|---|---|
-| `crates/herbot-core` | Telegram polling, admin-only policy, conversations, per-conversation lanes, T3 adapter, ask-admin buttons, admin API | Rust (tokio, axum, sqlx, teloxide) |
+| `crates/herbot-core` | Telegram polling, admin-only policy, conversations, topic setup and AGENTS.md, voice transcription, per-conversation lanes, T3 adapter, admin API | Rust (tokio, axum, sqlx, teloxide, reqwest) |
 | `crates/herbot-mcp` | Conversation-scoped tools for bot threads: `search_history`, `ask_admin` | Rust (`rmcp`) |
 | `apps/admin` | Admin panel | TanStack Start |
 | `bots/<slug>/` | One T3 project per bot persona. `AGENTS.md` there is the persona. | Markdown |
 
 A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no topic. In a forum supergroup, each topic is its own conversation, and "General" has no topic ID.
+
+## Models and voice
+
+- Conversation agents run in T3 Code on the Codex subscription: **`gpt-6.1-terra`, reasoning effort `medium`** (`HERBOT_AGENT_MODEL`, `HERBOT_AGENT_EFFORT`).
+- Voice notes are transcribed by OpenAI **`gpt-transcribe`**, English only (`language=en`), with `OPENAI_API_KEY`. This key is used for nothing else. No local speech models.
+- Voice notes longer than 10 minutes are refused before download, to cap cost.
+- Everything is English.
 
 ## Security invariants (never weaken these)
 
