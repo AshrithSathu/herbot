@@ -15,12 +15,14 @@ pub struct Meta<'a> {
     pub sent_at: DateTime<Utc>,
     /// AGENTS.md changed since the thread's last turn.
     pub agents_md_changed: bool,
+    /// Secret that identifies this conversation to herbot-mcp's tools.
+    pub caller_token: &'a str,
 }
 
 /// Builds the message: header, blank line, then the (sanitised) text.
 pub fn wrap(meta: &Meta<'_>, text: &str) -> String {
     let mut header = format!(
-        "<herbot-meta>\nfrom: {} (admin, Telegram id {})\nwhere: {}\nkind: {}\nsent: {}\n",
+        "<herbot-meta>\nfrom: {} (admin, Telegram id {})\nwhere: {}\nkind: {}\nsent: {}\ncaller: {}\n",
         meta.sender_name,
         meta.sender_id,
         meta.place,
@@ -30,6 +32,7 @@ pub fn wrap(meta: &Meta<'_>, text: &str) -> String {
             "text"
         },
         meta.sent_at.to_rfc3339_opts(SecondsFormat::Secs, true),
+        meta.caller_token,
     );
     if meta.agents_md_changed {
         header.push_str(
@@ -78,6 +81,7 @@ mod tests {
             is_voice: false,
             sent_at: Utc.with_ymd_and_hms(2026, 11, 8, 18, 30, 0).unwrap(),
             agents_md_changed: false,
+            caller_token: "hb_test",
         }
     }
 
@@ -87,7 +91,7 @@ mod tests {
         assert_eq!(
             msg,
             "<herbot-meta>\nfrom: Ashrith (admin, Telegram id 1221260701)\nwhere: Herbot › Testing\n\
-             kind: text\nsent: 2026-11-08T18:30:00Z\n</herbot-meta>\n\nwhat's 2+2?"
+             kind: text\nsent: 2026-11-08T18:30:00Z\ncaller: hb_test\n</herbot-meta>\n\nwhat's 2+2?"
         );
     }
 

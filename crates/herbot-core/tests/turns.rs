@@ -266,6 +266,7 @@ fn job(conversation_id: i64, topic: Option<i32>, reply_to: i32, text: &str) -> T
         sender_name: "Ashrith".into(),
         sender_id: 1221260701,
         sent_at: Utc::now(),
+        reply: None,
     }
 }
 
@@ -536,6 +537,56 @@ async fn after_new_the_next_message_starts_a_fresh_thread(pool: PgPool) {
         h.count("SELECT count(*) FROM agent_threads WHERE status = 'active'")
             .await,
         1
+    );
+}
+
+// ---- caller token and reply slots (Step 7) ----
+
+#[sqlx::test(migrations = "./migrations")]
+async fn every_message_carries_the_conversations_caller_token(pool: PgPool) {
+    let h = H::new(pool).await;
+    run_turn(&h.deps, job(1, Some(7), 30, "hi")).await;
+    let token = herbot_core::hub::caller_token(&h.deps.pool, 1)
+        .await
+        .unwrap();
+    assert!(token.starts_with("hb_") && token.len() > 60, "{token}");
+    let RunnerCall::Start { message, .. } = &h.deps.runner.calls()[1] else {
+        panic!()
+    };
+    assert!(
+        message.contains(&format!("\ncaller: {token}\n")),
+        "{message}"
+    );
+    let general = herbot_core::hub::caller_token(&h.deps.pool, 2)
+        .await
+        .unwrap();
+    assert_ne!(token, general, "each conversation has its own");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_waiting_caller_gets_the_reply_or_the_failure(pool: PgPool) {
+    let h = H::new(pool).await;
+    h.deps.runner.then(Ok(TurnOutcome::Replied(
+        "Build passed.\n\n[[ask: Deploy | Wait]]".into(),
+    )));
+    let (slot, answer) = herbot_core::turns::ReplySlot::new();
+    let mut asked = job(1, Some(7), 30, "did the build pass?");
+    asked.reply = Some(slot);
+    run_turn(&h.deps, asked).await;
+    assert_eq!(
+        answer.await.unwrap(),
+        Ok("Build passed.\n\n(Options offered: Deploy | Wait)".to_string())
+    );
+
+    h.deps.runner.then(Ok(TurnOutcome::Failed("boom".into())));
+    let (slot, answer) = herbot_core::turns::ReplySlot::new();
+    let mut failing = job(1, Some(7), 31, "again");
+    failing.reply = Some(slot);
+    run_turn(&h.deps, failing).await;
+    let err = answer.await.unwrap().unwrap_err();
+    assert!(
+        err.starts_with("E-") && err.ends_with("the agent run failed"),
+        "{err}"
     );
 }
 

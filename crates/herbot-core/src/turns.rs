@@ -13,7 +13,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::PgPool;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::agent::{AgentError, AgentRunner, TurnOutcome, TurnResult};
 use crate::agents_md;
@@ -37,7 +37,46 @@ pub struct TurnJob {
     pub sender_name: String,
     pub sender_id: u64,
     pub sent_at: DateTime<Utc>,
+    /// Set when someone is waiting for this turn's outcome (General's
+    /// `ask_topic`): gets the reply text, or the failure.
+    pub reply: Option<ReplySlot>,
 }
+
+/// A one-shot channel for a turn's outcome, shareable so `TurnJob` stays
+/// `Clone`. Only the first send is delivered.
+#[derive(Clone)]
+pub struct ReplySlot(Arc<Mutex<Option<oneshot::Sender<TurnOutcomeText>>>>);
+
+/// What the agent said (`Ok`), or why the turn failed (`Err`, with the E-id).
+pub type TurnOutcomeText = Result<String, String>;
+
+impl ReplySlot {
+    pub fn new() -> (Self, oneshot::Receiver<TurnOutcomeText>) {
+        let (tx, rx) = oneshot::channel();
+        (Self(Arc::new(Mutex::new(Some(tx)))), rx)
+    }
+
+    /// Delivers the outcome to whoever is waiting (only the first call counts).
+    pub fn deliver(&self, outcome: TurnOutcomeText) {
+        if let Some(tx) = self.0.lock().expect("reply slot lock").take() {
+            let _ = tx.send(outcome);
+        }
+    }
+}
+
+impl std::fmt::Debug for ReplySlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReplySlot")
+    }
+}
+
+impl PartialEq for ReplySlot {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for ReplySlot {}
 
 /// Where the poller hands turns off. Implemented by [`Lanes`] and by a
 /// recorder in tests.
@@ -132,7 +171,15 @@ pub async fn run_turn<A: TelegramApi + 'static, R: AgentRunner>(
     let result = turn(deps, &job).await;
     typing.abort();
 
-    let Err(err) = result else { return };
+    let err = match result {
+        Ok(said) => {
+            if let Some(slot) = &job.reply {
+                slot.deliver(Ok(said));
+            }
+            return;
+        }
+        Err(err) => err,
+    };
     let context = json!({
         "conversation_id": job.conversation_id,
         "reply_to": job.reply_to,
@@ -142,9 +189,15 @@ pub async fn run_turn<A: TelegramApi + 'static, R: AgentRunner>(
         Ok(id) => id,
         Err(db_err) => {
             tracing::error!(error = %err, %db_err, "turn failed and the error could not be recorded");
+            if let Some(slot) = &job.reply {
+                slot.deliver(Err(err.short_reason()));
+            }
             return;
         }
     };
+    if let Some(slot) = &job.reply {
+        slot.deliver(Err(format!("{error_id}: {}", err.short_reason())));
+    }
     let text = format!(
         "❌ Failed ({error_id}): {}. Check logs.",
         err.short_reason()
@@ -174,10 +227,12 @@ fn spawn_typing<A: TelegramApi + 'static>(
     })
 }
 
+/// Runs one turn. Returns what the conversation was told (the reply as sent,
+/// without any `[[ask]]` line, or the "waiting in T3" note).
 async fn turn<A: TelegramApi, R: AgentRunner>(
     deps: &TurnDeps<A, R>,
     job: &TurnJob,
-) -> Result<(), TurnError> {
+) -> Result<String, TurnError> {
     let status = store::conversation_status_by_id(&deps.pool, job.conversation_id).await?;
     let place = status.place();
     let folder = deps
@@ -202,6 +257,7 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
             is_voice: job.is_voice,
             sent_at: job.sent_at,
             agents_md_changed,
+            caller_token: &crate::hub::caller_token(&deps.pool, job.conversation_id).await?,
         },
         &job.text,
     );
@@ -237,27 +293,23 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
 
     match result.outcome {
         TurnOutcome::Replied(text) => {
-            deliver(deps, job, &text).await?;
+            let said = deliver(deps, job, &text).await?;
             tracing::info!(
                 conversation_id = job.conversation_id,
                 chars = text.len(),
                 "agent replied"
             );
-            Ok(())
+            Ok(said)
         }
         TurnOutcome::NeedsAnswer => {
             let link = store::conversation_status_by_id(&deps.pool, job.conversation_id)
                 .await?
                 .thread_link;
+            let note = needs_answer_text(link.as_deref());
             deps.api
-                .send_text(
-                    job.tg_chat_id,
-                    job.topic_id,
-                    Some(job.reply_to),
-                    &needs_answer_text(link.as_deref()),
-                )
+                .send_text(job.tg_chat_id, job.topic_id, Some(job.reply_to), &note)
                 .await?;
-            Ok(())
+            Ok(note)
         }
         TurnOutcome::Failed(why) => Err(TurnError::RunFailed(why)),
     }
@@ -269,7 +321,7 @@ async fn deliver<A: TelegramApi, R: AgentRunner>(
     deps: &TurnDeps<A, R>,
     job: &TurnJob,
     text: &str,
-) -> Result<(), TurnError> {
+) -> Result<String, TurnError> {
     let clean = outgoing::scrub(text);
     if clean != text {
         tracing::warn!(
@@ -299,7 +351,12 @@ async fn deliver<A: TelegramApi, R: AgentRunner>(
         )
         .await?;
     }
-    Ok(())
+    // What the caller of `ask_topic` gets back: the reply as sent, with the
+    // options listed (they were buttons in Telegram).
+    Ok(match choices {
+        Some(options) => format!("{body}\n\n(Options offered: {})", options.join(" | ")),
+        None => body,
+    })
 }
 
 /// Sends the last part of a reply with one button per option, and opens a

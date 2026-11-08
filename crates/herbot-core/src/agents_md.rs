@@ -12,7 +12,30 @@ use chrono::{DateTime, Utc};
 /// Bump when the ground rules change; older files are rewritten at startup.
 /// v2 added `[[ask: …]]` buttons; v3 made its example concrete (agents
 /// copied the placeholder "Option one | Option two" literally).
-pub const TEMPLATE_VERSION: i32 = 3;
+/// v4 added the herbot-mcp tools section (different for General and topics).
+pub const TEMPLATE_VERSION: i32 = 4;
+
+const GENERAL_TOOLS: &str = "## Your Herbot tools\n\
+\n\
+You are the hub of Ashrith's Herbot group. Through the `herbot` MCP tools you can see and act on every topic. \
+Always pass `caller` = the `caller` value from your <herbot-meta> header.\n\
+\n\
+- `list_topics`: every topic, its purpose and recent activity\n\
+- `search_messages(query, topic?)`: search the history of all topics, or one\n\
+- `read_topic(topic, limit?)`: recent messages in a topic\n\
+- `ask_topic(topic, message)`: ask another topic's agent and get its answer (it also shows up in that topic)\n\
+- `post_to_topic(topic, text)`: post a message into a topic\n\
+\n\
+Use them whenever Ashrith asks about his other topics or wants something done in one.\n";
+
+const TOPIC_TOOLS: &str = "## Your Herbot tools\n\
+\n\
+Through the `herbot` MCP tools you can look further back than this thread remembers. \
+Always pass `caller` = the `caller` value from your <herbot-meta> header.\n\
+\n\
+- `search_messages(query)`: search this topic's full history\n\
+- `read_topic(limit?)`: recent messages in this topic\n\
+- `list_topics`: the other topics in the group (questions across topics belong in General)\n";
 
 /// Folder for one conversation, relative to the agents root:
 /// `chat_<id>/general` or `chat_<id>/topic_<n>`.
@@ -25,8 +48,13 @@ pub fn relative_dir(tg_chat_id: i64, topic_id: Option<i32>) -> PathBuf {
 }
 
 /// The file's contents. `description` is kept verbatim.
-pub fn render(place: &str, description: &str, written_at: DateTime<Utc>) -> String {
-    format!(
+pub fn render(
+    place: &str,
+    description: &str,
+    written_at: DateTime<Utc>,
+    is_general: bool,
+) -> String {
+    let mut text = format!(
         "# {place}\n\
          \n\
          <!-- Written by Herbot from Ashrith's setup answer on {date}. \
@@ -48,7 +76,14 @@ pub fn render(place: &str, description: &str, written_at: DateTime<Utc>) -> Stri
          He sees them as buttons and can tap one or type his own answer.\n",
         date = written_at.format("%Y-%m-%d"),
         description = description.trim(),
-    )
+    );
+    text.push('\n');
+    text.push_str(if is_general {
+        GENERAL_TOOLS
+    } else {
+        TOPIC_TOOLS
+    });
+    text
 }
 
 /// Writes the file atomically and returns its path relative to `root`.
@@ -60,12 +95,13 @@ pub async fn write(
     description: &str,
     written_at: DateTime<Utc>,
 ) -> io::Result<PathBuf> {
+    let is_general = topic_id.is_none();
     let relative = relative_dir(tg_chat_id, topic_id).join("AGENTS.md");
     let path = root.join(&relative);
     let dir = path.parent().expect("AGENTS.md always has a parent folder");
     tokio::fs::create_dir_all(dir).await?;
     let tmp = dir.join(".AGENTS.md.tmp");
-    tokio::fs::write(&tmp, render(place, description, written_at)).await?;
+    tokio::fs::write(&tmp, render(place, description, written_at, is_general)).await?;
     tokio::fs::rename(&tmp, &path).await?;
     Ok(relative)
 }
@@ -127,6 +163,7 @@ mod tests {
             "Herbot › Ideas",
             "  Roast my startup ideas.\nBe brutal but fair.  ",
             at,
+            false,
         );
         assert!(text.starts_with("# Herbot › Ideas\n"));
         assert!(text.contains("Roast my startup ideas.\nBe brutal but fair.\n"));
@@ -137,6 +174,24 @@ mod tests {
             text.contains("[[ask: Delete all 42 logs | Only ones older than 30 days | Keep them]]")
         );
         assert!(text.contains("never copy this example"));
+        // A topic gets its own-history tools, not the hub's.
+        assert!(text.contains("`search_messages(query)`: search this topic's full history"));
+        assert!(!text.contains("ask_topic"));
+    }
+
+    #[test]
+    fn general_gets_the_hub_tools() {
+        let text = render("Herbot › General", "Everyday chat.", Utc::now(), true);
+        for tool in [
+            "list_topics",
+            "search_messages(query, topic?)",
+            "read_topic",
+            "ask_topic",
+            "post_to_topic",
+        ] {
+            assert!(text.contains(tool), "{tool} missing");
+        }
+        assert!(text.contains("pass `caller`"));
     }
 
     #[tokio::test]
