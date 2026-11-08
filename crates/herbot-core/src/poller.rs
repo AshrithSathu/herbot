@@ -15,7 +15,7 @@ use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types::{
     AllowedUpdate, BotCommand, BotCommandScope, CallbackQueryId, ChatId as TgChatId, FileId,
-    InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ReplyParameters, ThreadId,
+    InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ReactionType, ReplyParameters, ThreadId,
 };
 use tokio::sync::watch;
 
@@ -82,6 +82,14 @@ pub trait TelegramApi: Sync {
     ) -> impl Future<Output = Result<(), ApiError>> + Send;
 
     fn leave_chat(&self, chat_id: i64) -> impl Future<Output = Result<(), ApiError>> + Send;
+
+    /// Puts an emoji reaction on a message (replacing the bot's previous one).
+    fn react(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+        emoji: &str,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send;
 
     /// Downloads a file the admin sent (e.g. a voice note) into memory.
     fn download_file(
@@ -179,6 +187,17 @@ impl TelegramApi for BotApi {
             .map_err(api_err)
     }
 
+    async fn react(&self, chat_id: i64, message_id: i32, emoji: &str) -> Result<(), ApiError> {
+        self.0
+            .set_message_reaction(ChatId(chat_id), MessageId(message_id))
+            .reaction(vec![ReactionType::Emoji {
+                emoji: emoji.to_string(),
+            }])
+            .await
+            .map(|_| ())
+            .map_err(api_err)
+    }
+
     async fn download_file(&self, file_id: &str) -> Result<Vec<u8>, ApiError> {
         let file = self
             .0
@@ -229,6 +248,9 @@ impl HandleError {
         }
     }
 }
+
+/// The "seen it" reaction on every admin message, so it's clear the bot is listening.
+pub const SEEN_REACTION: &str = "👀";
 
 pub const HELP_TEXT: &str = "Herbot: your private bot.\n\n\
 General is the everyday chat. Every other topic is its own agent with its own memory.\n\n\
@@ -304,6 +326,7 @@ async fn apply<A: TelegramApi, T: Transcriber>(
             store::rename_chat(ctx.pool, chat.tg_chat_id, &title).await?;
         }
         Action::Store(mut msg) => {
+            mark_seen(ctx, &msg).await;
             // Voice notes become English text before anything else sees them.
             if let Some(voice) = msg.voice.clone() {
                 if voice.duration_secs > MAX_VOICE_SECONDS {
@@ -330,10 +353,30 @@ async fn apply<A: TelegramApi, T: Transcriber>(
             }
             store_and_continue(ctx, &msg).await?;
         }
-        Action::RunCommand(msg, cmd) => run_command(ctx, &msg, cmd).await?,
+        Action::RunCommand(msg, cmd) => {
+            mark_seen(ctx, &msg).await;
+            run_command(ctx, &msg, cmd).await?
+        }
         Action::Button(press) => handle_button(ctx, &press).await?,
     }
     Ok(())
+}
+
+/// Reacts 👀 to an admin message as soon as it arrives. A failed reaction
+/// (say, reactions turned off in the group) is recorded but never stops the
+/// message from being handled.
+async fn mark_seen<A: TelegramApi, T: Transcriber>(ctx: &Ctx<'_, A, T>, msg: &InboundMessage) {
+    if let Err(err) = ctx
+        .api
+        .react(msg.chat.tg_chat_id, msg.message_id, SEEN_REACTION)
+        .await
+    {
+        let context = json!({ "chat_id": msg.chat.tg_chat_id, "message_id": msg.message_id });
+        match errors::record(ctx.pool, "telegram.react", &err.to_string(), context).await {
+            Ok(id) => tracing::warn!(error_id = %id, error = %err, "could not react to message"),
+            Err(db_err) => tracing::error!(error = %err, %db_err, "could not react or record it"),
+        }
+    }
 }
 
 async fn reply<A: TelegramApi, T: Transcriber>(
