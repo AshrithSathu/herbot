@@ -236,3 +236,33 @@ async fn message_search_finds_words(pool: PgPool) {
     .unwrap();
     assert_eq!(hits, [1]);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn setup_state_rules_are_enforced(pool: PgPool) {
+    sqlx::raw_sql(
+        "INSERT INTO chats (tg_chat_id, kind, is_forum) VALUES (-1001, 'supergroup', true);
+         INSERT INTO conversations (chat_id, tg_topic_id) VALUES (1, 7);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let state: String = sqlx::query_scalar("SELECT setup_state FROM conversations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "new");
+
+    // Ready needs a purpose; purposes are 1..=1000 characters.
+    for bad in [
+        "UPDATE conversations SET setup_state = 'ready'",
+        "UPDATE conversations SET purpose = ''",
+        "UPDATE conversations SET purpose = repeat('x', 1001)",
+        "UPDATE conversations SET setup_state = 'maybe'",
+    ] {
+        assert!(sqlx::query(bad).execute(&pool).await.is_err(), "{bad}");
+    }
+    sqlx::query("UPDATE conversations SET purpose = 'Research', setup_state = 'ready'")
+        .execute(&pool)
+        .await
+        .unwrap();
+}
