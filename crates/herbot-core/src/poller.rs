@@ -28,7 +28,7 @@ use crate::policy::{self, Action, Rules};
 use crate::setup;
 use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
 use crate::telegram::{self, ButtonPress, ChatKind, Command, Inbound, InboundMessage};
-use crate::turns::{Lanes, TurnDeps, TurnJob, TurnQueue};
+use crate::turns::{self, Lanes, TurnDeps, TurnJob, TurnQueue};
 use crate::voice::{MAX_VOICE_SECONDS, Transcriber, VoiceError};
 
 /// How long one `getUpdates` call waits for new updates. Kept under
@@ -400,6 +400,22 @@ async fn mark_seen<A: TelegramApi, T: Transcriber>(ctx: &Ctx<'_, A, T>, msg: &In
     }
 }
 
+/// A typed message answers any open choice buttons in the conversation
+/// (they're closed and removed), then goes to the agent.
+async fn hand_to_agent<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    msg: &InboundMessage,
+    conversation_id: i64,
+) -> Result<(), HandleError> {
+    for message_id in store::supersede_open_questions(ctx.pool, conversation_id).await? {
+        ctx.api
+            .remove_buttons(msg.chat.tg_chat_id, message_id)
+            .await?;
+    }
+    submit_turn(ctx, msg, conversation_id);
+    Ok(())
+}
+
 /// Hands an admin message to its conversation's agent lane.
 fn submit_turn<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
@@ -482,7 +498,7 @@ async fn continue_setup<A: TelegramApi, T: Transcriber>(
             if is_voice {
                 reply(ctx, msg, &setup::heard(&msg.text)).await?;
             }
-            submit_turn(ctx, msg, conversation_id);
+            hand_to_agent(ctx, msg, conversation_id).await?;
         }
         // A new topic: ask what this agent should be.
         SetupState::New => {
@@ -512,7 +528,7 @@ async fn continue_setup<A: TelegramApi, T: Transcriber>(
             if is_voice {
                 reply(ctx, msg, &setup::heard(&msg.text)).await?;
             }
-            submit_turn(ctx, msg, conversation_id);
+            hand_to_agent(ctx, msg, conversation_id).await?;
         }
     }
     Ok(())
@@ -559,19 +575,55 @@ async fn send_greeting<A: TelegramApi, T: Transcriber>(
     Ok(())
 }
 
-/// A tapped inline button. None are in use right now (Step 6 adds answers to
-/// the bot's questions); old setup greetings still have preset buttons, so
-/// say they're gone and remove them.
+pub const ALREADY_ANSWERED_TOAST: &str = "That question was already answered.";
+
+/// A tapped inline button: an answer to one of the agent's choices goes to
+/// the agent; anything else (old setup presets, closed questions) is stale.
 async fn handle_button<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     press: &ButtonPress,
 ) -> Result<(), HandleError> {
+    let chat = press.chat.tg_chat_id;
+    let Some((question_id, index)) = turns::parse_answer_button(&press.data) else {
+        ctx.api
+            .answer_button(&press.callback_id, Some(setup::STALE_BUTTON_TOAST))
+            .await?;
+        ctx.api.remove_buttons(chat, press.message_id).await?;
+        return Ok(());
+    };
+    let Some(claimed) =
+        store::claim_answer(ctx.pool, question_id, index, chat, press.topic_id).await?
+    else {
+        ctx.api
+            .answer_button(&press.callback_id, Some(ALREADY_ANSWERED_TOAST))
+            .await?;
+        ctx.api.remove_buttons(chat, press.message_id).await?;
+        return Ok(());
+    };
+
+    // Show the choice under the question (this also drops the buttons).
+    let shown = format!("{}\n\n👉 {}", claimed.question, claimed.answer);
+    ctx.api.edit_text(chat, press.message_id, &shown).await?;
     ctx.api
-        .answer_button(&press.callback_id, Some(setup::STALE_BUTTON_TOAST))
+        .answer_button(&press.callback_id, Some("Sent"))
         .await?;
-    ctx.api
-        .remove_buttons(press.chat.tg_chat_id, press.message_id)
-        .await?;
+    tracing::info!(
+        conversation_id = claimed.conversation_id,
+        question_id,
+        "choice tapped"
+    );
+
+    ctx.turns.submit(TurnJob {
+        conversation_id: claimed.conversation_id,
+        tg_chat_id: chat,
+        topic_id: press.topic_id,
+        reply_to: press.message_id,
+        text: claimed.answer,
+        is_voice: false,
+        sender_name: press.from_name.clone(),
+        sender_id: press.from_user_id,
+        sent_at: Utc::now(),
+    });
     Ok(())
 }
 

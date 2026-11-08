@@ -335,6 +335,7 @@ mod tests {
             topic_id: Some(7),
             message_id: 50,
             from_user_id: from,
+            from_name: "Ashrith".into(),
             data: "setup:research".into(),
             callback_id: "cb".into(),
         };
