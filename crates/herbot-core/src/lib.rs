@@ -9,6 +9,8 @@
 //! - `agents_md`: each conversation's AGENTS.md
 //! - `turns`, `agent`: per-conversation lanes running T3 Code threads
 //! - `meta`, `outgoing`: the agent's header; scrubbing and splitting replies
+//! - `hub`: what agents can see and do through herbot-mcp (permission rules)
+//! - `internal`: the API herbot-mcp calls for General's post/ask actions
 //! - `app`: `/health` and `/ready`
 
 pub mod agent;
@@ -17,6 +19,8 @@ pub mod app;
 pub mod config;
 pub mod db;
 pub mod errors;
+pub mod hub;
+pub mod internal;
 pub mod meta;
 pub mod outgoing;
 pub mod policy;

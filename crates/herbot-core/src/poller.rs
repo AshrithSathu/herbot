@@ -21,14 +21,13 @@ use teloxide::types::{
 };
 use tokio::sync::watch;
 
-use crate::agent::AgentRunner;
 use crate::agents_md;
 use crate::errors::{self, ErrorId};
 use crate::policy::{self, Action, Rules};
 use crate::setup;
 use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
 use crate::telegram::{self, ButtonPress, ChatKind, Command, Inbound, InboundMessage};
-use crate::turns::{self, Lanes, TurnDeps, TurnJob, TurnQueue};
+use crate::turns::{self, TurnJob, TurnQueue};
 use crate::voice::{MAX_VOICE_SECONDS, Transcriber, VoiceError};
 
 /// How long one `getUpdates` call waits for new updates. Kept under
@@ -432,6 +431,7 @@ fn submit_turn<A: TelegramApi, T: Transcriber>(
         sender_name: msg.from_name.clone(),
         sender_id: msg.from_user_id,
         sent_at: msg.sent_at,
+        reply: None,
     });
 }
 
@@ -623,6 +623,7 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
         sender_name: press.from_name.clone(),
         sender_id: press.from_user_id,
         sent_at: Utc::now(),
+        reply: None,
     });
     Ok(())
 }
@@ -778,41 +779,34 @@ pub async fn register_commands(bot: &Bot, rules: &Rules) -> Result<(), teloxide:
 
 /// Long-polls Telegram until `shutdown` flips to true.
 /// What the poller needs besides the bot and database.
-pub struct RunSettings<T: Transcriber, R: AgentRunner> {
+pub struct RunSettings<T: Transcriber> {
     pub rules: Rules,
     pub bot_username: String,
-    pub bot_user_id: u64,
     pub transcriber: T,
-    pub runner: R,
     /// Absolute path of the conversation folders.
     pub agents_dir: std::path::PathBuf,
     pub agent_label: String,
+    pub api: Arc<BotApi>,
+    /// The agent lanes (shared with the internal API).
+    pub turns: Arc<dyn TurnQueue>,
 }
 
-pub async fn run<T: Transcriber, R: AgentRunner>(
+pub async fn run<T: Transcriber>(
     bot: Bot,
     pool: PgPool,
-    settings: RunSettings<T, R>,
+    settings: RunSettings<T>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let api = Arc::new(BotApi(bot.clone()));
-    let lanes = Lanes::new(TurnDeps {
-        pool: pool.clone(),
-        api: api.clone(),
-        runner: Arc::new(settings.runner),
-        agents_dir: settings.agents_dir.clone(),
-        bot_user_id: settings.bot_user_id,
-    });
     let bot_username = settings.bot_username.clone();
     let ctx = Ctx {
         pool: &pool,
-        api: &*api,
+        api: &*settings.api,
         transcriber: &settings.transcriber,
         rules: settings.rules,
         bot_username: &bot_username,
         agents_dir: &settings.agents_dir,
         agent_label: &settings.agent_label,
-        turns: &lanes,
+        turns: &*settings.turns,
     };
 
     let mut offset = match store::load_offset(&pool).await {

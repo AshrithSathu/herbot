@@ -24,6 +24,9 @@ pub struct Config {
     pub t3_bin: PathBuf,
     /// Longest an agent turn may take (`HERBOT_TURN_TIMEOUT_SECS`, default 600).
     pub turn_timeout_secs: u64,
+    /// Shared secret for herbot-mcp's calls to the internal API
+    /// (`HERBOT_INTERNAL_TOKEN`); `None` turns General's action tools off.
+    pub internal_token: Option<String>,
 }
 
 pub const DEFAULT_T3_BIN: &str = "~/.t3/bin/t3";
@@ -112,6 +115,8 @@ pub enum ConfigError {
     InvalidAgentEffort(String),
     #[error("HERBOT_TURN_TIMEOUT_SECS {0:?} is not valid (expected seconds between 30 and 3600)")]
     InvalidTurnTimeout(String),
+    #[error("HERBOT_INTERNAL_TOKEN is too short (use at least 32 characters)")]
+    WeakInternalToken,
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -193,6 +198,11 @@ impl Config {
             return Err(ConfigError::InvalidAgentEffort(agent_effort));
         }
 
+        let internal_token = match get("HERBOT_INTERNAL_TOKEN").map(|t| t.trim().to_string()) {
+            Some(t) if t.is_empty() => None,
+            Some(t) if t.len() < 32 => return Err(ConfigError::WeakInternalToken),
+            other => other,
+        };
         let home = get("HOME");
         let t3_bin = expand_home(&non_empty("HERBOT_T3_BIN", DEFAULT_T3_BIN), home.as_deref());
         let timeout_raw = non_empty(
@@ -216,6 +226,7 @@ impl Config {
             agent_effort,
             t3_bin,
             turn_timeout_secs,
+            internal_token,
         })
     }
 }
@@ -384,6 +395,24 @@ mod tests {
             assert_eq!(err, ConfigError::InvalidTurnTimeout(bad.into()));
         }
         assert_eq!(expand_home("/opt/t3", Some("/h")), PathBuf::from("/opt/t3"));
+    }
+
+    #[test]
+    fn internal_token_is_optional_but_must_be_strong() {
+        let base = ("DATABASE_URL", "postgres://x");
+        assert_eq!(
+            Config::from_lookup(lookup(&[base])).unwrap().internal_token,
+            None
+        );
+        assert_eq!(
+            Config::from_lookup(lookup(&[base, ("HERBOT_INTERNAL_TOKEN", "short")])).unwrap_err(),
+            ConfigError::WeakInternalToken
+        );
+        let strong = "x".repeat(40);
+        let config =
+            Config::from_lookup(lookup(&[base, ("HERBOT_INTERNAL_TOKEN", strong.as_str())]))
+                .unwrap();
+        assert_eq!(config.internal_token.as_deref(), Some(strong.as_str()));
     }
 
     #[test]
