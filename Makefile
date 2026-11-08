@@ -7,7 +7,7 @@ export
 endif
 export DATABASE_URL ?= postgres://herbot:herbot@127.0.0.1:5433/herbot
 
-.PHONY: help db-up db-down db-reset run test check fmt lint smoke
+.PHONY: help db-up db-down db-reset run test test-voice check fmt lint smoke
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -26,6 +26,9 @@ run: db-up ## Run herbot-core locally (pretty logs)
 
 test: db-up ## Run every test (unit + integration against Postgres)
 	cargo test --workspace
+
+test-voice: ## Real OpenAI transcription of spoken English (needs OPENAI_API_KEY, macOS say, ffmpeg)
+	cargo test -p herbot-core --lib voice::tests::real_openai -- --ignored --nocapture
 
 check: fmt lint test ## Everything CI would run
 
