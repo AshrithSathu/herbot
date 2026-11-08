@@ -40,7 +40,8 @@ export function getRouter() {
   function signInAgainIfSignedOut(error: unknown) {
     if (!isSignedOut(error)) return
     queryClient.clear()
-    void router.navigate({ to: '/login' })
+    // The session is gone either way; an unsaved-changes prompt can't save anything now.
+    void router.navigate({ to: '/login', ignoreBlocker: true })
   }
 
   setupRouterSsrQueryIntegration({ router, queryClient })

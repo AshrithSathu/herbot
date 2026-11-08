@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
-import { createFileRoute, notFound } from '@tanstack/react-router'
+import { createFileRoute, notFound, useBlocker } from '@tanstack/react-router'
 import { BrushCleaningIcon, ExternalLinkIcon, FileTextIcon, Trash2Icon } from 'lucide-react'
 import { savePurpose, setEnabled, wipeTopic, type Topic, type TopicDetail } from '../../../api'
 import { PURPOSE_MAX, charCount, plural, purposeProblem } from '../../../format'
@@ -26,7 +26,6 @@ import {
   ItemActions,
   ItemContent,
   ItemDescription,
-  ItemGroup,
   ItemMedia,
   ItemSeparator,
   ItemTitle,
@@ -35,6 +34,7 @@ import { Kbd, KbdGroup } from '@/components/ui/kbd'
 import { Spinner } from '@/components/ui/spinner'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { useModifierKey } from '@/hooks/use-client'
 import { cn } from '@/lib/utils'
 
 export const Route = createFileRoute('/_authed/topics/$id')({
@@ -173,14 +173,20 @@ function Answering({ topic }: { topic: Topic }) {
       <FieldLabel htmlFor="answering" className="bg-card shadow-xs">
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldTitle>Answer messages here</FieldTitle>
-            <FieldDescription>
+            <FieldTitle id="answering-title">Answer messages here</FieldTitle>
+            <FieldDescription id="answering-help">
               {topic.enabled
                 ? 'On. Your messages in this topic go to its agent.'
                 : 'Off. Herbot stores nothing here and stays silent.'}
             </FieldDescription>
           </FieldContent>
-          <Switch id="answering" checked={topic.enabled} onCheckedChange={(on) => toggle.mutate(on)} />
+          <Switch
+            id="answering"
+            aria-labelledby="answering-title"
+            aria-describedby="answering-help"
+            checked={topic.enabled}
+            onCheckedChange={(on) => toggle.mutate(on)}
+          />
         </Field>
       </FieldLabel>
       {toggle.isError && (
@@ -222,6 +228,14 @@ function Purpose({ topic }: { topic: Topic }) {
 
   const count = charCount(value.trim())
   const invalid = showProblem && problem !== null
+  const mod = useModifierKey()
+
+  // Leaving with unsaved changes asks first (in the app and on reload/close).
+  const leaving = useBlocker({
+    shouldBlockFn: () => dirty && !save.isPending,
+    enableBeforeUnload: () => dirty,
+    withResolver: true,
+  })
 
   return (
     <Section id="purpose-title" title="Purpose">
@@ -289,7 +303,7 @@ function Purpose({ topic }: { topic: Topic }) {
               )}
               <span className="ml-auto hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
                 <KbdGroup>
-                  <Kbd>⌘/Ctrl</Kbd>
+                  <Kbd>{mod}</Kbd>
                   <Kbd>Enter</Kbd>
                 </KbdGroup>
                 saves
@@ -299,6 +313,22 @@ function Purpose({ topic }: { topic: Topic }) {
           </form>
         </CardContent>
       </Card>
+      <AlertDialog open={leaving.status === 'blocked'} onOpenChange={(open) => !open && leaving.reset?.()}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard your purpose changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You edited what this agent is for but didn’t save it. Leaving now throws the edit away.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel autoFocus onClick={() => leaving.reset?.()}>
+              Keep editing
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={() => leaving.proceed?.()}>Discard changes</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Section>
   )
 }
@@ -328,11 +358,11 @@ function CleanSlate({ topic }: { topic: Topic }) {
 
   return (
     <Section id="clean-slate" title="Clean slate" className="mt-4 border-t pt-8">
-      <ItemGroup className="rounded-xl border border-destructive/25">
+      <ul className="flex flex-col rounded-xl border border-destructive/25">
         {(['new', 'forget'] as const).map((kind, i) => {
           const Icon = WIPE[kind].icon
           return (
-            <div key={kind} className="contents">
+            <li key={kind}>
               {i > 0 && <ItemSeparator />}
               <Item className="flex-col items-stretch sm:flex-row sm:items-center">
                 <ItemMedia variant="icon" className="hidden text-destructive sm:flex">
@@ -377,10 +407,10 @@ function CleanSlate({ topic }: { topic: Topic }) {
                   </AlertDialog>
                 </ItemActions>
               </Item>
-            </div>
+            </li>
           )
         })}
-      </ItemGroup>
+      </ul>
       {wipe.isError && <ErrorNote title="Nothing was wiped">{wipe.error.message}</ErrorNote>}
     </Section>
   )

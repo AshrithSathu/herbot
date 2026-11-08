@@ -149,7 +149,7 @@ function SignOut() {
     mutationFn: () => logout(),
     onSuccess: async () => {
       queryClient.clear()
-      await router.navigate({ to: '/login' })
+      await router.navigate({ to: '/login', ignoreBlocker: true })
     },
   })
   return (

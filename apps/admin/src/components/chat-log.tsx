@@ -1,7 +1,7 @@
 // A topic's history as a bounded chat log: it never grows the page, opens at
 // the newest message, loads older pages on demand, and picks up new messages
 // live without yanking you away from what you're reading.
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient, useSuspenseInfiniteQuery, type InfiniteData } from '@tanstack/react-query'
 import { ArrowDownIcon, InboxIcon, MicIcon } from 'lucide-react'
 import { getMessages, type Message, type MessagePage } from '../api'
@@ -12,22 +12,14 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
 import { ClampedText } from '@/components/clamped-text'
+// Day grouping and clock times depend on your timezone, which the server doesn't know.
+import { useHydrated } from '@/hooks/use-client'
 import { cn } from '@/lib/utils'
 
 /** Within this many pixels of the bottom counts as "reading the latest". */
 const NEAR_BOTTOM = 72
 /** Longer messages are clamped to this many lines until you expand them. */
 const CLAMP_LINES = 12
-
-/** False on the server and during hydration, true after. Day grouping and
- * clock times depend on your timezone, which the server doesn't know. */
-function useHydrated(): boolean {
-  return useSyncExternalStore(
-    () => () => {},
-    () => true,
-    () => false,
-  )
-}
 
 export function ChatLog({ topicId, total }: { topicId: number; total: number }) {
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isFetchNextPageError, error } =
@@ -112,7 +104,10 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
 
   function jumpToLatest() {
     const el = scroller.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el) {
+      el.scrollTop = el.scrollHeight
+      el.focus({ preventScroll: true }) // the pill is about to vanish; keep focus in the log
+    }
     setUnseen(0)
   }
 
@@ -172,7 +167,7 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
         {unseen > 0 && (
           <Button
             size="sm"
-            className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full shadow-md duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] animate-in fade-in-0 slide-in-from-bottom-2 motion-reduce:animate-none"
+            className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full shadow-md duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] animate-in fade-in-0 slide-in-from-bottom-2"
             onClick={jumpToLatest}
           >
             <ArrowDownIcon aria-hidden />
@@ -188,19 +183,19 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
   )
 }
 
-/** Sticks to the top of the log while you scroll through that day. */
+/** A day's heading: sticks to the top of the log while you scroll through
+ * that day, and lets screen-reader users jump between days. */
 function DaySeparator({ iso }: { iso: string }) {
   const label = dayLabel(iso)
   return (
     <li
-      role="separator"
-      aria-label={label}
+      data-day={label}
       // A band, not a floating pill: messages fade out under it as they scroll.
       className="sticky top-0 z-[1] -mx-3 flex justify-center bg-gradient-to-b from-background from-55% to-transparent px-3 pt-2 pb-4 sm:-mx-4"
     >
-      <span className="rounded-full border bg-card px-2.5 py-0.5 text-xs font-medium text-muted-foreground shadow-xs">
+      <h3 className="rounded-full border bg-card px-2.5 py-0.5 text-xs font-medium text-muted-foreground shadow-xs">
         {label}
-      </span>
+      </h3>
     </li>
   )
 }
