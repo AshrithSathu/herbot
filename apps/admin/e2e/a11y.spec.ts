@@ -125,7 +125,7 @@ test('keyboard only: skip link, visible focus everywhere, switch, chat log, dial
   const log = page.getByRole('region', { name: 'Message history' })
   await log.focus()
   await page.keyboard.press('Home')
-  await expect(page.locator('[data-message-id]')).toHaveCount(60)
+  await expect(log).toHaveAttribute('data-loaded', '60')
 
   // The dialog traps focus, starts on the safe choice, and gives focus back.
   const wipe = page.getByRole('button', { name: 'Wipe the chat…' })

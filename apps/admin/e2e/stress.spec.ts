@@ -28,8 +28,13 @@ async function signIn(page: Page) {
   await expect(page.getByRole('heading', { level: 1, name: 'Overview' })).toBeVisible()
 }
 
-async function open(browser: Browser, size: { width: number; height: number }, touch = false) {
-  const context = await browser.newContext({ viewport: size, hasTouch: touch, isMobile: touch })
+async function open(
+  browser: Browser,
+  size: { width: number; height: number },
+  touch = false,
+  colorScheme: 'light' | 'dark' = 'light',
+) {
+  const context = await browser.newContext({ viewport: size, hasTouch: touch, isMobile: touch, colorScheme })
   const page = await context.newPage()
   const problems: string[] = []
   page.on('console', (m) => m.type() === 'error' && problems.push(m.text()))
@@ -64,18 +69,38 @@ async function overflowing(page: Page): Promise<string[]> {
   })
 }
 
+/** Bubbles in the DOM (virtualized: only those near the view). */
 const messages = (log: Locator) => log.locator('[data-message-id]')
+/** How many messages the log has loaded (in memory, not in the DOM). */
+const loaded = (log: Locator) => expect(log).toHaveAttribute('data-loaded', /.*/).then(() => log.getAttribute('data-loaded').then(Number))
+
+/** Scrolls the log upward until message `id` is rendered, then into view. */
+async function reveal(log: Locator, id: number) {
+  const bubble = log.locator(`[data-message-id="${id}"]`)
+  for (let i = 0; i < 60 && (await bubble.count()) === 0; i++) {
+    await log.evaluate((el) => (el.scrollTop = Math.max(0, el.scrollTop - 300)))
+    await log.page().waitForTimeout(30)
+  }
+  await bubble.scrollIntoViewIfNeeded()
+  return bubble
+}
 const atBottom = (log: Locator) =>
   log.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight < 2)
 
 test('every page fits on desktop and phone with worst-case data', async ({ browser }) => {
-  for (const [size, touch] of [[DESKTOP, false], [PHONE, true]] as const) {
-    const { page, problems, close } = await open(browser, size, touch)
+  test.setTimeout(120_000)
+  for (const [size, touch, scheme] of [
+    [DESKTOP, false, 'light'],
+    [PHONE, true, 'light'],
+    [DESKTOP, false, 'dark'],
+    [PHONE, true, 'dark'],
+  ] as const) {
+    const { page, problems, close } = await open(browser, size, touch, scheme)
     for (const path of ['/', '/topics', '/topics/2', '/topics/3', '/topics/81', '/logs', '/logs/E-1000', '/logs/E-1003']) {
       await page.goto(path)
       await expect(page.locator('main h1').first()).toBeVisible()
       await page.waitForLoadState('networkidle')
-      expect(await overflowing(page), `${path} at ${size.width}px`).toEqual([])
+      expect(await overflowing(page), `${path} at ${size.width}px, ${scheme}`).toEqual([])
     }
     expect(problems).toEqual([])
     await close()
@@ -103,7 +128,7 @@ test('the chat log stays in its box and opens at the newest message', async ({ b
     const { page, problems, close } = await open(browser, size, size === PHONE)
     await page.goto('/topics/2')
     const log = page.getByRole('region', { name: 'Message history' })
-    await expect(messages(log)).toHaveCount(30)
+    await expect(log).toHaveAttribute('data-loaded', '30')
     await expect(messages(log).last()).toHaveAttribute('data-message-id', '600')
     expect(await atBottom(log)).toBe(true)
     const box = (await log.boundingBox())!
@@ -119,27 +144,43 @@ test('scrolling up loads older pages, keeps your place, and reaches the start', 
   const { page, close } = await open(browser, DESKTOP)
   await page.goto('/topics/2')
   const log = page.getByRole('region', { name: 'Message history' })
-  await expect(messages(log)).toHaveCount(30)
+  await expect(log).toHaveAttribute('data-loaded', '30')
 
   await log.evaluate((el) => (el.scrollTop = 0))
-  await expect(messages(log)).toHaveCount(60)
+  await expect(log).toHaveAttribute('data-loaded', '60')
   // What was at the top is still in view: the older page went in above it.
   const kept = (await log.locator('[data-message-id="571"]').boundingBox())!
   const frame = (await log.boundingBox())!
   expect(kept.y).toBeGreaterThanOrEqual(frame.y - 1)
   expect(kept.y).toBeLessThan(frame.y + frame.height)
 
-  for (let i = 0; i < 25 && (await log.getByText('Start of this conversation').count()) === 0; i++) {
-    const before = await messages(log).count()
+  for (let i = 0; i < 25 && (await loaded(log)) < 600; i++) {
+    const before = await loaded(log)
     await log.evaluate((el) => (el.scrollTop = 0))
-    await expect.poll(() => messages(log).count()).toBeGreaterThan(before)
+    await expect.poll(() => loaded(log)).toBeGreaterThan(before)
   }
+  await expect(log).toHaveAttribute('data-loaded', '600')
+  await log.evaluate((el) => (el.scrollTop = 0))
   await expect(log.getByText('Start of this conversation')).toBeVisible()
-  await expect(messages(log)).toHaveCount(600)
   await expect(messages(log).first()).toHaveAttribute('data-message-id', '1')
-  // A week of history is split by day, and the labels say which day.
-  expect(await log.getByRole('heading', { level: 3 }).count()).toBeGreaterThanOrEqual(6)
-  await expect(log.getByRole('heading', { level: 3 }).last()).toHaveText(/Today|Yesterday/)
+  // All 600 are loaded, but only the ones near the view are in the page.
+  expect(await messages(log).count()).toBeLessThan(50)
+  // The first day has its heading; scrolled down, a label says which day you're in.
+  await expect(log.getByRole('heading', { level: 3 }).first()).toBeVisible()
+  await log.evaluate((el) => (el.scrollTop = el.scrollHeight / 2))
+  await expect(page.locator('[aria-hidden] > span').filter({ hasText: /\d{4}|Today|Yesterday/ })).toBeVisible()
+  // Flick to the end, as a person would, until the last rows are measured.
+  await expect
+    .poll(async () => {
+      await log.evaluate((el) => (el.scrollTop = el.scrollHeight))
+      return atBottom(log)
+    })
+    .toBe(true)
+  await expect(messages(log).last()).toHaveAttribute('data-message-id', '600')
+  // The day's heading has scrolled out of the page; the floating label and
+  // each message's own screen-reader label still say which day it is.
+  await expect(page.locator('[aria-hidden] > span').filter({ hasText: /Today|Yesterday/ })).toBeVisible()
+  await expect(messages(log).last().locator('.sr-only')).toHaveText(/^Herbot, (Today|Yesterday) at \d\d:\d\d:$/)
   await close()
 })
 
@@ -148,9 +189,7 @@ test('long and awkward messages are clamped, wrapped, and always readable', asyn
     const { page, close } = await open(browser, size, size === PHONE)
     await page.goto('/topics/2')
     const log = page.getByRole('region', { name: 'Message history' })
-    await expect(messages(log)).toHaveCount(30)
-    await log.evaluate((el) => (el.scrollTop = 0))
-    await expect(messages(log)).toHaveCount(60)
+    await expect(log).toHaveAttribute('data-loaded', '30')
     const width = (await log.boundingBox())!.width
 
     // 4,000 characters: clamped to 12 lines, with Show more / Show less.
@@ -165,13 +204,13 @@ test('long and awkward messages are clamped, wrapped, and always readable', asyn
     await expect.poll(async () => (await text.boundingBox())!.height).toBeLessThan(12 * 27)
 
     // 3,000 characters with no spaces, and a 1,000-character URL: wrapped inside.
-    for (const id of ['557', '563']) {
-      const bubble = log.locator(`[data-message-id="${id}"]`)
-      expect((await bubble.boundingBox())!.width, id).toBeLessThanOrEqual(width)
+    for (const id of [563, 557]) {
+      const bubble = await reveal(log, id)
+      expect((await bubble.boundingBox())!.width, String(id)).toBeLessThanOrEqual(width)
     }
     // 200 blank lines are clamped too, and an empty message says so.
-    await expect(log.locator('[data-message-id="559"]').getByRole('button', { name: 'Show more' })).toBeVisible()
-    await expect(log.locator('[data-message-id="561"]')).toContainText('(no text)')
+    await expect((await reveal(log, 559)).getByRole('button', { name: 'Show more' })).toBeVisible()
+    await expect(await reveal(log, 561)).toContainText('(no text)')
     await close()
   }
 })
@@ -181,7 +220,7 @@ test('new messages arrive live: followed at the bottom, counted when you scrolle
   const { page, close } = await open(browser, DESKTOP)
   await page.goto('/topics/2')
   const log = page.getByRole('region', { name: 'Message history' })
-  await expect(messages(log)).toHaveCount(30)
+  await expect(log).toHaveAttribute('data-loaded', '30')
 
   sql("INSERT INTO messages (conversation_id, tg_message_id, from_tg_user_id, from_bot, body, sent_at) VALUES (2, 10001, 111, false, 'live one', now())")
   await expect(log.getByText('live one')).toBeVisible({ timeout: 25_000 })
@@ -303,5 +342,18 @@ test('errors page 50 at a time, and huge errors stay readable', async ({ browser
   await expect(empty).toBeVisible()
   expect((await empty.innerText()).length).toBeLessThan(80)
   expect(problems).toEqual([])
+  await close()
+})
+
+test('toasts animate under 300ms, exits quicker', async ({ browser }) => {
+  const { page, close } = await open(browser, DESKTOP)
+  await page.goto('/topics/81')
+  const purpose = page.getByLabel('What this agent is for')
+  await purpose.fill('A purpose saved to see the toast timing')
+  await page.getByRole('button', { name: 'Save purpose' }).click()
+  const toast = page.locator('[data-sonner-toast]').first()
+  await expect(toast).toBeVisible()
+  const durations = await toast.evaluate((el) => getComputedStyle(el).transitionDuration.split(',').map((d) => parseFloat(d)))
+  expect(Math.max(...durations)).toBeLessThanOrEqual(0.3)
   await close()
 })

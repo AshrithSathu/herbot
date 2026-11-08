@@ -34,6 +34,8 @@ test('signing in: locked out first, wrong password explained, right one gets in'
 
   const field = page.getByLabel('Password')
   await expect(field).toBeFocused() // desktop: focused for you
+  await page.keyboard.press('Enter') // nothing typed yet
+  await expect(page.getByText('Enter your password.')).toBeVisible()
   await field.fill('not-the-password')
   await page.keyboard.press('Enter') // Enter submits
   await expect(page.getByText('Wrong password. Try again.')).toBeVisible()
