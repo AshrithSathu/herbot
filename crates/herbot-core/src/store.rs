@@ -1,5 +1,6 @@
 //! Database operations for chats, conversations and messages.
 
+use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -34,6 +35,10 @@ pub struct ConversationStatus {
     pub setup_state: SetupState,
     /// Relative to the agents root, e.g. `chat_-100…/topic_5/AGENTS.md`.
     pub agents_md_path: Option<String>,
+    pub agents_md_updated_at: Option<DateTime<Utc>>,
+    pub t3_project_registered: bool,
+    /// Opens the active thread in the T3 Code app.
+    pub thread_link: Option<String>,
 }
 
 impl ConversationStatus {
@@ -222,13 +227,19 @@ pub async fn conversation_status_by_id(
         Option<String>,
         String,
         Option<String>,
+        Option<DateTime<Utc>>,
+        bool,
+        Option<String>,
     ) = sqlx::query_as(
         "SELECT c.title, c.kind, c.is_forum, v.tg_topic_id, v.name,
                 (SELECT count(*) FROM messages m WHERE m.conversation_id = v.id),
                 b.name,
                 (SELECT t.t3_thread_id FROM agent_threads t
                   WHERE t.conversation_id = v.id AND t.status = 'active'),
-                v.purpose, v.setup_state, v.agents_md_path
+                v.purpose, v.setup_state, v.agents_md_path,
+                v.agents_md_updated_at, v.t3_project_registered,
+                (SELECT t.t3_link FROM agent_threads t
+                  WHERE t.conversation_id = v.id AND t.status = 'active')
          FROM conversations v
          JOIN chats c ON c.id = v.chat_id
          LEFT JOIN bots b ON b.id = v.bot_id
@@ -250,6 +261,9 @@ pub async fn conversation_status_by_id(
         purpose: row.8,
         setup_state: SetupState::parse(&row.9),
         agents_md_path: row.10,
+        agents_md_updated_at: row.11,
+        t3_project_registered: row.12,
+        thread_link: row.13,
     })
 }
 
@@ -300,7 +314,7 @@ pub async fn set_purpose(
     let prompt: Option<Option<i32>> = sqlx::query_scalar(
         "UPDATE conversations c
          SET purpose = $2, setup_state = 'ready', setup_prompt_tg_message_id = NULL,
-             agents_md_path = $3
+             agents_md_path = $3, agents_md_updated_at = now()
          FROM (SELECT id, setup_prompt_tg_message_id AS old FROM conversations WHERE id = $1) o
          WHERE c.id = o.id
          RETURNING o.old",
@@ -351,6 +365,124 @@ pub async fn save_offset(pool: &PgPool, offset: i32) -> Result<(), sqlx::Error> 
     )
     .bind(OFFSET_KEY)
     .bind(json!(offset))
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+/// The conversation's current T3 thread.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct ActiveThread {
+    pub id: i64,
+    pub t3_thread_id: String,
+    pub created_at: DateTime<Utc>,
+    pub last_turn_at: Option<DateTime<Utc>>,
+}
+
+pub async fn active_thread(
+    pool: &PgPool,
+    conversation_id: i64,
+) -> Result<Option<ActiveThread>, sqlx::Error> {
+    sqlx::query_as::<_, ActiveThread>(
+        "SELECT id, t3_thread_id, created_at, last_turn_at FROM agent_threads
+         WHERE conversation_id = $1 AND status = 'active'",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Records a newly started thread as the conversation's active one.
+pub async fn insert_thread(
+    pool: &PgPool,
+    conversation_id: i64,
+    t3_thread_id: &str,
+    t3_link: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO agent_threads (conversation_id, bot_id, t3_thread_id, t3_link, last_turn_at)
+         SELECT $1, bot_id, $2, $3, now() FROM conversations WHERE id = $1
+         ON CONFLICT (t3_thread_id) DO NOTHING",
+    )
+    .bind(conversation_id)
+    .bind(t3_thread_id)
+    .bind(t3_link)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+pub async fn touch_thread(pool: &PgPool, thread_row_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE agent_threads SET last_turn_at = now() WHERE id = $1")
+        .bind(thread_row_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+/// `/new`: archives the active thread. Returns its T3 id if there was one.
+pub async fn archive_thread(
+    pool: &PgPool,
+    conversation_id: i64,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "UPDATE agent_threads SET status = 'archived', archived_at = now()
+         WHERE conversation_id = $1 AND status = 'active'
+         RETURNING t3_thread_id",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// `/forget`: deletes the conversation's stored messages and archives its
+/// thread. Returns how many messages were deleted.
+pub async fn forget_conversation(pool: &PgPool, conversation_id: i64) -> Result<u64, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let deleted = sqlx::query("DELETE FROM messages WHERE conversation_id = $1")
+        .bind(conversation_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    sqlx::query(
+        "UPDATE agent_threads SET status = 'archived', archived_at = now()
+         WHERE conversation_id = $1 AND status = 'active'",
+    )
+    .bind(conversation_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(deleted)
+}
+
+pub async fn mark_project_registered(
+    pool: &PgPool,
+    conversation_id: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE conversations SET t3_project_registered = true WHERE id = $1")
+        .bind(conversation_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+/// Stores one of the bot's own replies, so history search sees both sides.
+pub async fn store_bot_message(
+    pool: &PgPool,
+    conversation_id: i64,
+    tg_message_id: i32,
+    bot_user_id: u64,
+    body: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO messages (conversation_id, tg_message_id, from_tg_user_id, from_bot, body, sent_at)
+         VALUES ($1, $2, $3, true, $4, now())
+         ON CONFLICT (conversation_id, tg_message_id) DO NOTHING",
+    )
+    .bind(conversation_id)
+    .bind(tg_message_id)
+    .bind(bot_user_id as i64)
+    .bind(body)
     .execute(pool)
     .await
     .map(|_| ())

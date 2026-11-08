@@ -179,6 +179,7 @@ mod tests {
             topic_id: Some(7),
             message_id: 1,
             from_user_id: from,
+            from_name: "Ashrith".into(),
             from_is_bot: false,
             text: text.into(),
             voice: None,
@@ -266,7 +267,11 @@ mod tests {
     fn everyone_else_is_ignored_even_with_commands() {
         for m in [
             msg(STRANGER, "hello", None),
-            msg(STRANGER, "/forget", Some(Command::Forget)),
+            msg(
+                STRANGER,
+                "/forget",
+                Some(Command::Forget { confirmed: false }),
+            ),
         ] {
             assert!(is_ignore(&decide(Inbound::Message(m), &locked())));
         }

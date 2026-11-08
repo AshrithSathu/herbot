@@ -5,6 +5,7 @@
 
 use std::future::Future;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -14,17 +15,20 @@ use sqlx::PgPool;
 use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types::{
-    AllowedUpdate, BotCommand, BotCommandScope, CallbackQueryId, ChatId as TgChatId, FileId,
-    InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ReactionType, ReplyParameters, ThreadId,
+    AllowedUpdate, BotCommand, BotCommandScope, CallbackQueryId, ChatAction, ChatId as TgChatId,
+    FileId, InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ReactionType, ReplyParameters,
+    ThreadId,
 };
 use tokio::sync::watch;
 
+use crate::agent::AgentRunner;
 use crate::agents_md;
 use crate::errors::{self, ErrorId};
 use crate::policy::{self, Action, Rules};
 use crate::setup;
 use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
 use crate::telegram::{self, ButtonPress, ChatKind, Command, Inbound, InboundMessage};
+use crate::turns::{Lanes, TurnDeps, TurnJob, TurnQueue};
 use crate::voice::{MAX_VOICE_SECONDS, Transcriber, VoiceError};
 
 /// How long one `getUpdates` call waits for new updates. Kept under
@@ -39,13 +43,20 @@ pub struct ApiError(pub String);
 
 /// The Telegram calls Herbot makes. Implemented by the real bot and by a fake
 /// in tests.
-pub trait TelegramApi: Sync {
+pub trait TelegramApi: Send + Sync {
     fn send_text(
         &self,
         chat_id: i64,
         topic_id: Option<i32>,
         reply_to: Option<i32>,
         text: &str,
+    ) -> impl Future<Output = Result<i32, ApiError>> + Send;
+
+    /// Shows "typing…" in a chat or topic for a few seconds.
+    fn typing(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
     ) -> impl Future<Output = Result<(), ApiError>> + Send;
 
     /// Sends a message with inline buttons, given as rows of (label, callback
@@ -112,7 +123,7 @@ impl TelegramApi for BotApi {
         topic_id: Option<i32>,
         reply_to: Option<i32>,
         text: &str,
-    ) -> Result<(), ApiError> {
+    ) -> Result<i32, ApiError> {
         let mut req = self.0.send_message(ChatId(chat_id), text);
         if let Some(topic) = topic_id {
             req = req.message_thread_id(ThreadId(MessageId(topic)));
@@ -122,7 +133,15 @@ impl TelegramApi for BotApi {
                 ReplyParameters::new(MessageId(reply)).allow_sending_without_reply(),
             );
         }
-        req.await.map(|_| ()).map_err(|e| ApiError(e.to_string()))
+        req.await.map(|m| m.id.0).map_err(api_err)
+    }
+
+    async fn typing(&self, chat_id: i64, topic_id: Option<i32>) -> Result<(), ApiError> {
+        let mut req = self.0.send_chat_action(ChatId(chat_id), ChatAction::Typing);
+        if let Some(topic) = topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(topic)));
+        }
+        req.await.map(|_| ()).map_err(api_err)
     }
 
     async fn send_buttons(
@@ -224,6 +243,8 @@ pub struct Ctx<'a, A: TelegramApi, T: Transcriber> {
     pub agents_dir: &'a Path,
     /// Shown in /status, e.g. "gpt-6.1-terra · medium".
     pub agent_label: &'a str,
+    /// Where messages for the agents go (one lane per conversation).
+    pub turns: &'a dyn TurnQueue,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -379,6 +400,25 @@ async fn mark_seen<A: TelegramApi, T: Transcriber>(ctx: &Ctx<'_, A, T>, msg: &In
     }
 }
 
+/// Hands an admin message to its conversation's agent lane.
+fn submit_turn<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    msg: &InboundMessage,
+    conversation_id: i64,
+) {
+    ctx.turns.submit(TurnJob {
+        conversation_id,
+        tg_chat_id: msg.chat.tg_chat_id,
+        topic_id: msg.topic_id,
+        reply_to: msg.message_id,
+        text: msg.text.clone(),
+        is_voice: msg.voice.is_some(),
+        sender_name: msg.from_name.clone(),
+        sender_id: msg.from_user_id,
+        sent_at: msg.sent_at,
+    });
+}
+
 async fn reply<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
@@ -442,6 +482,7 @@ async fn continue_setup<A: TelegramApi, T: Transcriber>(
             if is_voice {
                 reply(ctx, msg, &setup::heard(&msg.text)).await?;
             }
+            submit_turn(ctx, msg, conversation_id);
         }
         // A new topic: ask what this agent should be.
         SetupState::New => {
@@ -466,11 +507,12 @@ async fn continue_setup<A: TelegramApi, T: Transcriber>(
             }
             Err(problem) => reply(ctx, msg, &problem.to_string()).await?,
         },
-        // Step 4 sends the message to the conversation's T3 thread here.
+        // Set up: the message goes to the conversation's agent.
         SetupState::Ready => {
             if is_voice {
                 reply(ctx, msg, &setup::heard(&msg.text)).await?;
             }
+            submit_turn(ctx, msg, conversation_id);
         }
     }
     Ok(())
@@ -559,11 +601,38 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
                 purpose,
                 s.agents_md_path.as_deref().unwrap_or("not written yet"),
                 ctx.agent_label,
-                s.thread_id.as_deref().unwrap_or("none yet (Step 4)"),
+                match (&s.thread_id, &s.thread_link) {
+                    (Some(_), Some(link)) => link.clone(),
+                    (Some(id), None) => id.clone(),
+                    (None, _) => "none yet (your next message starts one)".to_string(),
+                },
             )
         }
-        Command::New | Command::Forget => {
-            "⏳ That arrives in Step 4, once T3 threads are connected.".to_string()
+        Command::New => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            match store::archive_thread(ctx.pool, s.conversation_id).await? {
+                Some(_) => "🆕 Fresh start. Your next message begins a new thread here. \
+                            The old one stays in T3 Code."
+                    .to_string(),
+                None => "🆕 There's no thread here yet. Your next message starts one.".to_string(),
+            }
+        }
+        Command::Forget { confirmed: false } => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            format!(
+                "⚠️ This deletes the {} messages stored for {} and starts a fresh thread. \
+                 Send /forget yes to confirm.",
+                s.message_count,
+                s.place()
+            )
+        }
+        Command::Forget { confirmed: true } => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            let deleted = store::forget_conversation(ctx.pool, s.conversation_id).await?;
+            format!(
+                "🧹 Done. Deleted {deleted} stored messages and archived this topic's thread. \
+                 The old thread still exists in T3 Code if you want to delete it there."
+            )
         }
         Command::Unknown(name) => format!("I don't know /{name}. Try /help."),
     };
@@ -657,30 +726,41 @@ pub async fn register_commands(bot: &Bot, rules: &Rules) -> Result<(), teloxide:
 
 /// Long-polls Telegram until `shutdown` flips to true.
 /// What the poller needs besides the bot and database.
-pub struct RunSettings<T: Transcriber> {
+pub struct RunSettings<T: Transcriber, R: AgentRunner> {
     pub rules: Rules,
     pub bot_username: String,
+    pub bot_user_id: u64,
     pub transcriber: T,
+    pub runner: R,
+    /// Absolute path of the conversation folders.
     pub agents_dir: std::path::PathBuf,
     pub agent_label: String,
 }
 
-pub async fn run<T: Transcriber>(
+pub async fn run<T: Transcriber, R: AgentRunner>(
     bot: Bot,
     pool: PgPool,
-    settings: RunSettings<T>,
+    settings: RunSettings<T, R>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let api = BotApi(bot.clone());
+    let api = Arc::new(BotApi(bot.clone()));
+    let lanes = Lanes::new(TurnDeps {
+        pool: pool.clone(),
+        api: api.clone(),
+        runner: Arc::new(settings.runner),
+        agents_dir: settings.agents_dir.clone(),
+        bot_user_id: settings.bot_user_id,
+    });
     let bot_username = settings.bot_username.clone();
     let ctx = Ctx {
         pool: &pool,
-        api: &api,
+        api: &*api,
         transcriber: &settings.transcriber,
         rules: settings.rules,
         bot_username: &bot_username,
         agents_dir: &settings.agents_dir,
         agent_label: &settings.agent_label,
+        turns: &lanes,
     };
 
     let mut offset = match store::load_offset(&pool).await {

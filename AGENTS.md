@@ -22,7 +22,7 @@ A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no 
 
 ## Models and voice
 
-- Conversation agents run in T3 Code on the Codex subscription: **`gpt-6.1-terra`, reasoning effort `medium`** (`HERBOT_AGENT_MODEL`, `HERBOT_AGENT_EFFORT`).
+- Conversation agents run in T3 Code on the Codex subscription: **`gpt-6.1-terra`, reasoning effort `medium`** (`HERBOT_AGENT_MODEL`, `HERBOT_AGENT_EFFORT`). herbot-core drives T3's host CLI (`t3 thread start|send --wait --json`, `t3 project add`, `t3 thread list`) through the `AgentRunner` trait (`agent.rs`). Each conversation folder under `agents/` is a T3 project, so Codex loads its AGENTS.md. T3 passes no effort, so Codex's own `model_reasoning_effort` applies; startup warns if it differs.
 - Voice notes are transcribed by OpenAI **`gpt-transcribe`**, English only (`language=en`), with `OPENAI_API_KEY`. This key is used for nothing else. No local speech models.
 - Voice notes longer than 10 minutes are refused before download, to cap cost.
 - Everything is English.

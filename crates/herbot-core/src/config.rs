@@ -20,6 +20,21 @@ pub struct Config {
     pub agent_model: String,
     /// Reasoning effort for that model (`HERBOT_AGENT_EFFORT`).
     pub agent_effort: String,
+    /// T3 Code's CLI (`HERBOT_T3_BIN`, default `~/.t3/bin/t3`).
+    pub t3_bin: PathBuf,
+    /// Longest an agent turn may take (`HERBOT_TURN_TIMEOUT_SECS`, default 600).
+    pub turn_timeout_secs: u64,
+}
+
+pub const DEFAULT_T3_BIN: &str = "~/.t3/bin/t3";
+pub const DEFAULT_TURN_TIMEOUT_SECS: u64 = 600;
+
+/// Expands a leading `~/` using `home`.
+pub fn expand_home(path: &str, home: Option<&str>) -> PathBuf {
+    match (path.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(path),
+    }
 }
 
 pub const DEFAULT_AGENTS_DIR: &str = "agents";
@@ -95,6 +110,8 @@ pub enum ConfigError {
         "HERBOT_AGENT_EFFORT {0:?} is not valid (expected none, low, medium, high, xhigh or max)"
     )]
     InvalidAgentEffort(String),
+    #[error("HERBOT_TURN_TIMEOUT_SECS {0:?} is not valid (expected seconds between 30 and 3600)")]
+    InvalidTurnTimeout(String),
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -176,6 +193,18 @@ impl Config {
             return Err(ConfigError::InvalidAgentEffort(agent_effort));
         }
 
+        let home = get("HOME");
+        let t3_bin = expand_home(&non_empty("HERBOT_T3_BIN", DEFAULT_T3_BIN), home.as_deref());
+        let timeout_raw = non_empty(
+            "HERBOT_TURN_TIMEOUT_SECS",
+            &DEFAULT_TURN_TIMEOUT_SECS.to_string(),
+        );
+        let turn_timeout_secs = timeout_raw
+            .parse::<u64>()
+            .ok()
+            .filter(|s| (30..=3600).contains(s))
+            .ok_or(ConfigError::InvalidTurnTimeout(timeout_raw))?;
+
         Ok(Self {
             bind,
             database_url,
@@ -185,6 +214,8 @@ impl Config {
             agents_dir,
             agent_model,
             agent_effort,
+            t3_bin,
+            turn_timeout_secs,
         })
     }
 }
@@ -333,6 +364,26 @@ mod tests {
         ]))
         .unwrap_err();
         assert_eq!(err, ConfigError::InvalidAgentEffort("turbo".into()));
+    }
+
+    #[test]
+    fn t3_cli_and_timeout_defaults() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("HOME", "/Users/ashrith"),
+        ]))
+        .unwrap();
+        assert_eq!(config.t3_bin, PathBuf::from("/Users/ashrith/.t3/bin/t3"));
+        assert_eq!(config.turn_timeout_secs, 600);
+        for bad in ["5", "abc", "99999"] {
+            let err = Config::from_lookup(lookup(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("HERBOT_TURN_TIMEOUT_SECS", bad),
+            ]))
+            .unwrap_err();
+            assert_eq!(err, ConfigError::InvalidTurnTimeout(bad.into()));
+        }
+        assert_eq!(expand_home("/opt/t3", Some("/h")), PathBuf::from("/opt/t3"));
     }
 
     #[test]

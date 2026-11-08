@@ -45,7 +45,10 @@ pub enum Command {
     Status,
     Setup,
     New,
-    Forget,
+    /// `/forget` asks first; `/forget yes` does it.
+    Forget {
+        confirmed: bool,
+    },
     Unknown(String),
 }
 
@@ -65,6 +68,8 @@ pub struct InboundMessage {
     pub topic_id: Option<i32>,
     pub message_id: i32,
     pub from_user_id: u64,
+    /// Sender's first name, for the agent's `<herbot-meta>` header.
+    pub from_name: String,
     pub from_is_bot: bool,
     /// Text, or a photo/document/voice caption. For a voice note without a
     /// caption this starts empty and the poller fills in the transcript.
@@ -263,6 +268,7 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         topic_id: topic,
         message_id: msg.id.0,
         from_user_id: from.id.0,
+        from_name: from.first_name.clone(),
         from_is_bot: from.is_bot,
         text,
         voice,
@@ -317,7 +323,12 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
         "status" => Command::Status,
         "setup" => Command::Setup,
         "new" => Command::New,
-        "forget" => Command::Forget,
+        "forget" => Command::Forget {
+            confirmed: rest
+                .split_whitespace()
+                .nth(1)
+                .is_some_and(|arg| arg.eq_ignore_ascii_case("yes")),
+        },
         other => Command::Unknown(other.to_string()),
     };
     CommandParse::ForThisBot(cmd)
@@ -340,7 +351,7 @@ mod tests {
         );
         assert_eq!(
             parse_command("/FORGET please", bot),
-            CommandParse::ForThisBot(Command::Forget)
+            CommandParse::ForThisBot(Command::Forget { confirmed: false })
         );
         assert_eq!(
             parse_command("/weather", bot),

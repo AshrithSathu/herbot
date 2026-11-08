@@ -11,6 +11,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use serde_json::Value;
 use sqlx::PgPool;
@@ -24,6 +25,7 @@ use herbot_core::poller::{
 use herbot_core::setup;
 use herbot_core::store;
 use herbot_core::telegram::{self, ChatKind, Command, Inbound};
+use herbot_core::turns::{TurnJob, TurnQueue};
 use herbot_core::voice::{Transcriber, VoiceError};
 
 const ADMIN: u64 = 111;
@@ -83,6 +85,7 @@ struct FakeApi {
     reactions: Mutex<Vec<(i64, i32, String)>>,
     fail_sends: bool,
     fail_reactions: bool,
+    next_id: AtomicI32,
 }
 
 impl FakeApi {
@@ -117,7 +120,7 @@ impl TelegramApi for FakeApi {
         topic_id: Option<i32>,
         reply_to: Option<i32>,
         text: &str,
-    ) -> Result<(), ApiError> {
+    ) -> Result<i32, ApiError> {
         self.push(Call::Send {
             chat: chat_id,
             topic: topic_id,
@@ -127,6 +130,10 @@ impl TelegramApi for FakeApi {
         if self.fail_sends {
             return Err(ApiError("fake send failure".into()));
         }
+        Ok(700 + self.next_id.fetch_add(1, Ordering::SeqCst))
+    }
+
+    async fn typing(&self, _chat_id: i64, _topic_id: Option<i32>) -> Result<(), ApiError> {
         Ok(())
     }
 
@@ -219,6 +226,23 @@ impl Transcriber for FakeVoice {
     }
 }
 
+/// Records the turns the poller hands to agent lanes (Step 4 tests run the
+/// turns themselves in tests/turns.rs).
+#[derive(Default)]
+struct Jobs(Mutex<Vec<TurnJob>>);
+
+impl TurnQueue for Jobs {
+    fn submit(&self, job: TurnJob) {
+        self.0.lock().unwrap().push(job);
+    }
+}
+
+impl Jobs {
+    fn all(&self) -> Vec<TurnJob> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
 // ---- harness ----
 
 struct H {
@@ -226,6 +250,7 @@ struct H {
     api: FakeApi,
     voice: FakeVoice,
     agents: tempfile::TempDir,
+    jobs: Jobs,
 }
 
 impl H {
@@ -235,6 +260,7 @@ impl H {
             api: FakeApi::default(),
             voice: FakeVoice::saying("unused"),
             agents: tempfile::tempdir().unwrap(),
+            jobs: Jobs::default(),
         }
     }
 
@@ -247,6 +273,7 @@ impl H {
             bot_username: BOT,
             agents_dir: self.agents.path(),
             agent_label: AGENT_LABEL,
+            turns: &self.jobs,
         }
     }
 
@@ -853,6 +880,122 @@ async fn a_one_word_answer_is_not_a_purpose(pool: PgPool) {
     );
 }
 
+// ---- which messages go to the agent (Step 4) ----
+
+#[sqlx::test(migrations = "./migrations")]
+async fn general_messages_go_to_the_agent_right_away(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_general_text"]).await;
+    let jobs = h.jobs.all();
+    assert_eq!(jobs.len(), 1);
+    let job = &jobs[0];
+    assert_eq!((job.tg_chat_id, job.topic_id, job.reply_to), (HQ, None, 40));
+    assert_eq!(job.text, "hello from General");
+    assert_eq!(
+        (job.sender_name.as_str(), job.sender_id, job.is_voice),
+        ("Ashrith", ADMIN, false)
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn setup_messages_never_reach_the_agent(pool: PgPool) {
+    let h = H::new(pool);
+    // First message (greeting), then the purpose answer: neither is a turn.
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    assert!(h.jobs.all().is_empty());
+    // After setup, messages are turns.
+    h.run(&["admin_topic_third"]).await;
+    let jobs = h.jobs.all();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        (jobs[0].topic_id, jobs[0].text.as_str()),
+        (Some(7), "what about rmcp?")
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn voice_turns_carry_the_transcript(pool: PgPool) {
+    let h = H::new(pool);
+    h.voice.set(Ok("summarise today's news".into()));
+    h.run(&["voice_in_general"]).await;
+    let jobs = h.jobs.all();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        (jobs[0].text.as_str(), jobs[0].is_voice),
+        ("summarise today's news", true)
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn commands_strangers_and_duplicates_are_not_turns(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&[
+        "admin_status_general",
+        "stranger_in_topic",
+        "admin_dm_text",
+        "admin_general_text",
+        "admin_general_text",
+    ])
+    .await;
+    assert_eq!(h.jobs.all().len(), 1, "only the first General message");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn new_archives_the_thread(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_general_text"]).await;
+    sqlx::query("INSERT INTO agent_threads (conversation_id, t3_thread_id) VALUES (1, 't3-old')")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    h.api.clear();
+    let mut new = fixture("admin_status_general");
+    set_text(&mut new, "/new");
+    assert!(poller::process(&h.ctx(LOCKED), &new).await.is_none());
+    assert!(h.api.sent_texts()[0].starts_with("🆕 Fresh start."));
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM agent_threads WHERE t3_thread_id = 't3-old'")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "archived");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn forget_asks_first_then_deletes(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_general_text"]).await;
+    h.api.clear();
+
+    let mut ask = fixture("admin_status_general");
+    set_text(&mut ask, "/forget");
+    assert!(poller::process(&h.ctx(LOCKED), &ask).await.is_none());
+    assert!(h.api.sent_texts()[0].contains("Send /forget yes to confirm"));
+    assert_eq!(
+        h.count("SELECT count(*) FROM messages").await,
+        1,
+        "nothing deleted yet"
+    );
+
+    let mut yes = fixture("admin_status_general");
+    set_text(&mut yes, "/forget yes");
+    assert!(poller::process(&h.ctx(LOCKED), &yes).await.is_none());
+    assert!(h.api.sent_texts()[1].starts_with("🧹 Done. Deleted 1 stored messages"));
+    assert_eq!(h.count("SELECT count(*) FROM messages").await, 0);
+}
+
+fn set_text(update: &mut Update, text: &str) {
+    if let teloxide::types::UpdateKind::Message(m) = &mut update.kind
+        && let teloxide::types::MessageKind::Common(c) = &mut m.kind
+        && let teloxide::types::MediaKind::Text(t) = &mut c.media_kind
+    {
+        t.text = text.into();
+        t.entities.clear();
+    } else {
+        panic!("not a text message fixture");
+    }
+}
+
 // ---- 👀 "seen it" reactions ----
 
 #[sqlx::test(migrations = "./migrations")]
@@ -993,7 +1136,10 @@ async fn status_before_setup_says_so(pool: PgPool) {
         "{text}"
     );
     assert!(text.contains("Agent file: not written yet"), "{text}");
-    assert!(text.contains("none yet (Step 4)"), "{text}");
+    assert!(
+        text.contains("Thread: none yet (your next message starts one)"),
+        "{text}"
+    );
     assert_eq!(
         h.count("SELECT count(*) FROM messages").await,
         0,

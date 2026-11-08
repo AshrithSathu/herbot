@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use herbot_core::{app, config::Config, db, policy, poller, telemetry, voice};
+use herbot_core::{agent, app, config::Config, db, policy, poller, telemetry, voice};
 use teloxide::prelude::*;
 use tokio::sync::watch;
 
@@ -59,11 +59,28 @@ async fn main() -> anyhow::Result<()> {
                     voice::AnyTranscriber::Off(voice::NoTranscriber)
                 }
             };
+            let agents_dir = absolute_agents_dir(&config.agents_dir)?;
+            check_t3_cli(&config.t3_bin).await?;
+            warn_if_codex_effort_differs(&config.agent_effort);
+            let runner = agent::T3Cli {
+                bin: config.t3_bin.clone(),
+                provider: "codex".to_string(),
+                model: config.agent_model.clone(),
+                timeout: Duration::from_secs(config.turn_timeout_secs),
+            };
+            tracing::info!(
+                model = %config.agent_model,
+                effort = %config.agent_effort,
+                agents_dir = %agents_dir.display(),
+                "agents run as T3 Code threads"
+            );
             let settings = poller::RunSettings {
                 rules,
                 bot_username: username.clone(),
+                bot_user_id: me.id.0,
                 transcriber,
-                agents_dir: config.agents_dir.clone(),
+                runner,
+                agents_dir,
                 agent_label: format!("{} · {}", config.agent_model, config.agent_effort),
             };
             poller_task = Some(tokio::spawn(poller::run(
@@ -125,4 +142,57 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
     tracing::info!("shutdown signal received");
+}
+
+/// The agents folder as an absolute path (T3 needs one), created if missing.
+fn absolute_agents_dir(dir: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("could not create agents folder {}", dir.display()))?;
+    dir.canonicalize()
+        .with_context(|| format!("could not resolve agents folder {}", dir.display()))
+}
+
+/// Fails startup if the T3 CLI can't run or lacks `thread` (needs a 2026 nightly).
+async fn check_t3_cli(bin: &std::path::Path) -> anyhow::Result<()> {
+    let out = tokio::process::Command::new(bin)
+        .args(["thread", "--help"])
+        .output()
+        .await
+        .with_context(|| {
+            format!(
+                "could not run the T3 CLI at {} (set HERBOT_T3_BIN)",
+                bin.display()
+            )
+        })?;
+    let help = String::from_utf8_lossy(&out.stdout);
+    anyhow::ensure!(
+        help.contains("start") && help.contains("send"),
+        "{} has no `thread start/send`; update T3 Code or point HERBOT_T3_BIN at ~/.t3/bin/t3",
+        bin.display()
+    );
+    Ok(())
+}
+
+/// T3 doesn't pass a reasoning effort, so Codex uses its own config. Warn
+/// loudly if that isn't the effort Herbot is configured for.
+fn warn_if_codex_effort_differs(wanted: &str) {
+    let codex_home = std::env::var("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".codex")));
+    let Ok(codex_home) = codex_home else { return };
+    let path = codex_home.join("config.toml");
+    let effort = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|toml| agent::codex_config_effort(&toml));
+    match effort {
+        Some(effort) if effort == wanted => {
+            tracing::info!(%effort, "Codex reasoning effort matches")
+        }
+        other => tracing::warn!(
+            wanted,
+            found = ?other,
+            config = %path.display(),
+            "Codex model_reasoning_effort differs from HERBOT_AGENT_EFFORT; agent turns will use Codex's setting"
+        ),
+    }
 }
