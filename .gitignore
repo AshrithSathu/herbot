@@ -1,0 +1,8 @@
+/target
+.env
+*.log
+.DS_Store
+node_modules/
+# WhatsApp session state and Codex logins must never be committed
+apps/wa-bridge/store/
+**/auth.json

@@ -1,0 +1,23 @@
+# Local development stack. Step 1 only needs Postgres.
+# Later steps add: wa-bridge, herbot-core, herbot-mcp, bots-t3, admin.
+name: herbot
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: herbot
+      POSTGRES_PASSWORD: herbot
+      POSTGRES_DB: herbot
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U herbot -d herbot"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
