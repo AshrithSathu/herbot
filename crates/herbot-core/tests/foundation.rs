@@ -252,11 +252,11 @@ async fn setup_state_rules_are_enforced(pool: PgPool) {
         .unwrap();
     assert_eq!(state, "new");
 
-    // Ready needs a purpose; purposes are 1..=1000 characters.
+    // Ready needs a purpose; purposes are 1..=8000 characters.
     for bad in [
         "UPDATE conversations SET setup_state = 'ready'",
         "UPDATE conversations SET purpose = ''",
-        "UPDATE conversations SET purpose = repeat('x', 1001)",
+        "UPDATE conversations SET purpose = repeat('x', 8001)",
         "UPDATE conversations SET setup_state = 'maybe'",
     ] {
         assert!(sqlx::query(bad).execute(&pool).await.is_err(), "{bad}");
