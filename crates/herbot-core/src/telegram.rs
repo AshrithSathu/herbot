@@ -5,7 +5,8 @@
 
 use chrono::{DateTime, Utc};
 use teloxide::types::{
-    Chat, ChatKind as TgChatKind, ChatMemberUpdated, Message, PublicChatKind, Update, UpdateKind,
+    CallbackQuery, Chat, ChatKind as TgChatKind, ChatMemberUpdated, Message, PublicChatKind,
+    Update, UpdateKind,
 };
 
 /// The kinds of chat Herbot works in. Channels are ignored.
@@ -42,6 +43,7 @@ pub enum Command {
     Start,
     Help,
     Status,
+    Setup,
     New,
     Forget,
     Unknown(String),
@@ -49,6 +51,7 @@ pub enum Command {
 
 /// All commands shown in Telegram's `/` menu, with descriptions.
 pub const COMMAND_MENU: &[(&str, &str)] = &[
+    ("setup", "Set what this conversation is for"),
     ("status", "Show this conversation's details"),
     ("new", "Start a fresh thread for this conversation"),
     ("forget", "Wipe this conversation's thread and history"),
@@ -97,6 +100,34 @@ pub enum Inbound {
         title: String,
         by_user_id: Option<u64>,
     },
+    /// An inline button under one of the bot's messages was tapped.
+    ButtonPressed(ButtonPress),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ButtonPress {
+    pub chat: ChatRef,
+    pub topic_id: Option<i32>,
+    /// The bot message the button belongs to.
+    pub message_id: i32,
+    pub from_user_id: u64,
+    pub data: String,
+    /// Must be answered so Telegram stops the button's loading spinner.
+    pub callback_id: String,
+}
+
+impl Inbound {
+    /// The chat this event happened in.
+    pub fn chat(&self) -> &ChatRef {
+        match self {
+            Inbound::Message(m) => &m.chat,
+            Inbound::AddedToChat { chat, .. }
+            | Inbound::RemovedFromChat { chat, .. }
+            | Inbound::TopicCreated { chat, .. }
+            | Inbound::ChatRenamed { chat, .. } => chat,
+            Inbound::ButtonPressed(press) => &press.chat,
+        }
+    }
 }
 
 /// Converts one update. Returns `None` for updates Herbot doesn't care about
@@ -105,8 +136,23 @@ pub fn normalize(update: &Update, bot_username: &str) -> Option<Inbound> {
     match &update.kind {
         UpdateKind::Message(msg) => normalize_message(msg, bot_username),
         UpdateKind::MyChatMember(change) => normalize_membership(change),
+        UpdateKind::CallbackQuery(query) => normalize_callback(query),
         _ => None,
     }
+}
+
+fn normalize_callback(query: &CallbackQuery) -> Option<Inbound> {
+    let message = query.message.as_ref()?;
+    let chat = chat_ref(message.chat())?;
+    let topic_id = message.regular_message().and_then(topic_id);
+    Some(Inbound::ButtonPressed(ButtonPress {
+        chat,
+        topic_id,
+        message_id: message.id().0,
+        from_user_id: query.from.id.0,
+        data: query.data.clone()?,
+        callback_id: query.id.0.clone(),
+    }))
 }
 
 fn chat_ref(chat: &Chat) -> Option<ChatRef> {
@@ -247,6 +293,7 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
         "start" => Command::Start,
         "help" => Command::Help,
         "status" => Command::Status,
+        "setup" => Command::Setup,
         "new" => Command::New,
         "forget" => Command::Forget,
         other => Command::Unknown(other.to_string()),

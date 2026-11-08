@@ -18,16 +18,54 @@ pub enum StoreOutcome {
     Disabled,
 }
 
-/// Snapshot used by `/status`.
+/// Snapshot used by `/status` and the setup flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationStatus {
     pub conversation_id: i64,
     pub chat_title: String,
     pub chat_kind: String,
+    pub is_forum: bool,
+    pub tg_topic_id: Option<i32>,
     pub topic_name: Option<String>,
     pub message_count: i64,
     pub bot_name: Option<String>,
     pub thread_id: Option<String>,
+    pub purpose: Option<String>,
+    pub setup_state: SetupState,
+}
+
+impl ConversationStatus {
+    /// Human name for where this conversation lives, e.g. "HQ › Research".
+    pub fn place(&self) -> String {
+        match (self.chat_kind.as_str(), self.tg_topic_id, &self.topic_name) {
+            ("private", _, _) => "Direct messages".to_string(),
+            (_, Some(_), Some(name)) => format!("{} › {}", self.chat_title, name),
+            (_, Some(id), None) => format!("{} › topic {}", self.chat_title, id),
+            (_, None, _) if self.is_forum => format!("{} › General", self.chat_title),
+            _ => self.chat_title.clone(),
+        }
+    }
+}
+
+/// Where a conversation is in "what should I be here?" setup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupState {
+    /// Nobody has asked yet.
+    New,
+    /// The greeting was sent; the next admin message becomes the purpose.
+    AwaitingPurpose,
+    /// Has a purpose.
+    Ready,
+}
+
+impl SetupState {
+    fn parse(s: &str) -> Self {
+        match s {
+            "awaiting_purpose" => SetupState::AwaitingPurpose,
+            "ready" => SetupState::Ready,
+            _ => SetupState::New,
+        }
+    }
 }
 
 /// Inserts or refreshes a chat and returns its row ID. A chat the bot had
@@ -161,12 +199,32 @@ pub async fn conversation_status(
 ) -> Result<ConversationStatus, sqlx::Error> {
     let chat_row_id = upsert_chat(pool, chat, None).await?;
     let conversation_id = upsert_conversation(pool, chat_row_id, topic_id, "").await?;
-    let row: (String, String, String, i64, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT c.title, c.kind, v.name,
+    conversation_status_by_id(pool, conversation_id).await
+}
+
+pub async fn conversation_status_by_id(
+    pool: &PgPool,
+    conversation_id: i64,
+) -> Result<ConversationStatus, sqlx::Error> {
+    #[allow(clippy::type_complexity)]
+    let row: (
+        String,
+        String,
+        bool,
+        Option<i32>,
+        String,
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        String,
+    ) = sqlx::query_as(
+        "SELECT c.title, c.kind, c.is_forum, v.tg_topic_id, v.name,
                 (SELECT count(*) FROM messages m WHERE m.conversation_id = v.id),
                 b.name,
                 (SELECT t.t3_thread_id FROM agent_threads t
-                  WHERE t.conversation_id = v.id AND t.status = 'active')
+                  WHERE t.conversation_id = v.id AND t.status = 'active'),
+                v.purpose, v.setup_state
          FROM conversations v
          JOIN chats c ON c.id = v.chat_id
          LEFT JOIN bots b ON b.id = v.bot_id
@@ -179,11 +237,72 @@ pub async fn conversation_status(
         conversation_id,
         chat_title: row.0,
         chat_kind: row.1,
-        topic_name: topic_id.map(|_| row.2).filter(|n| !n.is_empty()),
-        message_count: row.3,
-        bot_name: row.4,
-        thread_id: row.5,
+        is_forum: row.2,
+        tg_topic_id: row.3,
+        topic_name: row.3.map(|_| row.4).filter(|n| !n.is_empty()),
+        message_count: row.5,
+        bot_name: row.6,
+        thread_id: row.7,
+        purpose: row.8,
+        setup_state: SetupState::parse(&row.9),
     })
+}
+
+/// The conversation for (chat, topic), if it exists. Used for button taps,
+/// which must never create conversations.
+pub async fn find_conversation(
+    pool: &PgPool,
+    tg_chat_id: i64,
+    topic_id: Option<i32>,
+) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT v.id FROM conversations v JOIN chats c ON c.id = v.chat_id
+         WHERE c.tg_chat_id = $1 AND v.tg_topic_id IS NOT DISTINCT FROM $2",
+    )
+    .bind(tg_chat_id)
+    .bind(topic_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Marks setup as started and remembers the greeting message (for removing
+/// its buttons later).
+pub async fn begin_setup(
+    pool: &PgPool,
+    conversation_id: i64,
+    prompt_message_id: Option<i32>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE conversations
+         SET setup_state = 'awaiting_purpose', setup_prompt_tg_message_id = $2
+         WHERE id = $1",
+    )
+    .bind(conversation_id)
+    .bind(prompt_message_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+/// Saves the purpose and finishes setup. Returns the greeting message ID, if
+/// there was one, so its buttons can be removed.
+pub async fn set_purpose(
+    pool: &PgPool,
+    conversation_id: i64,
+    purpose: &str,
+) -> Result<Option<i32>, sqlx::Error> {
+    let prompt: Option<Option<i32>> = sqlx::query_scalar(
+        "UPDATE conversations c
+         SET purpose = $2, setup_state = 'ready', setup_prompt_tg_message_id = NULL
+         FROM (SELECT id, setup_prompt_tg_message_id AS old FROM conversations WHERE id = $1) o
+         WHERE c.id = o.id
+         RETURNING o.old",
+    )
+    .bind(conversation_id)
+    .bind(purpose)
+    .fetch_optional(pool)
+    .await?;
+    Ok(prompt.flatten())
 }
 
 /// Records something the bot did on its own (left a chat, ignored someone).

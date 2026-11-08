@@ -9,13 +9,17 @@ use std::time::Duration;
 use serde_json::json;
 use sqlx::PgPool;
 use teloxide::prelude::*;
-use teloxide::types::{AllowedUpdate, BotCommand, MessageId, ReplyParameters, ThreadId};
+use teloxide::types::{
+    AllowedUpdate, BotCommand, BotCommandScope, CallbackQueryId, ChatId as TgChatId,
+    InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ReplyParameters, ThreadId,
+};
 use tokio::sync::watch;
 
 use crate::errors::{self, ErrorId};
-use crate::policy::{self, Action};
-use crate::store::{self, StoreOutcome};
-use crate::telegram::{self, ChatKind, Command, Inbound, InboundMessage};
+use crate::policy::{self, Action, Rules};
+use crate::setup;
+use crate::store::{self, SetupState, StoreOutcome};
+use crate::telegram::{self, ButtonPress, ChatKind, Command, Inbound, InboundMessage};
 
 /// How long one `getUpdates` call waits for new updates. Kept under
 /// teloxide's default 17 s HTTP timeout.
@@ -38,7 +42,44 @@ pub trait TelegramApi: Sync {
         text: &str,
     ) -> impl Future<Output = Result<(), ApiError>> + Send;
 
+    /// Sends a message with inline buttons, given as rows of (label, callback
+    /// data). Returns the new message's ID.
+    fn send_buttons(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        text: &str,
+        rows: &[Vec<(String, String)>],
+    ) -> impl Future<Output = Result<i32, ApiError>> + Send;
+
+    /// Replaces a bot message's text. Its buttons are removed.
+    fn edit_text(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+        text: &str,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send;
+
+    /// Removes the buttons under a bot message, keeping its text.
+    fn remove_buttons(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send;
+
+    /// Acknowledges a button tap (stops the spinner), optionally with a toast.
+    fn answer_button(
+        &self,
+        callback_id: &str,
+        toast: Option<&str>,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send;
+
     fn leave_chat(&self, chat_id: i64) -> impl Future<Output = Result<(), ApiError>> + Send;
+}
+
+fn api_err(e: teloxide::RequestError) -> ApiError {
+    ApiError(e.to_string())
 }
 
 /// The real Telegram API.
@@ -64,12 +105,66 @@ impl TelegramApi for BotApi {
         req.await.map(|_| ()).map_err(|e| ApiError(e.to_string()))
     }
 
+    async fn send_buttons(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        text: &str,
+        rows: &[Vec<(String, String)>],
+    ) -> Result<i32, ApiError> {
+        let keyboard = InlineKeyboardMarkup::new(rows.iter().map(|row| {
+            row.iter()
+                .map(|(label, data)| InlineKeyboardButton::callback(label.clone(), data.clone()))
+                .collect::<Vec<_>>()
+        }));
+        let mut req = self
+            .0
+            .send_message(ChatId(chat_id), text)
+            .reply_markup(keyboard);
+        if let Some(topic) = topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(topic)));
+        }
+        if let Some(reply) = reply_to {
+            req = req.reply_parameters(
+                ReplyParameters::new(MessageId(reply)).allow_sending_without_reply(),
+            );
+        }
+        req.await.map(|m| m.id.0).map_err(api_err)
+    }
+
+    async fn edit_text(&self, chat_id: i64, message_id: i32, text: &str) -> Result<(), ApiError> {
+        self.0
+            .edit_message_text(ChatId(chat_id), MessageId(message_id), text)
+            .await
+            .map(|_| ())
+            .map_err(api_err)
+    }
+
+    async fn remove_buttons(&self, chat_id: i64, message_id: i32) -> Result<(), ApiError> {
+        self.0
+            .edit_message_reply_markup(ChatId(chat_id), MessageId(message_id))
+            .await
+            .map(|_| ())
+            .map_err(api_err)
+    }
+
+    async fn answer_button(&self, callback_id: &str, toast: Option<&str>) -> Result<(), ApiError> {
+        let mut req = self
+            .0
+            .answer_callback_query(CallbackQueryId(callback_id.to_string()));
+        if let Some(toast) = toast {
+            req = req.text(toast);
+        }
+        req.await.map(|_| ()).map_err(api_err)
+    }
+
     async fn leave_chat(&self, chat_id: i64) -> Result<(), ApiError> {
         self.0
             .leave_chat(ChatId(chat_id))
             .await
             .map(|_| ())
-            .map_err(|e| ApiError(e.to_string()))
+            .map_err(api_err)
     }
 }
 
@@ -77,7 +172,7 @@ impl TelegramApi for BotApi {
 pub struct Ctx<'a, A: TelegramApi> {
     pub pool: &'a PgPool,
     pub api: &'a A,
-    pub admin_user_id: u64,
+    pub rules: Rules,
     pub bot_username: &'a str,
 }
 
@@ -99,13 +194,14 @@ impl HandleError {
 }
 
 pub const HELP_TEXT: &str = "Herbot: your private bot.\n\n\
-Every chat, and every topic in a forum group, is its own conversation with its own memory.\n\n\
+General is the everyday chat. Every other topic is its own agent with its own memory.\n\n\
+/setup: set what this conversation is for\n\
 /status: this conversation's details\n\
 /new: start a fresh thread here\n\
 /forget: wipe this conversation's thread and history\n\
 /help: this list";
 
-pub const WELCOME_TEXT: &str = "👋 Herbot is here. Each topic in this group is its own conversation. Send /status in any topic to check.";
+pub const WELCOME_TEXT: &str = "👋 Herbot is here. General is our everyday chat. Every other topic is its own agent: say anything in a new topic and I'll ask what it should be.";
 
 /// Handles one update: normalize, decide, act.
 pub async fn handle_update<A: TelegramApi>(
@@ -116,7 +212,7 @@ pub async fn handle_update<A: TelegramApi>(
         tracing::debug!(update_id = update.id.0, "update not relevant to Herbot");
         return Ok(());
     };
-    let action = policy::decide(inbound, ctx.admin_user_id);
+    let action = policy::decide(inbound, &ctx.rules);
     tracing::debug!(update_id = update.id.0, ?action, "policy decision");
     apply(ctx, action).await
 }
@@ -126,18 +222,18 @@ async fn apply<A: TelegramApi>(ctx: &Ctx<'_, A>, action: Action) -> Result<(), H
         Action::Ignore { reason } => {
             tracing::info!(reason, "ignored update");
         }
-        Action::Leave { chat, added_by } => {
-            tracing::warn!(
-                chat_id = chat.tg_chat_id,
-                added_by,
-                "added by someone else; leaving"
-            );
+        Action::Leave {
+            chat,
+            added_by,
+            reason,
+        } => {
+            tracing::warn!(chat_id = chat.tg_chat_id, added_by, reason, "leaving chat");
             if chat.kind != ChatKind::Private {
                 ctx.api.leave_chat(chat.tg_chat_id).await?;
             }
             store::audit(
                 ctx.pool,
-                "left_chat_added_by_stranger",
+                reason,
                 &chat.tg_chat_id.to_string(),
                 json!({ "added_by": added_by, "title": chat.title, "kind": chat.kind.as_str() }),
             )
@@ -173,6 +269,7 @@ async fn apply<A: TelegramApi>(ctx: &Ctx<'_, A>, action: Action) -> Result<(), H
                 message_row_id,
             } => {
                 tracing::info!(conversation_id, message_row_id, "stored admin message");
+                continue_setup(ctx, &msg, conversation_id).await?;
             }
             StoreOutcome::Duplicate { conversation_id } => {
                 tracing::debug!(conversation_id, "duplicate message ignored");
@@ -185,7 +282,139 @@ async fn apply<A: TelegramApi>(ctx: &Ctx<'_, A>, action: Action) -> Result<(), H
             }
         },
         Action::RunCommand(msg, cmd) => run_command(ctx, &msg, cmd).await?,
+        Action::Button(press) => handle_button(ctx, &press).await?,
     }
+    Ok(())
+}
+
+/// Moves a conversation's setup along after an admin message was stored:
+/// a new conversation gets the greeting, and while we're waiting for a
+/// purpose, the message becomes it.
+async fn continue_setup<A: TelegramApi>(
+    ctx: &Ctx<'_, A>,
+    msg: &InboundMessage,
+    conversation_id: i64,
+) -> Result<(), HandleError> {
+    let status = store::conversation_status_by_id(ctx.pool, conversation_id).await?;
+    match status.setup_state {
+        // General (no topic) is the everyday chat: set it up silently.
+        SetupState::New if status.tg_topic_id.is_none() => {
+            store::set_purpose(ctx.pool, conversation_id, setup::default_general_purpose()).await?;
+            tracing::info!(
+                conversation_id,
+                "general chat set up with the default purpose"
+            );
+            Ok(())
+        }
+        // A new topic: ask what this agent should be.
+        SetupState::New => send_greeting(ctx, msg, &status).await,
+        SetupState::AwaitingPurpose => match setup::validate_purpose(&msg.text) {
+            Ok(purpose) => {
+                let old_prompt = store::set_purpose(ctx.pool, conversation_id, &purpose).await?;
+                if let Some(prompt) = old_prompt {
+                    ctx.api.remove_buttons(msg.chat.tg_chat_id, prompt).await?;
+                }
+                tracing::info!(conversation_id, "conversation purpose set (typed)");
+                let text = setup::confirmation(&status.place(), &purpose);
+                ctx.api
+                    .send_text(
+                        msg.chat.tg_chat_id,
+                        msg.topic_id,
+                        Some(msg.message_id),
+                        &text,
+                    )
+                    .await?;
+                Ok(())
+            }
+            Err(problem) => {
+                ctx.api
+                    .send_text(
+                        msg.chat.tg_chat_id,
+                        msg.topic_id,
+                        Some(msg.message_id),
+                        &problem.to_string(),
+                    )
+                    .await?;
+                Ok(())
+            }
+        },
+        // Step 4 sends the message to the conversation's T3 thread here.
+        SetupState::Ready => Ok(()),
+    }
+}
+
+async fn send_greeting<A: TelegramApi>(
+    ctx: &Ctx<'_, A>,
+    msg: &InboundMessage,
+    status: &store::ConversationStatus,
+) -> Result<(), HandleError> {
+    let prompt_id = ctx
+        .api
+        .send_buttons(
+            msg.chat.tg_chat_id,
+            msg.topic_id,
+            Some(msg.message_id),
+            &setup::greeting(&status.place()),
+            &setup::preset_buttons(),
+        )
+        .await?;
+    store::begin_setup(ctx.pool, status.conversation_id, Some(prompt_id)).await?;
+    tracing::info!(
+        conversation_id = status.conversation_id,
+        "asked what this conversation is for"
+    );
+    Ok(())
+}
+
+/// A tapped inline button. Today only setup presets exist; Step 6 adds
+/// answers to the bot's questions.
+async fn handle_button<A: TelegramApi>(
+    ctx: &Ctx<'_, A>,
+    press: &ButtonPress,
+) -> Result<(), HandleError> {
+    let Some(preset) = setup::preset_from_button(&press.data) else {
+        ctx.api
+            .answer_button(
+                &press.callback_id,
+                Some("That button doesn't do anything anymore."),
+            )
+            .await?;
+        return Ok(());
+    };
+    let Some(conversation_id) =
+        store::find_conversation(ctx.pool, press.chat.tg_chat_id, press.topic_id).await?
+    else {
+        ctx.api
+            .answer_button(
+                &press.callback_id,
+                Some("I don't know this conversation yet."),
+            )
+            .await?;
+        return Ok(());
+    };
+
+    let status = store::conversation_status_by_id(ctx.pool, conversation_id).await?;
+    let old_prompt = store::set_purpose(ctx.pool, conversation_id, preset.purpose).await?;
+    tracing::info!(
+        conversation_id,
+        preset = preset.key,
+        "conversation purpose set (preset)"
+    );
+
+    // Turn the tapped greeting into the confirmation (this also drops its
+    // buttons), and clear buttons from any other pending greeting.
+    let text = setup::confirmation(&status.place(), preset.purpose);
+    ctx.api
+        .edit_text(press.chat.tg_chat_id, press.message_id, &text)
+        .await?;
+    if let Some(prompt) = old_prompt.filter(|p| *p != press.message_id) {
+        ctx.api
+            .remove_buttons(press.chat.tg_chat_id, prompt)
+            .await?;
+    }
+    ctx.api
+        .answer_button(&press.callback_id, Some("Saved"))
+        .await?;
     Ok(())
 }
 
@@ -196,20 +425,18 @@ async fn run_command<A: TelegramApi>(
 ) -> Result<(), HandleError> {
     let text = match cmd {
         Command::Start | Command::Help => HELP_TEXT.to_string(),
+        Command::Setup => {
+            let status = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            return send_greeting(ctx, msg, &status).await;
+        }
         Command::Status => {
             let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
-            let place = match (msg.chat.kind, msg.topic_id, &s.topic_name) {
-                (ChatKind::Private, _, _) => "Direct messages".to_string(),
-                (_, Some(_), Some(name)) => format!("{} › {}", s.chat_title, name),
-                (_, Some(id), None) => format!("{} › topic {}", s.chat_title, id),
-                (_, None, _) if msg.chat.is_forum => format!("{} › General", s.chat_title),
-                (_, None, _) => s.chat_title.clone(),
-            };
             format!(
-                "📍 {place}\nConversation #{} · {} messages stored\nPersona: {}\nThread: {}",
+                "📍 {}\nConversation #{} · {} messages stored\nPurpose: {}\nThread: {}",
+                s.place(),
                 s.conversation_id,
                 s.message_count,
-                s.bot_name.as_deref().unwrap_or("none yet (Step 3)"),
+                s.purpose.as_deref().unwrap_or("not set yet (send /setup)"),
                 s.thread_id.as_deref().unwrap_or("none yet (Step 4)"),
             )
         }
@@ -247,7 +474,8 @@ pub async fn process<A: TelegramApi>(ctx: &Ctx<'_, A>, update: &Update) -> Optio
 
     // Fail loud: tell the admin where it happened, if it was their message.
     if let Some(Inbound::Message(msg)) = telegram::normalize(update, ctx.bot_username)
-        && msg.from_user_id == ctx.admin_user_id
+        && msg.from_user_id == ctx.rules.admin_user_id
+        && msg.chat.kind != ChatKind::Private
     {
         let text = format!(
             "❌ Failed ({error_id}): {}. Check logs.",
@@ -276,19 +504,34 @@ fn short_reason(err: &HandleError) -> &'static str {
     }
 }
 
-/// Registers the `/` command menu shown in Telegram.
-pub async fn register_commands(bot: &Bot) -> Result<(), teloxide::RequestError> {
-    let commands = telegram::COMMAND_MENU
+/// Registers the `/` command menu, only where Herbot works: the home group
+/// if one is set, otherwise all groups. The default menu (what DMs show) is
+/// cleared, since direct messages do nothing.
+pub async fn register_commands(bot: &Bot, rules: &Rules) -> Result<(), teloxide::RequestError> {
+    let commands: Vec<BotCommand> = telegram::COMMAND_MENU
         .iter()
-        .map(|(name, description)| BotCommand::new(*name, *description));
-    bot.set_my_commands(commands).await.map(|_| ())
+        .map(|(name, description)| BotCommand::new(*name, *description))
+        .collect();
+    let scope = match rules.home_chat_id {
+        Some(home) => BotCommandScope::Chat {
+            chat_id: TgChatId(home).into(),
+        },
+        None => BotCommandScope::AllGroupChats,
+    };
+    bot.delete_my_commands()
+        .scope(BotCommandScope::Default)
+        .await?;
+    bot.delete_my_commands()
+        .scope(BotCommandScope::AllPrivateChats)
+        .await?;
+    bot.set_my_commands(commands).scope(scope).await.map(|_| ())
 }
 
 /// Long-polls Telegram until `shutdown` flips to true.
 pub async fn run(
     bot: Bot,
     pool: PgPool,
-    admin_user_id: u64,
+    rules: Rules,
     bot_username: String,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -296,7 +539,7 @@ pub async fn run(
     let ctx = Ctx {
         pool: &pool,
         api: &api,
-        admin_user_id,
+        rules,
         bot_username: &bot_username,
     };
 
@@ -314,7 +557,11 @@ pub async fn run(
         let mut request = bot
             .get_updates()
             .timeout(POLL_TIMEOUT_SECS)
-            .allowed_updates(vec![AllowedUpdate::Message, AllowedUpdate::MyChatMember]);
+            .allowed_updates(vec![
+                AllowedUpdate::Message,
+                AllowedUpdate::MyChatMember,
+                AllowedUpdate::CallbackQuery,
+            ]);
         if let Some(offset) = offset {
             request = request.offset(offset);
         }
