@@ -619,3 +619,67 @@ pub async fn supersede_open_questions(
     .await?;
     Ok(ids.into_iter().flatten().collect())
 }
+
+/// What a clean sweep removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Wiped {
+    pub messages: u64,
+    pub threads: u64,
+}
+
+/// `/new` and `/forget`: deletes the conversation's stored messages, its
+/// threads (already deleted in T3 by then) and their open questions. The
+/// folder must be re-added to T3 on the next turn.
+pub async fn wipe_conversation(pool: &PgPool, conversation_id: i64) -> Result<Wiped, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let messages = sqlx::query("DELETE FROM messages WHERE conversation_id = $1")
+        .bind(conversation_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    // pending_questions go with their threads (ON DELETE CASCADE).
+    let threads = sqlx::query("DELETE FROM agent_threads WHERE conversation_id = $1")
+        .bind(conversation_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    sqlx::query("UPDATE conversations SET t3_project_registered = false WHERE id = $1")
+        .bind(conversation_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Wiped { messages, threads })
+}
+
+/// `/forget`: clears the purpose so the conversation sets up again.
+/// Returns the old AGENTS.md path (relative), to delete the file.
+pub async fn reset_setup(
+    pool: &PgPool,
+    conversation_id: i64,
+) -> Result<Option<String>, sqlx::Error> {
+    let old: Option<Option<String>> = sqlx::query_scalar(
+        "UPDATE conversations c
+         SET purpose = NULL, setup_state = 'new', setup_prompt_tg_message_id = NULL,
+             agents_md_path = NULL, agents_md_updated_at = NULL
+         FROM (SELECT id, agents_md_path AS old FROM conversations WHERE id = $1) o
+         WHERE c.id = o.id
+         RETURNING o.old",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(old.flatten())
+}
+
+/// Every T3 thread Herbot started for a conversation (active or archived).
+pub async fn all_thread_ids(
+    pool: &PgPool,
+    conversation_id: i64,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT t3_thread_id FROM agent_threads WHERE conversation_id = $1 ORDER BY id",
+    )
+    .bind(conversation_id)
+    .fetch_all(pool)
+    .await
+}

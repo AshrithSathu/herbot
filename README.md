@@ -4,7 +4,7 @@
 
 The bot lives in one private Telegram group with Topics turned on: your Herbot group, just you and the bot. **General** is the everyday chat. **Every other topic is its own agent**: the first time you write in a new topic, the bot asks openly what it should be. Your answer, typed at any length or sent as a **voice note**, becomes that topic's `AGENTS.md`, and the topic keeps its own long-running memory, like separate Grok chats. Voice notes work everywhere: they're transcribed to English and the bot shows what it heard. The bot answers only you, stays silent in DMs, and leaves any other group.
 
-> **Status:** Steps 1–4 are done (the bot answers). Step 6 (choices as buttons) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** Steps 1–6 are done. Step 7 (herbot-mcp: agents see your history, General works across topics) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## How it works
 
@@ -19,7 +19,8 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 2. Your message (or voice note, transcribed by OpenAI `gpt-transcribe`) is stored under its **conversation**: General, or the topic it was sent in. A new topic first asks what it should be and writes `agents/chat_<id>/topic_<n>/AGENTS.md`.
 3. It goes to that conversation's **T3 Code thread**, running Codex on **GPT-6.1 Terra at medium effort** (your Codex subscription). Each conversation folder is a T3 project, so Codex reads its `AGENTS.md`. Turns in one topic run in order; different topics run in parallel. While Codex works the topic shows "typing…", then the reply arrives quoting your message, with secrets scrubbed and long answers split.
 4. When the agent wants you to pick, its reply ends with **buttons** (from an `[[ask: A | B | C]]` line). Tap one, or just type your own answer, and the thread continues. If Codex ever blocks inside T3, you get a direct link to the thread.
-5. If anything fails, you get `❌ Failed (E-1042)` and the details are in the logs. There's no silent fallback.
+5. Agents have **herbot tools** (MCP). **General is the hub:** it can list every topic, search and read their history, ask another topic's agent something (`ask_topic`), or post into a topic. Each topic can search and read only its own history.
+6. If anything fails, you get `❌ Failed (E-1042)` and the details are in the logs. There's no silent fallback.
 
 ### Commands
 
@@ -28,8 +29,8 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 | `/setup` | Tell it (again) what this topic is for, typed or by voice |
 | `/status` | Shows this conversation's place, purpose, AGENTS.md path, model and message count |
 | `/help` | Lists commands |
-| `/new` | Starts a fresh thread here (the old one stays in T3 Code) |
-| `/forget` | Deletes this conversation's stored messages and starts fresh (asks first; `/forget yes` confirms) |
+| `/new` | Clean slate: deletes this topic's T3 threads and its stored history, and keeps its purpose. Confirm with the **🧹 Yes** button (expires after 10 minutes) or **Cancel** |
+| `/forget` | Same, and also clears the purpose, so the topic sets up again. Same Yes / Cancel buttons |
 
 ## Setup
 
@@ -45,6 +46,7 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
    ```
    Optional: `HERBOT_T3_BIN` (default `~/.t3/bin/t3`, a T3 Code nightly with `t3 thread`), `HERBOT_TURN_TIMEOUT_SECS` (default 600), `HERBOT_TRANSCRIBE_MODEL` (default `gpt-transcribe`), `HERBOT_AGENT_MODEL` / `HERBOT_AGENT_EFFORT` (default `gpt-6.1-terra` / `medium`), `HERBOT_AGENTS_DIR` (default `agents`).
 5. `make run`, then send `/status` in General.
+6. Give agents their tools: add `HERBOT_INTERNAL_TOKEN` (any 64 hex characters) to `.env`, run `cargo build --release -p herbot-mcp`, then `./scripts/codex-mcp-config.sh >> ~/.codex/config.toml`. `codex mcp list` should show `herbot`.
 
 Without `TELEGRAM_BOT_TOKEN`, herbot-core still starts (for tests and local work). `/ready` then reports `"telegram": "disabled"`.
 
@@ -53,7 +55,7 @@ Without `TELEGRAM_BOT_TOKEN`, herbot-core still starts (for tests and local work
 | Path | What | Status |
 |---|---|---|
 | `crates/herbot-core` | Telegram adapter, admin-only policy, conversations, T3 adapter, admin API (Rust) | 🟡 Step 3 |
-| `crates/herbot-mcp` | Conversation-scoped tools for bot threads (Rust) | ⏳ Step 7 |
+| `crates/herbot-mcp` | MCP tools for agents: `list_topics`, `search_messages`, `read_topic`, and General's `ask_topic` and `post_to_topic` (Rust, `rmcp`) | 🟡 Step 7 |
 | `apps/admin` | Admin panel (TanStack Start) | ⏳ Step 8 |
 | `bots/` | One T3 project per bot persona | ⏳ Step 4 |
 | `docs/ROADMAP.md` | Build plan with "Done when" checks | |

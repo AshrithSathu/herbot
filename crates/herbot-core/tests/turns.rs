@@ -266,6 +266,7 @@ fn job(conversation_id: i64, topic: Option<i32>, reply_to: i32, text: &str) -> T
         sender_name: "Ashrith".into(),
         sender_id: 1221260701,
         sent_at: Utc::now(),
+        reply: None,
     }
 }
 
@@ -539,6 +540,56 @@ async fn after_new_the_next_message_starts_a_fresh_thread(pool: PgPool) {
     );
 }
 
+// ---- caller token and reply slots (Step 7) ----
+
+#[sqlx::test(migrations = "./migrations")]
+async fn every_message_carries_the_conversations_caller_token(pool: PgPool) {
+    let h = H::new(pool).await;
+    run_turn(&h.deps, job(1, Some(7), 30, "hi")).await;
+    let token = herbot_core::hub::caller_token(&h.deps.pool, 1)
+        .await
+        .unwrap();
+    assert!(token.starts_with("hb_") && token.len() > 60, "{token}");
+    let RunnerCall::Start { message, .. } = &h.deps.runner.calls()[1] else {
+        panic!()
+    };
+    assert!(
+        message.contains(&format!("\ncaller: {token}\n")),
+        "{message}"
+    );
+    let general = herbot_core::hub::caller_token(&h.deps.pool, 2)
+        .await
+        .unwrap();
+    assert_ne!(token, general, "each conversation has its own");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_waiting_caller_gets_the_reply_or_the_failure(pool: PgPool) {
+    let h = H::new(pool).await;
+    h.deps.runner.then(Ok(TurnOutcome::Replied(
+        "Build passed.\n\n[[ask: Deploy | Wait]]".into(),
+    )));
+    let (slot, answer) = herbot_core::turns::ReplySlot::new();
+    let mut asked = job(1, Some(7), 30, "did the build pass?");
+    asked.reply = Some(slot);
+    run_turn(&h.deps, asked).await;
+    assert_eq!(
+        answer.await.unwrap(),
+        Ok("Build passed.\n\n(Options offered: Deploy | Wait)".to_string())
+    );
+
+    h.deps.runner.then(Ok(TurnOutcome::Failed("boom".into())));
+    let (slot, answer) = herbot_core::turns::ReplySlot::new();
+    let mut failing = job(1, Some(7), 31, "again");
+    failing.reply = Some(slot);
+    run_turn(&h.deps, failing).await;
+    let err = answer.await.unwrap().unwrap_err();
+    assert!(
+        err.starts_with("E-") && err.ends_with("the agent run failed"),
+        "{err}"
+    );
+}
+
 // ---- choices as buttons (Step 6) ----
 
 #[test]
@@ -781,6 +832,75 @@ async fn t3_cli_times_out_and_kills_the_process() {
         .unwrap_err();
     assert_eq!(err, AgentError::Timeout(1));
     assert!(began.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn t3_cli_finds_a_threads_project_and_removes_it_by_id_only() {
+    use herbot_core::agent::ProjectCleaner;
+    const ID: &str = "c8b83136-53e8-401b-8de5-85361fc43bcd";
+
+    let dir = tempfile::tempdir().unwrap();
+    let show = fake_t3(
+        dir.path(),
+        &format!(
+            r#"echo '{{"thread":{{"threadId":"t1","projectId":"{ID}","title":"HQ"}},"messages":[]}}'"#
+        ),
+    );
+    assert_eq!(
+        cli(show, Duration::from_secs(10))
+            .project_of_thread("t1")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(ID)
+    );
+
+    let dir2 = tempfile::tempdir().unwrap();
+    let gone = fake_t3(
+        dir2.path(),
+        "echo 'Thread t1 is no longer available.' >&2\nexit 1",
+    );
+    assert_eq!(
+        cli(gone, Duration::from_secs(10))
+            .project_of_thread("t1")
+            .await
+            .unwrap(),
+        None
+    );
+
+    let dir3 = tempfile::tempdir().unwrap();
+    let log = dir3.path().join("argv");
+    let ok = fake_t3(
+        dir3.path(),
+        &format!("printf '%s\\n' \"$@\" > {}", log.display()),
+    );
+    cli(ok.clone(), Duration::from_secs(10))
+        .remove_project(ID)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["project", "remove", "--force", ID]
+    );
+
+    // Never a path, even if asked.
+    std::fs::remove_file(&log).unwrap();
+    for not_an_id in ["/Users/ashrith/Desktop/herbot", "."] {
+        let err = cli(ok.clone(), Duration::from_secs(10))
+            .remove_project(not_an_id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AgentError::Project(_)), "{err:?}");
+        let err = cli(ok.clone(), Duration::from_secs(10))
+            .threads_in_project(not_an_id)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AgentError::Project(_)), "{err:?}");
+    }
+    assert!(!log.exists(), "the CLI was never even called with a path");
 }
 
 #[tokio::test]

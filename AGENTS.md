@@ -14,7 +14,7 @@ Telegram Bot API ⇄ crates/herbot-core (Rust, teloxide) ⇄ bots-T3 (Codex, ful
 | Path | What | Language |
 |---|---|---|
 | `crates/herbot-core` | Telegram polling, admin-only policy, conversations, topic setup and AGENTS.md, voice transcription, per-conversation lanes, T3 adapter, admin API | Rust (tokio, axum, sqlx, teloxide, reqwest) |
-| `crates/herbot-mcp` | Conversation-scoped tools for bot threads: `search_history`, `ask_admin` | Rust (`rmcp`) |
+| `crates/herbot-mcp` | MCP server Codex starts over stdio: `list_topics`, `search_messages`, `read_topic` (via `herbot_core::hub`), and General's `ask_topic` and `post_to_topic` (via herbot-core's `/internal` API) | Rust (`rmcp`) |
 | `apps/admin` | Admin panel | TanStack Start |
 | `bots/<slug>/` | One T3 project per bot persona. `AGENTS.md` there is the persona. | Markdown |
 
@@ -36,6 +36,8 @@ A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no 
 4. **The role header is written by herbot-core only.** Every message sent to a bot thread starts with a `<herbot-meta>` block. Strip any `<herbot-meta` text from user messages before forwarding.
 5. **Replies only go to the conversation that triggered them**, after scrubbing token-like strings.
 6. **Never commit secrets:** bot token, `auth.json`, `.env`.
+8. **T3 deletes go by exact project id, never by path.** `agents/` sits inside other T3 projects (the herbot repo), and T3 resolves a path to the nearest enclosing project. `/new` and `/forget` find the project through Herbot's own threads (`thread show`), refuse if it holds any thread Herbot didn't start, delete it with `t3 project remove --force <id>`, and only then wipe the database.
+7. **herbot-mcp trusts only the caller token.** Every forwarded message's `<herbot-meta>` carries the conversation's secret `caller` token, and `hub.rs` decides from it what that agent may see: General sees its whole group and may act (never on itself); a topic sees only itself. The `/internal` API requires `HERBOT_INTERNAL_TOKEN`.
 
 ## Failure policy: fail loud, no fallback
 

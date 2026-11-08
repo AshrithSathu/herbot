@@ -17,6 +17,7 @@ use serde_json::Value;
 use sqlx::PgPool;
 use teloxide::types::Update;
 
+use herbot_core::agent::{AgentError, BoxFuture, ProjectCleaner};
 use herbot_core::errors::ErrorId;
 use herbot_core::policy::{LEFT_ADDED_BY_STRANGER, LEFT_OUTSIDE_HOME, Rules};
 use herbot_core::poller::{
@@ -57,6 +58,7 @@ enum Call {
     SendButtons {
         chat: i64,
         text: String,
+        rows: Vec<Vec<(String, String)>>,
     },
     Edit {
         chat: i64,
@@ -144,11 +146,12 @@ impl TelegramApi for FakeApi {
         _topic_id: Option<i32>,
         _reply_to: Option<i32>,
         text: &str,
-        _rows: &[Vec<(String, String)>],
+        rows: &[Vec<(String, String)>],
     ) -> Result<i32, ApiError> {
         self.push(Call::SendButtons {
             chat: chat_id,
             text: text.to_string(),
+            rows: rows.to_vec(),
         });
         Ok(900)
     }
@@ -244,6 +247,66 @@ impl Jobs {
     }
 }
 
+/// A fake T3 for clean sweeps: which project each thread lives in, which
+/// threads each project holds, and which projects got removed.
+#[derive(Default)]
+struct FakeCleaner {
+    thread_project: Mutex<std::collections::HashMap<String, String>>,
+    extra_threads: Mutex<Vec<(String, String)>>,
+    removed: Mutex<Vec<String>>,
+    fail: Mutex<bool>,
+}
+
+const PROJECT: &str = "c8b83136-53e8-401b-8de5-85361fc43bcd";
+
+impl FakeCleaner {
+    fn removed(&self) -> Vec<String> {
+        self.removed.lock().unwrap().clone()
+    }
+}
+
+impl ProjectCleaner for FakeCleaner {
+    fn project_of_thread<'a>(
+        &'a self,
+        thread_id: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, AgentError>> {
+        Box::pin(async move { Ok(self.thread_project.lock().unwrap().get(thread_id).cloned()) })
+    }
+    fn threads_in_project<'a>(
+        &'a self,
+        project_id: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<String>, AgentError>> {
+        Box::pin(async move {
+            let mut ids: Vec<String> = self
+                .thread_project
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, p)| p.as_str() == project_id)
+                .map(|(t, _)| t.clone())
+                .collect();
+            ids.extend(
+                self.extra_threads
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(p, _)| p == project_id)
+                    .map(|(_, t)| t.clone()),
+            );
+            Ok(ids)
+        })
+    }
+    fn remove_project<'a>(&'a self, project_id: &'a str) -> BoxFuture<'a, Result<(), AgentError>> {
+        Box::pin(async move {
+            if *self.fail.lock().unwrap() {
+                return Err(AgentError::Project("T3 said no".into()));
+            }
+            self.removed.lock().unwrap().push(project_id.to_string());
+            Ok(())
+        })
+    }
+}
+
 // ---- harness ----
 
 struct H {
@@ -252,6 +315,7 @@ struct H {
     voice: FakeVoice,
     agents: tempfile::TempDir,
     jobs: Jobs,
+    projects: FakeCleaner,
 }
 
 impl H {
@@ -262,6 +326,7 @@ impl H {
             voice: FakeVoice::saying("unused"),
             agents: tempfile::tempdir().unwrap(),
             jobs: Jobs::default(),
+            projects: FakeCleaner::default(),
         }
     }
 
@@ -275,6 +340,7 @@ impl H {
             agents_dir: self.agents.path(),
             agent_label: AGENT_LABEL,
             turns: &self.jobs,
+            projects: &self.projects,
         }
     }
 
@@ -941,48 +1007,276 @@ async fn commands_strangers_and_duplicates_are_not_turns(pool: PgPool) {
     assert_eq!(h.jobs.all().len(), 1, "only the first General message");
 }
 
-#[sqlx::test(migrations = "./migrations")]
-async fn new_archives_the_thread(pool: PgPool) {
-    let h = H::new(pool);
-    h.run(&["admin_general_text"]).await;
-    sqlx::query("INSERT INTO agent_threads (conversation_id, t3_thread_id) VALUES (1, 't3-old')")
-        .execute(&h.pool)
-        .await
-        .unwrap();
+/// Sends `/new` or `/forget` in topic 7 and returns the confirmation's
+/// buttons as (label, callback data).
+async fn ask_wipe(h: &H, text: &str) -> Vec<(String, String)> {
     h.api.clear();
-    let mut new = fixture("admin_status_general");
-    set_text(&mut new, "/new");
-    assert!(poller::process(&h.ctx(LOCKED), &new).await.is_none());
-    assert!(h.api.sent_texts()[0].starts_with("🆕 Fresh start."));
-    let status: String =
-        sqlx::query_scalar("SELECT status FROM agent_threads WHERE t3_thread_id = 't3-old'")
-            .fetch_one(&h.pool)
-            .await
-            .unwrap();
-    assert_eq!(status, "archived");
+    command(h, text).await;
+    let calls = h.api.calls();
+    let [Call::SendButtons { chat, rows, .. }] = calls.as_slice() else {
+        panic!("expected a confirmation with buttons, got {calls:?}")
+    };
+    assert_eq!(*chat, HQ);
+    h.api.clear();
+    rows.iter().flatten().cloned().collect()
+}
+
+/// Taps a button with this callback data on bot message 500 in topic 7.
+async fn tap_data(h: &H, data: &str) {
+    let mut update = fixture("button_research_topic7");
+    if let teloxide::types::UpdateKind::CallbackQuery(q) = &mut update.kind {
+        q.data = Some(data.to_string());
+    }
+    assert!(
+        poller::process(&h.ctx(LOCKED), &update).await.is_none(),
+        "{data}"
+    );
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn forget_asks_first_then_deletes(pool: PgPool) {
+async fn new_asks_with_buttons_then_wipes_on_yes_and_keeps_the_purpose(pool: PgPool) {
     let h = H::new(pool);
-    h.run(&["admin_general_text"]).await;
-    h.api.clear();
+    h.run(&["admin_topic_text", "admin_topic_reply", "admin_topic_third"])
+        .await;
+    with_thread(&h, 7).await;
 
-    let mut ask = fixture("admin_status_general");
-    set_text(&mut ask, "/forget");
-    assert!(poller::process(&h.ctx(LOCKED), &ask).await.is_none());
-    assert!(h.api.sent_texts()[0].contains("Send /forget yes to confirm"));
-    assert_eq!(
-        h.count("SELECT count(*) FROM messages").await,
-        1,
-        "nothing deleted yet"
+    let buttons = ask_wipe(&h, "/new").await;
+    assert_eq!(buttons.len(), 2);
+    assert_eq!(buttons[0].0, "🧹 Yes, wipe the chat");
+    assert_eq!(buttons[1].0, "Cancel");
+    assert!(
+        h.projects.removed().is_empty(),
+        "nothing deleted before the tap"
     );
 
-    let mut yes = fixture("admin_status_general");
-    set_text(&mut yes, "/forget yes");
-    assert!(poller::process(&h.ctx(LOCKED), &yes).await.is_none());
-    assert!(h.api.sent_texts()[1].starts_with("🧹 Done. Deleted 1 stored messages"));
+    tap_data(&h, &buttons[0].1).await;
+    assert_eq!(h.projects.removed(), [PROJECT]);
+    let calls = h.api.calls();
+    let Call::Edit {
+        message_id, text, ..
+    } = &calls[0]
+    else {
+        panic!("{calls:?}")
+    };
+    assert_eq!(*message_id, 500);
+    assert!(
+        text.starts_with("🆕 Clean slate. Deleted 1 T3 thread(s) and 3 messages."),
+        "{text}"
+    );
     assert_eq!(h.count("SELECT count(*) FROM messages").await, 0);
+    assert_eq!(h.count("SELECT count(*) FROM agent_threads").await, 0);
+    let (purpose, state, _, path) = h.setup_row(Some(7)).await;
+    assert_eq!(
+        (purpose.as_deref(), state.as_str()),
+        (Some("and compare them"), "ready")
+    );
+    assert!(
+        h.agents.path().join(path.unwrap()).exists(),
+        "AGENTS.md kept"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn forget_by_button_wipes_everything_including_the_purpose(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    with_thread(&h, 7).await;
+
+    let buttons = ask_wipe(&h, "/forget").await;
+    assert_eq!(buttons[0].0, "🧹 Yes, wipe everything");
+    tap_data(&h, &buttons[0].1).await;
+    assert_eq!(h.projects.removed().len(), 1);
+    let (purpose, state, _, path) = h.setup_row(Some(7)).await;
+    assert_eq!((purpose, state.as_str(), path), (None, "new", None));
+    assert!(
+        !h.agents.path().join(TOPIC7_MD).exists(),
+        "AGENTS.md deleted"
+    );
+
+    // The next message sets the topic up again.
+    h.api.clear();
+    h.run(&["admin_topic_third"]).await;
+    assert_eq!(h.api.sent_texts(), [setup::greeting("Herbot HQ › topic 7")]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn cancel_deletes_nothing(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    with_thread(&h, 7).await;
+    let buttons = ask_wipe(&h, "/new").await;
+    tap_data(&h, &buttons[1].1).await;
+    assert!(
+        matches!(&h.api.calls()[0], Call::Edit { text, .. } if text == herbot_core::wipe::CANCELLED)
+    );
+    assert!(h.projects.removed().is_empty());
+    assert_eq!(h.count("SELECT count(*) FROM messages").await, 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn expired_or_misplaced_confirmations_do_nothing(pool: PgPool) {
+    use herbot_core::wipe::{self, WipeButton, WipeKind};
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    with_thread(&h, 7).await;
+    let conversation: i64 =
+        sqlx::query_scalar("SELECT id FROM conversations WHERE tg_topic_id = 7")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    h.api.clear();
+
+    let old = chrono::Utc::now().timestamp() - 3600;
+    tap_data(
+        &h,
+        &wipe::button_data(WipeButton::Confirm(WipeKind::New), conversation, old),
+    )
+    .await;
+    assert_eq!(
+        h.api.calls()[0],
+        Call::Answer {
+            callback_id: "cb-1".into(),
+            toast: Some(wipe::EXPIRED_TOAST.into())
+        }
+    );
+
+    h.api.clear();
+    let now = chrono::Utc::now().timestamp();
+    tap_data(
+        &h,
+        &wipe::button_data(WipeButton::Confirm(WipeKind::New), conversation + 99, now),
+    )
+    .await;
+    assert_eq!(
+        h.api.calls(),
+        [Call::Answer {
+            callback_id: "cb-1".into(),
+            toast: Some(wipe::WRONG_PLACE_TOAST.into())
+        }]
+    );
+    assert!(h.projects.removed().is_empty());
+    assert_eq!(h.count("SELECT count(*) FROM messages").await, 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_failed_wipe_shows_the_error_in_place_of_the_buttons(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    with_thread(&h, 7).await;
+    *h.projects.fail.lock().unwrap() = true;
+    let buttons = ask_wipe(&h, "/new").await;
+    tap_data(&h, &buttons[0].1).await;
+    let calls = h.api.calls();
+    let Call::Edit { text, .. } = &calls[0] else {
+        panic!("{calls:?}")
+    };
+    assert!(
+        text.starts_with("❌ Failed (E-") && text.contains("so nothing was wiped"),
+        "{text}"
+    );
+    assert_eq!(h.count("SELECT count(*) FROM messages").await, 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn if_t3_refuses_nothing_is_wiped(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    with_thread(&h, 7).await;
+    *h.projects.fail.lock().unwrap() = true;
+    h.api.clear();
+
+    let mut update = fixture("admin_status_in_topic");
+    set_text(&mut update, "/new yes");
+    let error_id = poller::process(&h.ctx(LOCKED), &update)
+        .await
+        .expect("a failed T3 delete is an error");
+    assert_eq!(
+        h.api.sent_texts(),
+        [format!(
+            "❌ Failed ({error_id}): couldn't delete this topic's T3 threads, so nothing was wiped. Check logs."
+        )]
+    );
+    assert_eq!(h.count("SELECT count(*) FROM messages").await, 2);
+    assert_eq!(h.count("SELECT count(*) FROM agent_threads").await, 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_project_holding_threads_herbot_did_not_start_is_never_deleted(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    with_thread(&h, 7).await;
+    // Say the thread somehow lives in a project that also holds your own
+    // coding threads (like the herbot repo's project).
+    h.projects
+        .extra_threads
+        .lock()
+        .unwrap()
+        .push((PROJECT.into(), "your-coding-thread".into()));
+    h.api.clear();
+
+    let mut update = fixture("admin_status_in_topic");
+    set_text(&mut update, "/forget yes");
+    let error_id = poller::process(&h.ctx(LOCKED), &update)
+        .await
+        .expect("refusing is an error");
+    assert!(
+        h.projects.removed().is_empty(),
+        "the shared project is untouched"
+    );
+    let message: String = sqlx::query_scalar("SELECT message FROM errors WHERE id = $1")
+        .bind(error_id.0)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert!(message.contains("which Herbot didn't start"), "{message}");
+    assert_eq!(
+        h.count("SELECT count(*) FROM messages").await,
+        2,
+        "nothing wiped"
+    );
+    let (purpose, _, _, _) = h.setup_row(Some(7)).await;
+    assert!(purpose.is_some(), "purpose kept");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_topic_that_never_reached_t3_skips_the_t3_delete(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    command(&h, "/new yes").await;
+    assert!(h.projects.removed().is_empty());
+    assert_eq!(h.count("SELECT count(*) FROM messages").await, 0);
+}
+
+/// Gives topic 7 an active thread and marks its folder as a T3 project.
+async fn with_thread(h: &H, topic: i32) {
+    sqlx::query(
+        "INSERT INTO agent_threads (conversation_id, t3_thread_id)
+         SELECT id, 't3-live' FROM conversations WHERE tg_topic_id = $1",
+    )
+    .bind(topic)
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE conversations SET t3_project_registered = true WHERE tg_topic_id = $1")
+        .bind(topic)
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    h.projects
+        .thread_project
+        .lock()
+        .unwrap()
+        .insert("t3-live".into(), PROJECT.into());
+}
+
+/// Sends a command typed into topic 7.
+async fn command(h: &H, text: &str) {
+    let mut update = fixture("admin_status_in_topic");
+    set_text(&mut update, text);
+    assert!(
+        poller::process(&h.ctx(LOCKED), &update).await.is_none(),
+        "{text}"
+    );
 }
 
 fn set_text(update: &mut Update, text: &str) {

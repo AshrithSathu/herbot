@@ -21,15 +21,16 @@ use teloxide::types::{
 };
 use tokio::sync::watch;
 
-use crate::agent::AgentRunner;
+use crate::agent::{AgentError, ProjectCleaner};
 use crate::agents_md;
 use crate::errors::{self, ErrorId};
 use crate::policy::{self, Action, Rules};
 use crate::setup;
 use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
 use crate::telegram::{self, ButtonPress, ChatKind, Command, Inbound, InboundMessage};
-use crate::turns::{self, Lanes, TurnDeps, TurnJob, TurnQueue};
+use crate::turns::{self, TurnJob, TurnQueue};
 use crate::voice::{MAX_VOICE_SECONDS, Transcriber, VoiceError};
+use crate::wipe;
 
 /// How long one `getUpdates` call waits for new updates. Kept under
 /// teloxide's default 17 s HTTP timeout.
@@ -245,6 +246,8 @@ pub struct Ctx<'a, A: TelegramApi, T: Transcriber> {
     pub agent_label: &'a str,
     /// Where messages for the agents go (one lane per conversation).
     pub turns: &'a dyn TurnQueue,
+    /// Deletes a conversation's T3 project and threads (`/new`, `/forget`).
+    pub projects: &'a dyn ProjectCleaner,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -257,6 +260,8 @@ pub enum HandleError {
     Voice(#[from] VoiceError),
     #[error("could not write AGENTS.md: {0}")]
     AgentsMd(#[from] std::io::Error),
+    #[error(transparent)]
+    T3(#[from] AgentError),
 }
 
 impl HandleError {
@@ -266,6 +271,7 @@ impl HandleError {
             HandleError::Api(_) => "telegram.handle_api",
             HandleError::Voice(_) => "voice.transcribe",
             HandleError::AgentsMd(_) => "agents_md.write",
+            HandleError::T3(_) => "t3.project_remove",
         }
     }
 }
@@ -277,8 +283,8 @@ pub const HELP_TEXT: &str = "Herbot: your private bot.\n\n\
 General is the everyday chat. Every other topic is its own agent with its own memory.\n\n\
 /setup: set what this conversation is for\n\
 /status: this conversation's details\n\
-/new: start a fresh thread here\n\
-/forget: wipe this conversation's thread and history\n\
+/new: wipe this topic's chat and start fresh (keeps its purpose)\n\
+/forget: wipe this topic completely, purpose included\n\
 /help: this list";
 
 pub const WELCOME_TEXT: &str = "👋 Herbot is here. General is our everyday chat. Every other topic is its own agent: say anything in a new topic and I'll ask what it should be.";
@@ -432,6 +438,7 @@ fn submit_turn<A: TelegramApi, T: Transcriber>(
         sender_name: msg.from_name.clone(),
         sender_id: msg.from_user_id,
         sent_at: msg.sent_at,
+        reply: None,
     });
 }
 
@@ -584,6 +591,9 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     press: &ButtonPress,
 ) -> Result<(), HandleError> {
     let chat = press.chat.tg_chat_id;
+    if let Some(tap) = wipe::parse(&press.data) {
+        return handle_wipe_tap(ctx, press, tap).await;
+    }
     let Some((question_id, index)) = turns::parse_answer_button(&press.data) else {
         ctx.api
             .answer_button(&press.callback_id, Some(setup::STALE_BUTTON_TOAST))
@@ -623,7 +633,132 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
         sender_name: press.from_name.clone(),
         sender_id: press.from_user_id,
         sent_at: Utc::now(),
+        reply: None,
     });
+    Ok(())
+}
+
+/// Deletes the conversation's T3 project (with all its threads) first, and
+/// only then its Herbot history, so the two never disagree.
+///
+/// The project is found through Herbot's own threads and removed by exact
+/// id, and only if every thread in it is one Herbot started. A project
+/// holding anything else (say, the herbot repo's own project) is never touched.
+async fn clean_sweep<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    status: &ConversationStatus,
+) -> Result<store::Wiped, HandleError> {
+    let ours = store::all_thread_ids(ctx.pool, status.conversation_id).await?;
+    let mut projects = std::collections::BTreeSet::new();
+    for thread in &ours {
+        if let Some(project) = ctx.projects.project_of_thread(thread).await? {
+            projects.insert(project);
+        }
+    }
+    for project in &projects {
+        let inside = ctx.projects.threads_in_project(project).await?;
+        if let Some(foreign) = inside.iter().find(|t| !ours.contains(t)) {
+            return Err(AgentError::Project(format!(
+                "T3 project {project} also holds thread {foreign}, which Herbot didn't start; not deleting it"
+            ))
+            .into());
+        }
+        ctx.projects.remove_project(project).await?;
+    }
+    let wiped = store::wipe_conversation(ctx.pool, status.conversation_id).await?;
+    tracing::info!(
+        conversation_id = status.conversation_id,
+        projects = projects.len(),
+        threads = wiped.threads,
+        messages = wiped.messages,
+        "wiped conversation"
+    );
+    Ok(wiped)
+}
+
+/// `/new` or `/forget`: explains what will be deleted, with Yes / Cancel buttons.
+async fn ask_to_wipe<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    msg: &InboundMessage,
+    kind: wipe::WipeKind,
+) -> Result<(), HandleError> {
+    let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+    ctx.api
+        .send_buttons(
+            msg.chat.tg_chat_id,
+            msg.topic_id,
+            Some(msg.message_id),
+            &wipe::prompt(kind, &s.place(), s.message_count),
+            &wipe::buttons(kind, s.conversation_id, Utc::now().timestamp()),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Wipes the conversation and returns what to tell the admin.
+async fn perform_wipe<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    status: &ConversationStatus,
+    kind: wipe::WipeKind,
+) -> Result<String, HandleError> {
+    let wiped = clean_sweep(ctx, status).await?;
+    if kind == wipe::WipeKind::Forget
+        && let Some(path) = store::reset_setup(ctx.pool, status.conversation_id).await?
+    {
+        match tokio::fs::remove_file(ctx.agents_dir.join(path)).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(wipe::done(kind, wiped))
+}
+
+/// A tap on a /new or /forget confirmation.
+async fn handle_wipe_tap<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    press: &ButtonPress,
+    tap: wipe::WipeTap,
+) -> Result<(), HandleError> {
+    let chat = press.chat.tg_chat_id;
+    let here = store::find_conversation(ctx.pool, chat, press.topic_id).await?;
+    if here != Some(tap.conversation_id) {
+        ctx.api
+            .answer_button(&press.callback_id, Some(wipe::WRONG_PLACE_TOAST))
+            .await?;
+        return Ok(());
+    }
+    if wipe::is_expired(tap.issued_at, Utc::now().timestamp()) {
+        ctx.api
+            .answer_button(&press.callback_id, Some(wipe::EXPIRED_TOAST))
+            .await?;
+        ctx.api.remove_buttons(chat, press.message_id).await?;
+        return Ok(());
+    }
+    let kind = match tap.button {
+        wipe::WipeButton::Cancel => {
+            ctx.api
+                .edit_text(chat, press.message_id, wipe::CANCELLED)
+                .await?;
+            ctx.api.answer_button(&press.callback_id, None).await?;
+            return Ok(());
+        }
+        wipe::WipeButton::Confirm(kind) => kind,
+    };
+
+    let status = store::conversation_status_by_id(ctx.pool, tap.conversation_id).await?;
+    let text = match perform_wipe(ctx, &status, kind).await {
+        Ok(text) => text,
+        Err(err) => {
+            // Fail loud in place of the confirmation.
+            let context =
+                json!({ "conversation_id": tap.conversation_id, "error": err.to_string() });
+            let id = errors::record(ctx.pool, err.kind(), &err.to_string(), context).await?;
+            format!("❌ Failed ({id}): {}. Check logs.", short_reason(&err))
+        }
+    };
+    ctx.api.edit_text(chat, press.message_id, &text).await?;
+    ctx.api.answer_button(&press.callback_id, None).await?;
     Ok(())
 }
 
@@ -660,31 +795,19 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
                 },
             )
         }
-        Command::New => {
+        Command::New { confirmed: false } => {
+            return ask_to_wipe(ctx, msg, wipe::WipeKind::New).await;
+        }
+        Command::New { confirmed: true } => {
             let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
-            match store::archive_thread(ctx.pool, s.conversation_id).await? {
-                Some(_) => "🆕 Fresh start. Your next message begins a new thread here. \
-                            The old one stays in T3 Code."
-                    .to_string(),
-                None => "🆕 There's no thread here yet. Your next message starts one.".to_string(),
-            }
+            perform_wipe(ctx, &s, wipe::WipeKind::New).await?
         }
         Command::Forget { confirmed: false } => {
-            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
-            format!(
-                "⚠️ This deletes the {} messages stored for {} and starts a fresh thread. \
-                 Send /forget yes to confirm.",
-                s.message_count,
-                s.place()
-            )
+            return ask_to_wipe(ctx, msg, wipe::WipeKind::Forget).await;
         }
         Command::Forget { confirmed: true } => {
             let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
-            let deleted = store::forget_conversation(ctx.pool, s.conversation_id).await?;
-            format!(
-                "🧹 Done. Deleted {deleted} stored messages and archived this topic's thread. \
-                 The old thread still exists in T3 Code if you want to delete it there."
-            )
+            perform_wipe(ctx, &s, wipe::WipeKind::Forget).await?
         }
         Command::Unknown(name) => format!("I don't know /{name}. Try /help."),
     };
@@ -750,6 +873,7 @@ fn short_reason(err: &HandleError) -> &'static str {
         HandleError::Voice(VoiceError::NotConfigured) => "voice notes are off (no OPENAI_API_KEY)",
         HandleError::Voice(_) => "couldn't transcribe that voice note",
         HandleError::AgentsMd(_) => "couldn't save AGENTS.md",
+        HandleError::T3(_) => "couldn't delete this topic's T3 threads, so nothing was wiped",
     }
 }
 
@@ -778,41 +902,36 @@ pub async fn register_commands(bot: &Bot, rules: &Rules) -> Result<(), teloxide:
 
 /// Long-polls Telegram until `shutdown` flips to true.
 /// What the poller needs besides the bot and database.
-pub struct RunSettings<T: Transcriber, R: AgentRunner> {
+pub struct RunSettings<T: Transcriber> {
     pub rules: Rules,
     pub bot_username: String,
-    pub bot_user_id: u64,
     pub transcriber: T,
-    pub runner: R,
     /// Absolute path of the conversation folders.
     pub agents_dir: std::path::PathBuf,
     pub agent_label: String,
+    pub api: Arc<BotApi>,
+    /// The agent lanes (shared with the internal API).
+    pub turns: Arc<dyn TurnQueue>,
+    pub projects: Arc<dyn ProjectCleaner>,
 }
 
-pub async fn run<T: Transcriber, R: AgentRunner>(
+pub async fn run<T: Transcriber>(
     bot: Bot,
     pool: PgPool,
-    settings: RunSettings<T, R>,
+    settings: RunSettings<T>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let api = Arc::new(BotApi(bot.clone()));
-    let lanes = Lanes::new(TurnDeps {
-        pool: pool.clone(),
-        api: api.clone(),
-        runner: Arc::new(settings.runner),
-        agents_dir: settings.agents_dir.clone(),
-        bot_user_id: settings.bot_user_id,
-    });
     let bot_username = settings.bot_username.clone();
     let ctx = Ctx {
         pool: &pool,
-        api: &*api,
+        api: &*settings.api,
         transcriber: &settings.transcriber,
         rules: settings.rules,
         bot_username: &bot_username,
         agents_dir: &settings.agents_dir,
         agent_label: &settings.agent_label,
-        turns: &lanes,
+        turns: &*settings.turns,
+        projects: &*settings.projects,
     };
 
     let mut offset = match store::load_offset(&pool).await {

@@ -1,7 +1,11 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use herbot_core::{agent, agents_md, app, config::Config, db, policy, poller, telemetry, voice};
+use std::sync::Arc;
+
+use herbot_core::{
+    agent, agents_md, app, config::Config, db, internal, policy, poller, telemetry, turns, voice,
+};
 use teloxide::prelude::*;
 use tokio::sync::watch;
 
@@ -23,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     // Telegram is optional for local work, but when a token is set it must
     // work: a bad token stops startup instead of running half-broken.
     let mut telegram_username = None;
+    let mut internal_router: Option<axum::Router> = None;
     let mut poller_task = None;
     match &config.telegram {
         None => tracing::warn!("TELEGRAM_BOT_TOKEN not set; Telegram is disabled"),
@@ -83,14 +88,42 @@ async fn main() -> anyhow::Result<()> {
                 agents_dir = %agents_dir.display(),
                 "agents run as T3 Code threads"
             );
+            let projects: Arc<dyn agent::ProjectCleaner> = Arc::new(runner.clone());
+            let api = Arc::new(poller::BotApi(bot.clone()));
+            let lanes = Arc::new(turns::Lanes::new(turns::TurnDeps {
+                pool: pool.clone(),
+                api: api.clone(),
+                runner: Arc::new(runner),
+                agents_dir: agents_dir.clone(),
+                bot_user_id: me.id.0,
+            }));
+            let shared_turns: Arc<dyn turns::TurnQueue> = lanes;
+            match &config.internal_token {
+                Some(token) => {
+                    internal_router = Some(internal::router(Arc::new(internal::InternalState {
+                        pool: pool.clone(),
+                        api: api.clone(),
+                        turns: shared_turns.clone(),
+                        token: token.clone(),
+                        bot_user_id: me.id.0,
+                        admin_user_id: tg.admin_user_id,
+                        ask_timeout: Duration::from_secs(config.turn_timeout_secs + 30),
+                    })));
+                    tracing::info!("internal API on (herbot-mcp actions)");
+                }
+                None => tracing::warn!(
+                    "HERBOT_INTERNAL_TOKEN not set; General can't post to or ask topics"
+                ),
+            }
             let settings = poller::RunSettings {
                 rules,
                 bot_username: username.clone(),
-                bot_user_id: me.id.0,
                 transcriber,
-                runner,
                 agents_dir,
                 agent_label: format!("{} · {}", config.agent_model, config.agent_effort),
+                api,
+                turns: shared_turns,
+                projects,
             };
             poller_task = Some(tokio::spawn(poller::run(
                 bot,
@@ -111,7 +144,11 @@ async fn main() -> anyhow::Result<()> {
         pool,
         telegram_username,
     };
-    axum::serve(listener, app::router(state))
+    let mut router = app::router(state);
+    if let Some(internal) = internal_router {
+        router = router.merge(internal);
+    }
+    axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             let _ = shutdown_tx.send(true);
