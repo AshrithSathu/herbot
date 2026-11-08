@@ -226,3 +226,20 @@
   }
 }
 
+
+/* Sonner animates toasts for 400–500ms; UI motion stays under 300ms, and
+ * exits are quicker than entrances. Doubled attribute selectors outrank
+ * Sonner's own runtime-injected styles whatever their order. */
+:root [data-sonner-toaster][data-sonner-toaster] [data-sonner-toast] {
+  transition-duration: 250ms, 250ms, 250ms, 200ms !important;
+  transition-timing-function: cubic-bezier(0.23, 1, 0.32, 1) !important;
+}
+:root [data-sonner-toaster][data-sonner-toaster] [data-sonner-toast][data-removed="true"] {
+  transition-duration: 180ms !important;
+}
+/* Sonner drops every transition under reduced motion; keep the fade. */
+@media (prefers-reduced-motion: reduce) {
+  :root [data-sonner-toaster][data-sonner-toaster] [data-sonner-toast] {
+    transition: opacity 150ms ease-out !important;
+  }
+}

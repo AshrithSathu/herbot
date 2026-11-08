@@ -1,44 +1,93 @@
-// A topic's history as a bounded chat log: it never grows the page, opens at
-// the newest message, loads older pages on demand, and picks up new messages
-// live without yanking you away from what you're reading.
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+// A topic's history as a bounded, virtualized chat log: it never grows the
+// page, only the rows on screen are in the DOM (however far back you scroll),
+// it opens at the newest message, loads older pages as you reach the top, and
+// picks up new messages live without yanking you away from what you're reading.
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient, useSuspenseInfiniteQuery, type InfiniteData } from '@tanstack/react-query'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDownIcon, InboxIcon, MicIcon } from 'lucide-react'
 import { getMessages, type Message, type MessagePage } from '../api'
 import { clock, dayKey, dayLabel, plural, when } from '../format'
 import { keys, messagesQuery } from '../queries'
 import { EmptyState, ErrorNote } from '../ui'
+import { ClampedText } from '@/components/clamped-text'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
-import { ClampedText } from '@/components/clamped-text'
 // Day grouping and clock times depend on your timezone, which the server doesn't know.
 import { useHydrated } from '@/hooks/use-client'
 import { cn } from '@/lib/utils'
 
 /** Within this many pixels of the bottom counts as "reading the latest". */
 const NEAR_BOTTOM = 72
+/** Within this many pixels of the top, the page before is loaded. */
+const NEAR_TOP = 240
 /** Longer messages are clamped to this many lines until you expand them. */
 const CLAMP_LINES = 12
+
+type Row =
+  | { kind: 'top'; key: 'top' }
+  | { kind: 'day'; key: string; iso: string }
+  | { kind: 'message'; key: number; message: Message }
 
 export function ChatLog({ topicId, total }: { topicId: number; total: number }) {
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isFetchNextPageError, error } =
     useSuspenseInfiniteQuery(messagesQuery(topicId))
   // Pages are newest first; within a page, oldest first.
   const messages = useMemo(() => [...data.pages].reverse().flatMap((p) => p.messages), [data.pages])
+  const rows = useMemo(() => {
+    const out: Row[] = [{ kind: 'top', key: 'top' }]
+    messages.forEach((m, i) => {
+      if (i === 0 || dayKey(m.sent_at) !== dayKey(messages[i - 1]!.sent_at)) {
+        out.push({ kind: 'day', key: `day-${dayKey(m.sent_at)}`, iso: m.sent_at })
+      }
+      out.push({ kind: 'message', key: m.id, message: m })
+    })
+    return out
+  }, [messages])
   const liveError = useNewMessages(topicId, total, messages.at(-1)?.id)
   const hydrated = useHydrated()
 
   const scroller = useRef<HTMLDivElement>(null)
-  const sentinel = useRef<HTMLLIElement>(null)
   const list = useRef<HTMLOListElement>(null)
+  // "Pinned to the newest message": set by reaching the bottom, cleared only
+  // by scrolling up. Content growing underneath (rows measured taller, a
+  // message expanded) never unpins you.
   const atBottom = useRef(true)
-  const anchor = useRef<{ height: number; top: number } | null>(null)
+  const lastTop = useRef(0)
+  const anchor = useRef<{ key: Row['key']; offset: number } | null>(null)
   const lastSeen = useRef<number | undefined>(messages.at(-1)?.id)
   const [unseen, setUnseen] = useState(0)
+  const [viewport, setViewport] = useState(0)
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scroller.current,
+    estimateSize: (i) => (rows[i]?.kind === 'message' ? 76 : 48),
+    getItemKey: (i) => rows[i]!.key,
+    overscan: 6,
+    paddingEnd: 12,
+  })
+  // Rows above you that turn out taller or shorter than estimated shift what
+  // you're reading; the virtualizer corrects for that, except while you're
+  // pinned to the newest message, where snapping to the bottom is the fix.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+    !atBottom.current && item.start < (instance.scrollOffset ?? 0)
+  const items = virtualizer.getVirtualItems()
+  // A short conversation sits at the bottom, like a chat.
+  const gap = Math.max(0, viewport - virtualizer.getTotalSize())
 
   const firstId = messages[0]?.id
   const lastId = messages.at(-1)?.id
+
+  // The box's own height, for bottom-aligning short conversations.
+  useEffect(() => {
+    const el = scroller.current
+    if (!el) return
+    const observer = new ResizeObserver(() => setViewport(el.clientHeight))
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [hydrated])
 
   // Open at the newest message, before the first paint.
   useLayoutEffect(() => {
@@ -46,8 +95,8 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
     if (hydrated && el) el.scrollTop = el.scrollHeight
   }, [hydrated])
 
-  // Stay pinned to the newest message while you're at the bottom, even when
-  // something inside changes size after the first paint (clamping, fonts).
+  // Stay pinned to the newest message while you're at the bottom, even as
+  // rows are measured or something inside changes size.
   useEffect(() => {
     const el = scroller.current
     const content = list.current
@@ -59,14 +108,18 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
     return () => observer.disconnect()
   }, [hydrated])
 
-  // Older messages went in above: keep what you were reading where it was.
+  // Older messages went in above: put the message you were reading back
+  // where it was. (Rows measured later above you are corrected by the
+  // virtualizer itself.)
   useLayoutEffect(() => {
     const el = scroller.current
     const saved = anchor.current
     if (!el || !saved) return
-    el.scrollTop = saved.top + (el.scrollHeight - saved.height)
+    const index = rows.findIndex((r) => r.key === saved.key)
+    const start = index >= 0 ? virtualizer.measurementsCache[index]?.start : undefined
+    if (start !== undefined) el.scrollTop = start + gap - saved.offset
     anchor.current = null
-  }, [firstId])
+  }, [firstId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Newer messages arrived: follow them if you were at the bottom, otherwise
   // count them and leave your scroll alone.
@@ -85,25 +138,22 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
   function loadOlder() {
     const el = scroller.current
     if (!el || !hasNextPage || isFetchingNextPage) return
-    anchor.current = { height: el.scrollHeight, top: el.scrollTop }
+    const first = items.find((v) => v.end + gap > el.scrollTop && rows[v.index]?.kind === 'message')
+    anchor.current = first ? { key: first.key as Row['key'], offset: first.start + gap - el.scrollTop } : null
     void fetchNextPage()
   }
 
-  // Reaching the top loads the page before it.
+  // If everything loaded so far fits without scrolling, keep loading: there
+  // is no scroll to trigger it.
   useEffect(() => {
-    const target = sentinel.current
-    const root = scroller.current
-    if (!hydrated || !target || !root || !hasNextPage || isFetchingNextPage || isFetchNextPageError) return
-    const observer = new IntersectionObserver(([entry]) => entry?.isIntersecting && loadOlder(), {
-      root,
-      rootMargin: '160px 0px 0px 0px',
-    })
-    observer.observe(target)
-    return () => observer.disconnect()
-  }, [hydrated, hasNextPage, isFetchingNextPage, isFetchNextPageError]) // eslint-disable-line react-hooks/exhaustive-deps
+    const el = scroller.current
+    if (!hydrated || !el || !hasNextPage || isFetchingNextPage || isFetchNextPageError) return
+    if (el.scrollHeight <= el.clientHeight + 4) loadOlder()
+  }, [hydrated, hasNextPage, isFetchingNextPage, isFetchNextPageError, firstId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function jumpToLatest() {
     const el = scroller.current
+    atBottom.current = true // pinned first, so rows measured on the way down keep it at the end
     if (el) {
       el.scrollTop = el.scrollHeight
       el.focus({ preventScroll: true }) // the pill is about to vanish; keep focus in the log
@@ -119,6 +169,14 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
     )
   }
 
+  // Which day is at the top of the box right now (for the floating label).
+  const scrollTop = virtualizer.scrollOffset ?? 0
+  const topRow = items.find((v) => v.end + gap > scrollTop + 8)
+  const topMessage = topRow
+    ? rows.slice(topRow.index).find((r): r is Extract<Row, { kind: 'message' }> => r.kind === 'message')
+    : undefined
+  const floatingDay = hydrated && scrollTop > 48 && topMessage ? dayLabel(topMessage.message.sent_at) : null
+
   return (
     <div className="flex flex-col gap-2">
       <div className="relative isolate">
@@ -127,43 +185,66 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
           role="region"
           aria-label="Message history"
           tabIndex={0}
+          data-loaded={messages.length}
           onScroll={(e) => {
             const el = e.currentTarget
-            atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM
+            const movedUp = el.scrollTop < lastTop.current - 1
+            lastTop.current = el.scrollTop
+            if (el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM) atBottom.current = true
+            else if (movedUp) atBottom.current = false
             if (atBottom.current && unseen > 0) setUnseen(0)
+            if (el.scrollTop < NEAR_TOP && hasNextPage && !isFetchingNextPage && !isFetchNextPageError) loadOlder()
           }}
-          className="scroller relative h-[min(36rem,65dvh)] overflow-y-auto overscroll-contain rounded-xl border bg-background px-3 pb-3 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 sm:px-4"
+          className="scroller relative h-[min(36rem,65dvh)] overflow-y-auto overscroll-contain rounded-xl border bg-background outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         >
           {hydrated ? (
-            <ol ref={list} className="flex min-h-full flex-col justify-end gap-1.5">
-              <li ref={sentinel} className="flex justify-center pt-3 pb-1">
-                {isFetchNextPageError ? (
-                  <div className="flex flex-col items-center gap-2 text-center text-sm">
-                    <span className="text-destructive">Couldn’t load older messages: {error?.message}</span>
-                    <Button variant="outline" size="sm" onClick={loadOlder}>
-                      Try again
-                    </Button>
-                  </div>
-                ) : hasNextPage ? (
-                  <Button variant="ghost" size="sm" disabled={isFetchingNextPage} onClick={loadOlder}>
-                    {isFetchingNextPage && <Spinner />}
-                    {isFetchingNextPage ? 'Loading older messages…' : 'Load older messages'}
-                  </Button>
-                ) : (
-                  <span className="text-xs text-muted-foreground">Start of this conversation</span>
-                )}
-              </li>
-              {messages.map((m, i) => (
-                <Fragment key={m.id}>
-                  {(i === 0 || dayKey(m.sent_at) !== dayKey(messages[i - 1]!.sent_at)) && <DaySeparator iso={m.sent_at} />}
-                  <Bubble message={m} />
-                </Fragment>
-              ))}
+            <ol ref={list} className="relative" style={{ height: virtualizer.getTotalSize() + gap }}>
+              {items.map((v) => {
+                const row = rows[v.index]!
+                return (
+                  <li
+                    key={v.key}
+                    data-index={v.index}
+                    ref={virtualizer.measureElement}
+                    className="absolute inset-x-0 top-0 flex flex-col px-3 pb-1.5 sm:px-4"
+                    style={{ transform: `translateY(${v.start + gap}px)` }}
+                  >
+                    {row.kind === 'top' ? (
+                      <Top
+                        failed={isFetchNextPageError ? (error?.message ?? 'unknown error') : null}
+                        more={hasNextPage}
+                        loading={isFetchingNextPage}
+                        onLoad={loadOlder}
+                      />
+                    ) : row.kind === 'day' ? (
+                      <h3 className="flex justify-center pt-2 pb-1">
+                        <span className="rounded-full border bg-card px-2.5 py-0.5 text-xs font-medium text-muted-foreground shadow-xs">
+                          {dayLabel(row.iso)}
+                        </span>
+                      </h3>
+                    ) : (
+                      <Bubble message={row.message} />
+                    )}
+                  </li>
+                )
+              })}
             </ol>
           ) : (
             <ChatSkeleton />
           )}
         </div>
+        {floatingDay && (
+          // The day you're reading, over the top of the box; the real
+          // headings are in the list for screen readers.
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-px top-px z-[1] flex justify-center rounded-t-xl bg-gradient-to-b from-background from-55% to-transparent pt-2 pb-4"
+          >
+            <span className="rounded-full border bg-card px-2.5 py-0.5 text-xs font-medium text-muted-foreground shadow-xs">
+              {floatingDay}
+            </span>
+          </div>
+        )}
         {unseen > 0 && (
           <Button
             size="sm"
@@ -183,33 +264,43 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
   )
 }
 
-/** A day's heading: sticks to the top of the log while you scroll through
- * that day, and lets screen-reader users jump between days. */
-function DaySeparator({ iso }: { iso: string }) {
-  const label = dayLabel(iso)
+/** The top of the log: load older, loading, failed, or the very beginning. */
+function Top({ failed, more, loading, onLoad }: { failed: string | null; more: boolean; loading: boolean; onLoad: () => void }) {
   return (
-    <li
-      data-day={label}
-      // A band, not a floating pill: messages fade out under it as they scroll.
-      className="sticky top-0 z-[1] -mx-3 flex justify-center bg-gradient-to-b from-background from-55% to-transparent px-3 pt-2 pb-4 sm:-mx-4"
-    >
-      <h3 className="rounded-full border bg-card px-2.5 py-0.5 text-xs font-medium text-muted-foreground shadow-xs">
-        {label}
-      </h3>
-    </li>
+    <div className="flex min-h-12 items-center justify-center pt-3 pb-1">
+      {failed ? (
+        <div className="flex flex-col items-center gap-2 text-center text-sm">
+          <span className="text-destructive">Couldn’t load older messages: {failed}</span>
+          <Button variant="outline" size="sm" onClick={onLoad}>
+            Try again
+          </Button>
+        </div>
+      ) : more ? (
+        <Button variant="ghost" size="sm" disabled={loading} onClick={onLoad}>
+          {loading && <Spinner />}
+          {loading ? 'Loading older messages…' : 'Load older messages'}
+        </Button>
+      ) : (
+        <span className="text-xs text-muted-foreground">Start of this conversation</span>
+      )}
+    </div>
   )
 }
 
 function Bubble({ message: m }: { message: Message }) {
   return (
-    <li
+    <div
       data-message-id={m.id}
       className={cn(
         'flex max-w-[min(65ch,88%)] min-w-0 flex-col gap-1 rounded-2xl px-3.5 py-2',
         m.from_bot ? 'self-end rounded-br-md bg-accent text-accent-foreground' : 'self-start rounded-bl-md border bg-card',
       )}
     >
-      <span className="sr-only">{m.from_bot ? 'Herbot said:' : 'You said:'}</span>
+      {/* Virtualized: day headings off screen aren't in the page, so each
+          message carries its own day for screen readers. */}
+      <span className="sr-only">
+        {m.from_bot ? 'Herbot' : 'You'}, {dayLabel(m.sent_at)} at {clock(m.sent_at)}:
+      </span>
       <ClampedText
         lines={CLAMP_LINES}
         className={cn('leading-relaxed', !m.body && 'text-muted-foreground italic')}
@@ -229,7 +320,7 @@ function Bubble({ message: m }: { message: Message }) {
       >
         {m.body || '(no text)'}
       </ClampedText>
-    </li>
+    </div>
   )
 }
 
@@ -237,7 +328,7 @@ function Bubble({ message: m }: { message: Message }) {
 function ChatSkeleton() {
   const widths = ['w-2/3', 'w-1/2', 'w-3/4', 'w-2/5', 'w-3/5']
   return (
-    <div className="flex h-full flex-col justify-end gap-2 py-3" aria-busy="true" aria-label="Loading messages">
+    <div className="flex h-full flex-col justify-end gap-2 p-3" aria-busy="true" aria-label="Loading messages">
       {widths.map((w, i) => (
         <Skeleton key={w} className={cn('h-12 rounded-2xl', w, i % 2 ? 'self-end' : 'self-start')} />
       ))}

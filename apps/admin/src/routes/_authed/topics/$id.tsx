@@ -397,7 +397,7 @@ function CleanSlate({ topic }: { topic: Topic }) {
                       <AlertDialogFooter>
                         <AlertDialogCancel autoFocus>Keep everything</AlertDialogCancel>
                         <AlertDialogAction
-                          className="bg-destructive text-white hover:bg-destructive/90 dark:text-background"
+                          className="bg-destructive text-white hover:bg-[color-mix(in_oklch,var(--destructive)_86%,black)] dark:text-background"
                           onClick={() => wipe.mutate(kind)}
                         >
                           {WIPE[kind].confirm}
