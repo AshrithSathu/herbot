@@ -139,6 +139,7 @@ async fn every_endpoint_needs_the_admin_token(pool: PgPool) {
         (Method::GET, "/admin/api/overview"),
         (Method::GET, "/admin/api/conversations"),
         (Method::GET, "/admin/api/conversations/2"),
+        (Method::GET, "/admin/api/conversations/2/messages"),
         (Method::GET, "/admin/api/errors"),
     ] {
         let (status, _) = call_with(&h, method, path, None, "wrong-token").await;
@@ -192,21 +193,15 @@ async fn conversations_list_general_first(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn a_conversation_shows_its_agents_md_and_messages(pool: PgPool) {
+async fn a_conversation_shows_its_agents_md(pool: PgPool) {
     let h = harness(pool, FakeT3::default()).await;
     let (status, body) = call(&h, Method::GET, "/admin/api/conversations/2", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["agents_md"], "# Herbot HQ › Research\n\nold rules");
-    let messages = body["recent_messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 2);
-    assert_eq!(
-        (
-            messages[0]["from_bot"].as_bool(),
-            messages[0]["is_voice"].as_bool()
-        ),
-        (Some(false), Some(true))
+    assert!(
+        body.get("recent_messages").is_none(),
+        "messages page separately, so polling the topic stays small"
     );
-    assert_eq!(messages[1]["body"], "rmcp is the official SDK");
     assert!(
         body.get("caller_token").is_none(),
         "secrets never leave the API"
@@ -404,4 +399,176 @@ async fn errors_are_found_by_id_or_text(pool: PgPool) {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (status, _) = call(&h, Method::GET, "/admin/api/errors/nonsense", None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// Adds `n` more messages to Research (conversation 2), alternating sides.
+async fn add_messages(pool: &PgPool, n: i32) {
+    sqlx::query(
+        "INSERT INTO messages (conversation_id, tg_message_id, from_tg_user_id, from_bot, body, sent_at)
+         SELECT 2, 100 + g, CASE WHEN g % 2 = 0 THEN 999 ELSE 111 END, g % 2 = 0,
+                'message ' || g, now() + make_interval(secs => g)
+         FROM generate_series(1, $1) AS g",
+    )
+    .bind(n)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn messages_page_back_from_the_newest(pool: PgPool) {
+    let h = harness(pool, FakeT3::default()).await;
+    add_messages(&h.pool, 70).await; // 72 in all
+
+    let (status, first) = call(&h, Method::GET, "/admin/api/conversations/2/messages", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let page = first["messages"].as_array().unwrap();
+    assert_eq!(page.len(), 30, "default page size");
+    assert_eq!(first["has_more"], true);
+    assert_eq!(
+        page.last().unwrap()["body"],
+        "message 70",
+        "ends at the newest"
+    );
+    assert_eq!(page[0]["body"], "message 41", "oldest first within a page");
+
+    // Keep going back until the start; every message shows up exactly once.
+    let mut seen: Vec<String> = page
+        .iter()
+        .map(|m| m["body"].as_str().unwrap().to_string())
+        .collect();
+    let mut before = page[0]["id"].as_i64().unwrap();
+    loop {
+        let (_, older) = call(
+            &h,
+            Method::GET,
+            &format!("/admin/api/conversations/2/messages?before={before}"),
+            None,
+        )
+        .await;
+        let page = older["messages"].as_array().unwrap();
+        let mut bodies: Vec<String> = page
+            .iter()
+            .map(|m| m["body"].as_str().unwrap().to_string())
+            .collect();
+        bodies.extend(seen);
+        seen = bodies;
+        before = page[0]["id"].as_i64().unwrap();
+        if older["has_more"] == false {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 72);
+    assert_eq!(
+        seen[0], "compare rmcp with the others",
+        "the very first message"
+    );
+    let unique: std::collections::HashSet<_> = seen.iter().collect();
+    assert_eq!(unique.len(), 72, "no message twice");
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn messages_after_an_id_bring_in_only_new_ones(pool: PgPool) {
+    let h = harness(pool, FakeT3::default()).await;
+    let (_, first) = call(&h, Method::GET, "/admin/api/conversations/2/messages", None).await;
+    let newest = first["messages"].as_array().unwrap().last().unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(first["has_more"], false);
+
+    add_messages(&h.pool, 3).await;
+    let (_, newer) = call(
+        &h,
+        Method::GET,
+        &format!("/admin/api/conversations/2/messages?after={newest}"),
+        None,
+    )
+    .await;
+    let bodies: Vec<_> = newer["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["body"].clone())
+        .collect();
+    assert_eq!(bodies, ["message 1", "message 2", "message 3"]);
+    assert_eq!(newer["has_more"], false);
+
+    let (_, capped) = call(
+        &h,
+        Method::GET,
+        "/admin/api/conversations/2/messages?limit=100000",
+        None,
+    )
+    .await;
+    assert_eq!(
+        capped["messages"].as_array().unwrap().len(),
+        5,
+        "limit is clamped, not trusted"
+    );
+    let (status, _) = call(
+        &h,
+        Method::GET,
+        "/admin/api/conversations/99/messages",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_error_list_pages_and_stays_small(pool: PgPool) {
+    let h = harness(pool, FakeT3::default()).await;
+    let long = "x".repeat(5000);
+    for i in 0..5 {
+        errors::record(
+            &h.pool,
+            "t3.turn_failed",
+            &format!("{i} {long}"),
+            json!({ "big": long }),
+        )
+        .await
+        .unwrap();
+    }
+    errors::record(&h.pool, "odd", "100% sure_thing", json!({}))
+        .await
+        .unwrap();
+
+    let (_, first) = call(&h, Method::GET, "/admin/api/errors?limit=4", None).await;
+    let first = first.as_array().unwrap();
+    assert_eq!(first.len(), 4);
+    assert!(
+        first[1].get("context").is_none(),
+        "lists leave the context out"
+    );
+    assert_eq!(
+        first[1]["message"].as_str().unwrap().chars().count(),
+        300,
+        "messages are capped"
+    );
+    let before = first[3]["id"].as_i64().unwrap();
+    let (_, rest) = call(
+        &h,
+        Method::GET,
+        &format!("/admin/api/errors?limit=4&before={before}"),
+        None,
+    )
+    .await;
+    let rest = rest.as_array().unwrap();
+    assert_eq!(rest.len(), 2);
+    assert_eq!(rest[1]["error_id"], "E-1000");
+
+    // Search text is literal: % and _ don't act as wildcards.
+    let (_, literal) = call(&h, Method::GET, "/admin/api/errors?q=100%25%20sure_", None).await;
+    assert_eq!(literal.as_array().unwrap().len(), 1);
+    let (_, wildcard) = call(&h, Method::GET, "/admin/api/errors?q=%25", None).await;
+    assert_eq!(
+        wildcard.as_array().unwrap().len(),
+        1,
+        "only the message with a real %"
+    );
+
+    // The detail still has everything.
+    let (_, one) = call(&h, Method::GET, "/admin/api/errors/E-1000", None).await;
+    assert_eq!(one["message"].as_str().unwrap().chars().count(), 5002);
+    assert_eq!(one["context"]["big"].as_str().unwrap().len(), 5000);
 }

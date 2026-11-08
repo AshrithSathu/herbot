@@ -45,6 +45,7 @@ pub fn router(state: Arc<AdminState>) -> Router {
         .route("/admin/api/overview", get(overview))
         .route("/admin/api/conversations", get(conversations))
         .route("/admin/api/conversations/{id}", get(conversation))
+        .route("/admin/api/conversations/{id}/messages", get(messages))
         .route("/admin/api/conversations/{id}/purpose", put(set_purpose))
         .route("/admin/api/conversations/{id}/enabled", put(set_enabled))
         .route(
@@ -212,6 +213,7 @@ async fn conversations(State(state): State<Arc<AdminState>>, headers: HeaderMap)
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 struct MessageRow {
+    id: i64,
     sent_at: DateTime<Utc>,
     from_bot: bool,
     is_voice: bool,
@@ -237,25 +239,78 @@ async fn conversation(
             .ok(),
         None => None,
     };
-    let mut recent: Vec<MessageRow> = match sqlx::query_as(
-        "SELECT sent_at, from_bot, is_voice, body FROM messages
-         WHERE conversation_id = $1 ORDER BY sent_at DESC, id DESC LIMIT 50",
-    )
-    .bind(id)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(e) => return db_fail(e),
-    };
-    recent.reverse();
     ok(json!({
         "conversation": summary,
         "agents_md_path": status.agents_md_path,
         "agents_md": agents_md,
         "thread_id": status.thread_id,
-        "recent_messages": recent,
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct MessagesQuery {
+    /// Older than this message id (to load earlier history).
+    before: Option<i64>,
+    /// Newer than this message id (to pick up what arrived since).
+    after: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// One page of a conversation's messages, oldest first. Without `after`, the
+/// newest `limit` (before `before`, if given); with `after`, the next `limit`
+/// after it. `has_more` says whether another page exists in that direction.
+async fn messages(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Query(query): Query<MessagesQuery>,
+) -> Reply {
+    guard!(headers, state);
+    let limit = query.limit.unwrap_or(30).clamp(1, 100);
+    match sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM conversations WHERE id = $1)")
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return fail(StatusCode::NOT_FOUND, "no such conversation"),
+        Err(e) => return db_fail(e),
+    }
+    let rows: Result<Vec<MessageRow>, _> = match query.after {
+        Some(after) => {
+            sqlx::query_as(
+                "SELECT id, sent_at, from_bot, is_voice, body FROM messages
+                 WHERE conversation_id = $1 AND id > $2 ORDER BY id ASC LIMIT $3",
+            )
+            .bind(id)
+            .bind(after)
+            .bind(limit + 1)
+            .fetch_all(&state.pool)
+            .await
+        }
+        None => {
+            sqlx::query_as(
+                "SELECT id, sent_at, from_bot, is_voice, body FROM messages
+                 WHERE conversation_id = $1 AND ($2::bigint IS NULL OR id < $2)
+                 ORDER BY id DESC LIMIT $3",
+            )
+            .bind(id)
+            .bind(query.before)
+            .bind(limit + 1)
+            .fetch_all(&state.pool)
+            .await
+        }
+    };
+    let mut rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => return db_fail(e),
+    };
+    let has_more = rows.len() as i64 > limit;
+    rows.truncate(limit as usize);
+    if query.after.is_none() {
+        rows.reverse(); // fetched newest first; pages read oldest first
+    }
+    ok(json!({ "messages": rows, "has_more": has_more }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -442,7 +497,57 @@ async fn error_rows(
 #[derive(Debug, Deserialize)]
 struct ErrorQuery {
     q: Option<String>,
+    /// Older than this numeric error id (the page before).
+    before: Option<i64>,
     limit: Option<i64>,
+}
+
+/// A list row: no context, and the message capped, since the detail page
+/// has both in full.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct ErrorSummary {
+    #[sqlx(skip)]
+    error_id: String,
+    id: i64,
+    kind: String,
+    message: String,
+    created_at: DateTime<Utc>,
+}
+
+/// Escapes `%`, `_` and `\` so a search is literal text, not a pattern.
+fn like_literal(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+async fn error_summaries(
+    pool: &PgPool,
+    q: Option<&str>,
+    before: Option<i64>,
+    limit: i64,
+) -> Result<Vec<ErrorSummary>, sqlx::Error> {
+    let q = q.map(str::trim).filter(|q| !q.is_empty());
+    let by_id = q.and_then(|q| q.parse::<ErrorId>().ok()).map(|id| id.0);
+    let pattern = q.map(like_literal);
+    let mut rows: Vec<ErrorSummary> = sqlx::query_as(
+        "SELECT id, kind, left(message, 300) AS message, created_at FROM errors
+         WHERE (($1::bigint IS NOT NULL AND id = $1)
+             OR ($1::bigint IS NULL AND ($2::text IS NULL
+                 OR kind ILIKE '%' || $2 || '%' OR message ILIKE '%' || $2 || '%')))
+           AND ($4::bigint IS NULL OR id < $4)
+         ORDER BY id DESC LIMIT $3",
+    )
+    .bind(by_id)
+    .bind(pattern)
+    .bind(limit)
+    .bind(before)
+    .fetch_all(pool)
+    .await?;
+    for row in &mut rows {
+        row.error_id = ErrorId(row.id).to_string();
+    }
+    Ok(rows)
 }
 
 async fn errors(
@@ -452,7 +557,7 @@ async fn errors(
 ) -> Reply {
     guard!(headers, state);
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    match error_rows(&state.pool, query.q.as_deref(), limit).await {
+    match error_summaries(&state.pool, query.q.as_deref(), query.before, limit).await {
         Ok(rows) => ok(rows),
         Err(e) => db_fail(e),
     }
