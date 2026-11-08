@@ -51,8 +51,8 @@ test('overview shows the numbers and the last error', async ({ page }) => {
   await signIn(page)
   const stats = page.getByTestId('stat')
   await expect(stats.first()).toContainText('Topics answering')
-  await expect(stats.first().locator('dd')).toHaveText('3 of 3 topics')
-  await expect(stats.nth(2).locator('dd')).toHaveText('3')
+  await expect(stats.first().locator('[data-slot=card-title]')).toHaveText('3 of 3 topics')
+  await expect(stats.nth(2).locator('[data-slot=card-title]')).toHaveText('3')
   await expect(page.getByRole('link', { name: 'E-1001' })).toBeVisible()
   await expect(page.getByText('Telegram refused the reply: message is too long')).toBeVisible()
   expect(problems).toEqual([])
@@ -79,6 +79,9 @@ test('topics list links to each agent', async ({ page }) => {
   await page.getByRole('link', { name: 'Herbot HQ › Research' }).click()
   await expect(page.getByRole('heading', { level: 1, name: 'Herbot HQ › Research' })).toBeVisible()
   await expect(page.getByText('rmcp is the official SDK and the best maintained.')).toBeVisible()
+  // Header breadcrumb and sidebar both say where you are.
+  await expect(page.getByRole('navigation', { name: 'breadcrumb' })).toContainText('Topics')
+  await expect(page.locator('[data-sidebar=menu-button][data-active=true]')).toHaveText('Research')
   expect(problems).toEqual([])
 })
 
@@ -116,12 +119,14 @@ test('turning a topic off flips at once and sticks', async ({ page }) => {
   await page.getByText('Answer messages here').click() // the whole row is the hit area
   await expect(toggle).not.toBeChecked()
   await expect(page.getByText('Off. Herbot stores nothing here and stays silent.')).toBeVisible()
-  await expect(page.locator('header [data-slot=badge]')).toHaveText('Off')
+  await expect(page.getByRole('main').locator('[data-slot=badge]').first()).toHaveText('Off')
+  // The sidebar's agent list follows from the same cache.
+  await expect(page.locator('[data-sidebar=menu-button]', { hasText: 'Ideas' }).locator('span')).toHaveClass(/line-through/)
 
   await page.reload()
   await expect(page.getByRole('switch', { name: /Answer messages here/ })).not.toBeChecked()
   await page.goto('/')
-  await expect(page.getByTestId('stat').first().locator('dd')).toHaveText('2 of 3 topics')
+  await expect(page.getByTestId('stat').first().locator('[data-slot=card-title]')).toHaveText('2 of 3 topics')
   expect(problems).toEqual([])
 })
 
@@ -140,7 +145,7 @@ test('wiping a chat asks first, then clears its messages', async ({ page }) => {
   await page.getByRole('button', { name: 'Wipe the chat…' }).click()
   await page.getByRole('button', { name: 'Yes, wipe the chat' }).click()
   await expect(page.locator('[data-sonner-toast]')).toBeVisible()
-  await expect(page.getByText('Nothing stored yet.')).toBeVisible()
+  await expect(page.getByText('Nothing stored yet')).toBeVisible()
   // The purpose stays after /new.
   await expect(page.getByLabel('What this agent is for')).toHaveValue('Research Rust crates and compare them honestly')
   expect(problems).toEqual([])
@@ -159,7 +164,7 @@ test('logs: search as you type, open an error, copy its id', async ({ page, cont
   await expect(page.locator('tbody tr')).toContainText('E-1000')
 
   await page.getByLabel('Search errors').fill('nothing like this')
-  await expect(page.getByText('Nothing matches “nothing like this”.')).toBeVisible()
+  await expect(page.getByText('Nothing matches “nothing like this”')).toBeVisible()
   await page.getByRole('button', { name: 'Clear the search' }).click()
   await expect(page.locator('tbody tr')).toHaveCount(2)
 
@@ -200,13 +205,24 @@ test('phone: no sideways scroll, every control at least 44px tall', async ({ bro
   const phone = await browser.newContext({ viewport: { width: 375, height: 740 }, hasTouch: true, isMobile: true })
   const page = await phone.newPage()
   await signIn(page)
+  // On a phone the sidebar is a sheet: open it, go somewhere, and it closes.
+  await page.getByRole('button', { name: 'Toggle sidebar' }).click()
+  const sheet = page.getByRole('dialog')
+  await expect(sheet).toBeVisible()
+  const items = await sheet.locator('[data-sidebar=menu-button]').evaluateAll((els) =>
+    els.map((el) => el.getBoundingClientRect().height),
+  )
+  expect(Math.min(...items)).toBeGreaterThanOrEqual(44)
+  await sheet.getByRole('link', { name: 'Logs', exact: true }).click()
+  await expect(page.getByRole('heading', { level: 1, name: 'Logs' })).toBeVisible()
+  await expect(sheet).toBeHidden()
   for (const path of ['/', '/topics/2', '/logs']) {
     await page.goto(path)
     await expect(page.locator('main h1')).toBeVisible()
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
     expect(overflow, path).toBeLessThanOrEqual(0)
     const small = await page.evaluate(() =>
-      [...document.querySelectorAll<HTMLElement>('button:not([role=switch]), nav[aria-label=Main] a, input')]
+      [...document.querySelectorAll<HTMLElement>('main button:not([role=switch]), main input')]
         .filter((el) => el.offsetParent !== null && el.getBoundingClientRect().height < 44)
         .map((el) => `${el.tagName} "${el.textContent?.trim()}" ${el.getBoundingClientRect().height}px`),
     )
