@@ -4,7 +4,8 @@ use anyhow::Context;
 use std::sync::Arc;
 
 use herbot_core::{
-    agent, agents_md, app, config::Config, db, internal, policy, poller, telemetry, turns, voice,
+    admin, agent, agents_md, app, config::Config, db, internal, policy, poller, telemetry, turns,
+    voice,
 };
 use teloxide::prelude::*;
 use tokio::sync::watch;
@@ -140,6 +141,31 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("could not bind {}", config.bind))?;
     tracing::info!(addr = %config.bind, "herbot-core listening");
 
+    // The admin panel's API works with or without Telegram.
+    let admin_router = match &config.admin_token {
+        Some(token) => {
+            let state = admin::AdminState {
+                pool: pool.clone(),
+                projects: Arc::new(agent::T3Cli {
+                    bin: config.t3_bin.clone(),
+                    provider: "codex".to_string(),
+                    model: config.agent_model.clone(),
+                    timeout: Duration::from_secs(config.turn_timeout_secs),
+                }),
+                agents_dir: absolute_agents_dir(&config.agents_dir)?,
+                token: token.clone(),
+                agent_label: format!("{} · {}", config.agent_model, config.agent_effort),
+                bot_username: telegram_username.clone(),
+            };
+            tracing::info!("admin API on");
+            Some(admin::router(Arc::new(state)))
+        }
+        None => {
+            tracing::warn!("HERBOT_ADMIN_TOKEN not set; the admin panel can't connect");
+            None
+        }
+    };
+
     let state = app::AppState {
         pool,
         telegram_username,
@@ -147,6 +173,9 @@ async fn main() -> anyhow::Result<()> {
     let mut router = app::router(state);
     if let Some(internal) = internal_router {
         router = router.merge(internal);
+    }
+    if let Some(admin) = admin_router {
+        router = router.merge(admin);
     }
     axum::serve(listener, router)
         .with_graceful_shutdown(async move {
