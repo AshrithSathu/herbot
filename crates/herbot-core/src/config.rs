@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 /// Runtime configuration, read from environment variables.
 #[derive(Debug, Clone)]
@@ -9,6 +10,59 @@ pub struct Config {
     pub database_url: String,
     /// Log output format (`HERBOT_LOG_FORMAT`: `json` or `pretty`).
     pub log_format: LogFormat,
+    /// Telegram settings; `None` when `TELEGRAM_BOT_TOKEN` is unset or empty.
+    pub telegram: Option<TelegramConfig>,
+    /// OpenAI, used only to transcribe voice notes; `None` without `OPENAI_API_KEY`.
+    pub openai: Option<OpenAiConfig>,
+    /// Root folder for each conversation's AGENTS.md (`HERBOT_AGENTS_DIR`).
+    pub agents_dir: PathBuf,
+    /// Model the conversation agents run on (`HERBOT_AGENT_MODEL`).
+    pub agent_model: String,
+    /// Reasoning effort for that model (`HERBOT_AGENT_EFFORT`).
+    pub agent_effort: String,
+}
+
+pub const DEFAULT_AGENTS_DIR: &str = "agents";
+pub const DEFAULT_AGENT_MODEL: &str = "gpt-6.1-terra";
+pub const DEFAULT_AGENT_EFFORT: &str = "medium";
+pub const AGENT_EFFORTS: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
+
+#[derive(Clone)]
+pub struct OpenAiConfig {
+    pub api_key: String,
+    /// `HERBOT_TRANSCRIBE_MODEL`, default `gpt-transcribe`.
+    pub transcribe_model: String,
+}
+
+impl std::fmt::Debug for OpenAiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiConfig")
+            .field("api_key", &"<redacted>")
+            .field("transcribe_model", &self.transcribe_model)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct TelegramConfig {
+    /// Bot token from @BotFather (`TELEGRAM_BOT_TOKEN`).
+    pub token: String,
+    /// The only Telegram user the bot answers (`HERBOT_ADMIN_TELEGRAM_ID`).
+    pub admin_user_id: u64,
+    /// The one group Herbot works in (`HERBOT_HOME_CHAT_ID`). `None` allows
+    /// any group the admin adds it to.
+    pub home_chat_id: Option<i64>,
+}
+
+// Never print the token, even in debug output.
+impl std::fmt::Debug for TelegramConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TelegramConfig")
+            .field("token", &"<redacted>")
+            .field("admin_user_id", &self.admin_user_id)
+            .field("home_chat_id", &self.home_chat_id)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +79,22 @@ pub enum ConfigError {
     InvalidBind(String),
     #[error("HERBOT_LOG_FORMAT {0:?} is not valid (expected `json` or `pretty`)")]
     InvalidLogFormat(String),
+    #[error(
+        "TELEGRAM_BOT_TOKEN is set but HERBOT_ADMIN_TELEGRAM_ID is not; the bot must know who its admin is"
+    )]
+    MissingAdminId,
+    #[error(
+        "HERBOT_ADMIN_TELEGRAM_ID {0:?} is not a Telegram user ID (expected a positive number)"
+    )]
+    InvalidAdminId(String),
+    #[error(
+        "HERBOT_HOME_CHAT_ID {0:?} is not a group chat ID (expected a negative number like -1004447072305)"
+    )]
+    InvalidHomeChatId(String),
+    #[error(
+        "HERBOT_AGENT_EFFORT {0:?} is not valid (expected none, low, medium, high, xhigh or max)"
+    )]
+    InvalidAgentEffort(String),
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -51,10 +121,70 @@ impl Config {
             Some(other) => return Err(ConfigError::InvalidLogFormat(other.to_string())),
         };
 
+        let telegram = match get("TELEGRAM_BOT_TOKEN").filter(|t| !t.trim().is_empty()) {
+            None => None,
+            Some(token) => {
+                let raw = get("HERBOT_ADMIN_TELEGRAM_ID")
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or(ConfigError::MissingAdminId)?;
+                let admin_user_id = raw
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|id| *id > 0)
+                    .ok_or_else(|| ConfigError::InvalidAdminId(raw.clone()))?;
+                let home_chat_id = match get("HERBOT_HOME_CHAT_ID").filter(|v| !v.trim().is_empty())
+                {
+                    None => None,
+                    Some(raw) => Some(
+                        raw.trim()
+                            .parse::<i64>()
+                            .ok()
+                            .filter(|id| *id < 0)
+                            .ok_or_else(|| ConfigError::InvalidHomeChatId(raw.clone()))?,
+                    ),
+                };
+                Some(TelegramConfig {
+                    token: token.trim().to_string(),
+                    admin_user_id,
+                    home_chat_id,
+                })
+            }
+        };
+
+        let openai = get("OPENAI_API_KEY")
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .map(|api_key| OpenAiConfig {
+                api_key,
+                transcribe_model: get("HERBOT_TRANSCRIBE_MODEL")
+                    .map(|m| m.trim().to_string())
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| crate::voice::DEFAULT_MODEL.to_string()),
+            });
+
+        let non_empty = |key: &str, default: &str| {
+            get(key)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| default.to_string())
+        };
+        let agents_dir = PathBuf::from(non_empty("HERBOT_AGENTS_DIR", DEFAULT_AGENTS_DIR));
+        let agent_model = non_empty("HERBOT_AGENT_MODEL", DEFAULT_AGENT_MODEL);
+        let agent_effort = non_empty("HERBOT_AGENT_EFFORT", DEFAULT_AGENT_EFFORT).to_lowercase();
+        if !AGENT_EFFORTS.contains(&agent_effort.as_str()) {
+            return Err(ConfigError::InvalidAgentEffort(agent_effort));
+        }
+
         Ok(Self {
             bind,
             database_url,
             log_format,
+            telegram,
+            openai,
+            agents_dir,
+            agent_model,
+            agent_effort,
         })
     }
 }
@@ -117,5 +247,117 @@ mod tests {
         ]))
         .unwrap_err();
         assert_eq!(err, ConfigError::InvalidLogFormat("yaml".into()));
+    }
+
+    #[test]
+    fn telegram_is_disabled_without_a_token() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("TELEGRAM_BOT_TOKEN", ""),
+            ("HERBOT_ADMIN_TELEGRAM_ID", "123"),
+        ]))
+        .unwrap();
+        assert!(config.telegram.is_none());
+    }
+
+    #[test]
+    fn telegram_token_requires_a_valid_admin_id() {
+        let base = [
+            ("DATABASE_URL", "postgres://x"),
+            ("TELEGRAM_BOT_TOKEN", "123:abc"),
+        ];
+        assert_eq!(
+            Config::from_lookup(lookup(&base)).unwrap_err(),
+            ConfigError::MissingAdminId
+        );
+        for bad in ["abc", "-5", "0"] {
+            let mut pairs = base.to_vec();
+            pairs.push(("HERBOT_ADMIN_TELEGRAM_ID", bad));
+            assert_eq!(
+                Config::from_lookup(lookup(&pairs)).unwrap_err(),
+                ConfigError::InvalidAdminId(bad.into()),
+            );
+        }
+        let mut pairs = base.to_vec();
+        pairs.push(("HERBOT_ADMIN_TELEGRAM_ID", " 987654321 "));
+        let telegram = Config::from_lookup(lookup(&pairs))
+            .unwrap()
+            .telegram
+            .unwrap();
+        assert_eq!(telegram.admin_user_id, 987654321);
+        assert_eq!(telegram.token, "123:abc");
+    }
+
+    #[test]
+    fn home_chat_id_must_be_a_group_id() {
+        let base = [
+            ("DATABASE_URL", "postgres://x"),
+            ("TELEGRAM_BOT_TOKEN", "123:abc"),
+            ("HERBOT_ADMIN_TELEGRAM_ID", "42"),
+        ];
+        let none = Config::from_lookup(lookup(&base))
+            .unwrap()
+            .telegram
+            .unwrap();
+        assert_eq!(none.home_chat_id, None);
+
+        let mut pairs = base.to_vec();
+        pairs.push(("HERBOT_HOME_CHAT_ID", "-1004447072305"));
+        let set = Config::from_lookup(lookup(&pairs))
+            .unwrap()
+            .telegram
+            .unwrap();
+        assert_eq!(set.home_chat_id, Some(-1004447072305));
+
+        for bad in ["42", "herbot", "0"] {
+            let mut pairs = base.to_vec();
+            pairs.push(("HERBOT_HOME_CHAT_ID", bad));
+            assert_eq!(
+                Config::from_lookup(lookup(&pairs)).unwrap_err(),
+                ConfigError::InvalidHomeChatId(bad.into())
+            );
+        }
+    }
+
+    #[test]
+    fn agent_model_defaults_to_terra_on_medium() {
+        let config = Config::from_lookup(lookup(&[("DATABASE_URL", "postgres://x")])).unwrap();
+        assert_eq!(config.agent_model, "gpt-6.1-terra");
+        assert_eq!(config.agent_effort, "medium");
+        assert_eq!(config.agents_dir, PathBuf::from("agents"));
+        assert!(config.openai.is_none(), "voice is off without a key");
+
+        let err = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("HERBOT_AGENT_EFFORT", "turbo"),
+        ]))
+        .unwrap_err();
+        assert_eq!(err, ConfigError::InvalidAgentEffort("turbo".into()));
+    }
+
+    #[test]
+    fn openai_key_turns_on_voice_with_a_default_model() {
+        let config = Config::from_lookup(lookup(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("OPENAI_API_KEY", " sk-test "),
+        ]))
+        .unwrap();
+        let openai = config.openai.unwrap();
+        assert_eq!(openai.api_key, "sk-test");
+        assert_eq!(openai.transcribe_model, "gpt-transcribe");
+        let shown = format!("{openai:?}");
+        assert!(!shown.contains("sk-test"), "{shown}");
+    }
+
+    #[test]
+    fn debug_output_never_contains_the_token() {
+        let telegram = TelegramConfig {
+            token: "123:super-secret".into(),
+            admin_user_id: 1,
+            home_chat_id: None,
+        };
+        let shown = format!("{telegram:?}");
+        assert!(!shown.contains("super-secret"), "{shown}");
+        assert!(shown.contains("<redacted>"));
     }
 }

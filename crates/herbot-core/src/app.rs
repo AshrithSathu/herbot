@@ -11,6 +11,9 @@ use crate::db;
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
+    /// The bot's Telegram username once `getMe` succeeded; `None` when
+    /// Telegram is disabled (no token configured).
+    pub telegram_username: Option<String>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -30,18 +33,24 @@ async fn health() -> Json<Value> {
     }))
 }
 
-/// Process can do real work: Postgres answers.
+/// Process can do real work: Postgres answers. Also reports Telegram status.
 async fn ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    let telegram = state
+        .telegram_username
+        .as_deref()
+        .map(|name| format!("@{name}"))
+        .unwrap_or_else(|| "disabled".to_string());
+
     match db::ping(&state.pool).await {
         Ok(()) => (
             StatusCode::OK,
-            Json(json!({ "status": "ready", "db": "ok" })),
+            Json(json!({ "status": "ready", "db": "ok", "telegram": telegram })),
         ),
         Err(err) => {
             tracing::warn!(error = %err, "readiness check failed: database unreachable");
             (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "status": "not_ready", "db": "unreachable" })),
+                Json(json!({ "status": "not_ready", "db": "unreachable", "telegram": telegram })),
             )
         }
     }

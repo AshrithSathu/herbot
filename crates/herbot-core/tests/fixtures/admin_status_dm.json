@@ -1,0 +1,1 @@
+{"update_id":1007,"message":{"message_id":11,"from":{"id":111,"is_bot":false,"first_name":"Ashrith","username":"ashrith"},"chat":{"id":111,"first_name":"Ashrith","username":"ashrith","type":"private"},"date":1762600060,"text":"/status","entities":[{"offset":0,"length":7,"type":"bot_command"}]}}

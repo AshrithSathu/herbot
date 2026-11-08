@@ -1,6 +1,7 @@
-//! Step 1 integration tests. Each `#[sqlx::test]` gets its own fresh database
-//! with all migrations applied, so tests never share state.
-//! Needs Postgres from `make db-up` and DATABASE_URL (the Makefile sets it).
+//! Foundation integration tests: HTTP endpoints, error IDs and schema rules.
+//! Each `#[sqlx::test]` gets its own fresh database with all migrations
+//! applied. Needs Postgres from `make db-up` and DATABASE_URL (the Makefile
+//! sets it).
 
 use std::time::Duration;
 
@@ -15,8 +16,8 @@ use tower::ServiceExt;
 use herbot_core::app::{AppState, router};
 use herbot_core::errors::{self, ErrorId};
 
-async fn get(pool: PgPool, path: &str) -> (StatusCode, Value) {
-    let response = router(AppState { pool })
+async fn get(state: AppState, path: &str) -> (StatusCode, Value) {
+    let response = router(state)
         .oneshot(Request::get(path).body(Body::empty()).unwrap())
         .await
         .unwrap();
@@ -25,19 +26,39 @@ async fn get(pool: PgPool, path: &str) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&bytes).unwrap())
 }
 
+fn state(pool: PgPool) -> AppState {
+    AppState {
+        pool,
+        telegram_username: None,
+    }
+}
+
 #[sqlx::test(migrations = "./migrations")]
 async fn health_reports_ok(pool: PgPool) {
-    let (status, body) = get(pool, "/health").await;
+    let (status, body) = get(state(pool), "/health").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok");
     assert_eq!(body["service"], "herbot-core");
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn ready_reports_db_ok(pool: PgPool) {
-    let (status, body) = get(pool, "/ready").await;
+async fn ready_reports_db_ok_and_telegram_disabled(pool: PgPool) {
+    let (status, body) = get(state(pool), "/ready").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({ "status": "ready", "db": "ok" }));
+    assert_eq!(
+        body,
+        json!({ "status": "ready", "db": "ok", "telegram": "disabled" })
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn ready_reports_telegram_username(pool: PgPool) {
+    let app = AppState {
+        pool,
+        telegram_username: Some("herbot_test_bot".into()),
+    };
+    let (_, body) = get(app, "/ready").await;
+    assert_eq!(body["telegram"], "@herbot_test_bot");
 }
 
 #[tokio::test]
@@ -46,9 +67,10 @@ async fn ready_returns_503_when_db_is_unreachable() {
         .acquire_timeout(Duration::from_millis(500))
         .connect_lazy("postgres://nobody:nothing@127.0.0.1:1/none")
         .unwrap();
-    let (status, body) = get(dead_pool, "/ready").await;
+    let (status, body) = get(state(dead_pool), "/ready").await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(body, json!({ "status": "not_ready", "db": "unreachable" }));
+    assert_eq!(body["status"], "not_ready");
+    assert_eq!(body["db"], "unreachable");
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -66,15 +88,13 @@ async fn migrations_create_every_table(pool: PgPool) {
         [
             "agent_threads",
             "audit_log",
-            "bindings",
-            "bot_allowed",
             "bots",
+            "chats",
+            "conversations",
             "errors",
-            "groups",
+            "kv",
             "messages",
-            "numbers",
             "pending_questions",
-            "people",
         ]
     );
 }
@@ -85,18 +105,13 @@ async fn recorded_errors_get_increasing_ids_from_1000(pool: PgPool) {
         &pool,
         "t3.turn_timeout",
         "turn timed out after 120s",
-        json!({"group": "G2"}),
+        json!({"conversation": 7}),
     )
     .await
     .unwrap();
-    let second = errors::record(
-        &pool,
-        "bridge.send_failed",
-        "bridge returned 500",
-        json!({}),
-    )
-    .await
-    .unwrap();
+    let second = errors::record(&pool, "telegram.poll_failed", "network down", json!({}))
+        .await
+        .unwrap();
     assert_eq!(first, ErrorId(1000));
     assert_eq!(second, ErrorId(1001));
     assert_eq!(first.to_string(), "E-1000");
@@ -108,46 +123,28 @@ async fn recorded_errors_get_increasing_ids_from_1000(pool: PgPool) {
             .await
             .unwrap();
     assert_eq!(kind, "t3.turn_timeout");
-    assert_eq!(context, json!({"group": "G2"}));
-}
-
-#[sqlx::test(migrations = "./migrations")]
-async fn new_groups_default_to_pending_shared(pool: PgPool) {
-    let (status, kind): (String, String) = sqlx::query_as(
-        "INSERT INTO groups (wa_jid, name) VALUES ('120363000000000001@g.us', 'Test') RETURNING status, kind",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!((status.as_str(), kind.as_str()), ("pending", "shared"));
+    assert_eq!(context, json!({"conversation": 7}));
 }
 
 #[sqlx::test(migrations = "./migrations")]
 async fn schema_rejects_invalid_rows(pool: PgPool) {
-    // Not a group JID.
+    // Channels are not supported chat kinds.
     assert!(
-        sqlx::query("INSERT INTO groups (wa_jid) VALUES ('919000000000@s.whatsapp.net')")
+        sqlx::query("INSERT INTO chats (tg_chat_id, kind) VALUES (-100, 'channel')")
             .execute(&pool)
             .await
             .is_err()
     );
-    // Unknown status.
+    // Unknown chat status.
     assert!(
-        sqlx::query("INSERT INTO groups (wa_jid, status) VALUES ('1@g.us', 'maybe')")
+        sqlx::query("INSERT INTO chats (tg_chat_id, kind, status) VALUES (-101, 'group', 'maybe')")
             .execute(&pool)
             .await
             .is_err()
     );
-    // Approved without approved_at.
+    // Bad persona slug.
     assert!(
-        sqlx::query("INSERT INTO groups (wa_jid, status) VALUES ('2@g.us', 'approved')")
-            .execute(&pool)
-            .await
-            .is_err()
-    );
-    // Phone not in E.164.
-    assert!(
-        sqlx::query("INSERT INTO people (phone_e164, display_name) VALUES ('9876543210', 'x')")
+        sqlx::query("INSERT INTO bots (slug, name) VALUES ('Has Spaces', 'x')")
             .execute(&pool)
             .await
             .is_err()
@@ -155,47 +152,65 @@ async fn schema_rejects_invalid_rows(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn only_one_admin_can_exist(pool: PgPool) {
-    sqlx::query("INSERT INTO people (phone_e164, display_name, is_admin) VALUES ('+919000000001', 'Ashrith', true)")
-        .execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO people (phone_e164, display_name) VALUES ('+919000000002', 'Ravi')")
+async fn only_one_default_bot(pool: PgPool) {
+    sqlx::query("INSERT INTO bots (slug, name, is_default) VALUES ('main', 'Main', true)")
         .execute(&pool)
         .await
         .unwrap();
-    let second_admin = sqlx::query(
-        "INSERT INTO people (phone_e164, display_name, is_admin) VALUES ('+919000000003', 'Mallory', true)",
-    )
-    .execute(&pool)
-    .await;
-    assert!(second_admin.is_err(), "a second admin must be rejected");
+    let second =
+        sqlx::query("INSERT INTO bots (slug, name, is_default) VALUES ('alt', 'Alt', true)")
+            .execute(&pool)
+            .await;
+    assert!(second.is_err(), "a second default persona must be rejected");
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn one_active_thread_per_bot_and_group(pool: PgPool) {
+async fn one_conversation_per_chat_and_topic_including_no_topic(pool: PgPool) {
+    sqlx::query(
+        "INSERT INTO chats (tg_chat_id, kind, is_forum) VALUES (-1001, 'supergroup', true)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let inserts: [&'static str; 2] = [
+        "INSERT INTO conversations (chat_id, tg_topic_id) VALUES (1, NULL)",
+        "INSERT INTO conversations (chat_id, tg_topic_id) VALUES (1, 7)",
+    ];
+    for sql in inserts {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+        let dup = sqlx::query(sql).execute(&pool).await;
+        assert!(
+            dup.is_err(),
+            "duplicate conversation must be rejected: {sql}"
+        );
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn one_active_thread_per_conversation(pool: PgPool) {
     sqlx::raw_sql(
-        "INSERT INTO numbers (phone_e164, label) VALUES ('+919000000009', 'Ashrith''s bot');
-         INSERT INTO bots (slug, name, number_id) VALUES ('research', 'Research', 1);
-         INSERT INTO groups (wa_jid) VALUES ('3@g.us');
-         INSERT INTO agent_threads (bot_id, group_id, t3_thread_id) VALUES (1, 1, 't3-a');",
+        "INSERT INTO chats (tg_chat_id, kind) VALUES (42, 'private');
+         INSERT INTO conversations (chat_id) VALUES (1);
+         INSERT INTO agent_threads (conversation_id, t3_thread_id) VALUES (1, 't3-a');",
     )
     .execute(&pool)
     .await
     .unwrap();
 
-    let duplicate = sqlx::query(
-        "INSERT INTO agent_threads (bot_id, group_id, t3_thread_id) VALUES (1, 1, 't3-b')",
-    )
-    .execute(&pool)
-    .await;
-    assert!(
-        duplicate.is_err(),
-        "two active threads for one group must be rejected"
-    );
+    let duplicate =
+        sqlx::query("INSERT INTO agent_threads (conversation_id, t3_thread_id) VALUES (1, 't3-b')")
+            .execute(&pool)
+            .await;
+    assert!(duplicate.is_err(), "two active threads must be rejected");
 
     // After archiving (what `/new` does), a fresh thread is allowed.
-    sqlx::query("UPDATE agent_threads SET status = 'archived', archived_at = now() WHERE t3_thread_id = 't3-a'")
-        .execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO agent_threads (bot_id, group_id, t3_thread_id) VALUES (1, 1, 't3-b')")
+    sqlx::query(
+        "UPDATE agent_threads SET status = 'archived', archived_at = now() WHERE t3_thread_id = 't3-a'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO agent_threads (conversation_id, t3_thread_id) VALUES (1, 't3-b')")
         .execute(&pool)
         .await
         .unwrap();
@@ -203,19 +218,51 @@ async fn one_active_thread_per_bot_and_group(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 async fn message_search_finds_words(pool: PgPool) {
-    sqlx::query(
-        "INSERT INTO messages (chat_jid, wa_message_id, sender_jid, body, sent_at)
-         VALUES ('4@g.us', 'm1', 'x@lid', 'remember the VPS has 8 GB of RAM', now()),
-                ('4@g.us', 'm2', 'x@lid', 'cricket tonight?', now())",
+    sqlx::raw_sql(
+        "INSERT INTO chats (tg_chat_id, kind) VALUES (42, 'private');
+         INSERT INTO conversations (chat_id) VALUES (1);
+         INSERT INTO messages (conversation_id, tg_message_id, from_tg_user_id, body, sent_at)
+         VALUES (1, 1, 42, 'remember the VPS has 8 GB of RAM', now()),
+                (1, 2, 42, 'cricket tonight?', now());",
     )
     .execute(&pool)
     .await
     .unwrap();
-    let hits: Vec<String> = sqlx::query_scalar(
-        "SELECT wa_message_id FROM messages WHERE search @@ plainto_tsquery('simple', 'vps ram')",
+    let hits: Vec<i32> = sqlx::query_scalar(
+        "SELECT tg_message_id FROM messages WHERE search @@ plainto_tsquery('simple', 'vps ram')",
     )
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(hits, ["m1"]);
+    assert_eq!(hits, [1]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn setup_state_rules_are_enforced(pool: PgPool) {
+    sqlx::raw_sql(
+        "INSERT INTO chats (tg_chat_id, kind, is_forum) VALUES (-1001, 'supergroup', true);
+         INSERT INTO conversations (chat_id, tg_topic_id) VALUES (1, 7);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let state: String = sqlx::query_scalar("SELECT setup_state FROM conversations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "new");
+
+    // Ready needs a purpose; purposes are 1..=8000 characters.
+    for bad in [
+        "UPDATE conversations SET setup_state = 'ready'",
+        "UPDATE conversations SET purpose = ''",
+        "UPDATE conversations SET purpose = repeat('x', 8001)",
+        "UPDATE conversations SET setup_state = 'maybe'",
+    ] {
+        assert!(sqlx::query(bad).execute(&pool).await.is_err(), "{bad}");
+    }
+    sqlx::query("UPDATE conversations SET purpose = 'Research', setup_state = 'ready'")
+        .execute(&pool)
+        .await
+        .unwrap();
 }
