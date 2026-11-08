@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
-import { Loader2Icon, SearchIcon } from 'lucide-react'
+import { CircleCheckIcon, SearchIcon, SearchXIcon } from 'lucide-react'
 import { errorSearchQuery } from '../../../queries'
-import { Empty, ErrorNote, PageHeader, Time } from '../../../ui'
+import { EmptyState, ErrorNote, PageHeader, Time } from '../../../ui'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
+import { Spinner } from '@/components/ui/spinner'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
 
@@ -23,6 +24,7 @@ export const Route = createFileRoute('/_authed/logs/')({
     const q = (location.search as Search).q ?? ''
     return context.queryClient.ensureQueryData(errorSearchQuery(q))
   },
+  staticData: { crumb: 'Logs' },
   head: () => ({ meta: [{ title: 'Logs · Herbot admin' }] }),
   component: LogsPage,
 })
@@ -58,50 +60,52 @@ function LogsPage() {
       />
       <form
         role="search"
-        className="flex max-w-xl flex-col gap-2"
+        className="max-w-xl"
         onSubmit={(e) => {
           e.preventDefault()
           go(text.trim())
         }}
       >
-        <Label htmlFor="log-search">Search errors</Label>
-        <div className="relative">
-          {results.isFetching ? (
-            <Loader2Icon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 animate-spin text-muted-foreground" aria-hidden />
-          ) : (
-            <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-          )}
-          <Input
-            id="log-search"
-            type="search"
-            className="pl-9"
-            placeholder="E-1042, t3.turn_timeout, or any words"
-            spellCheck={false}
-            autoComplete="off"
-            data-1p-ignore
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-        </div>
-        <p className="min-h-5 text-xs text-muted-foreground" aria-live="polite">
-          {results.isFetching ? 'Searching…' : rows.length > 0 ? `${plural(rows.length)} shown` : ''}
-        </p>
+        <Field>
+          <FieldLabel htmlFor="log-search">Search errors</FieldLabel>
+          <InputGroup>
+            <InputGroupAddon>{results.isFetching ? <Spinner /> : <SearchIcon aria-hidden />}</InputGroupAddon>
+            <InputGroupInput
+              id="log-search"
+              type="search"
+              placeholder="E-1042, t3.turn_timeout, or any words"
+              spellCheck={false}
+              autoComplete="off"
+              data-1p-ignore
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          </InputGroup>
+          <FieldDescription className="min-h-5 text-xs" aria-live="polite">
+            {results.isFetching ? 'Searching…' : rows.length > 0 ? count(rows.length) : ''}
+          </FieldDescription>
+        </Field>
       </form>
 
       {results.isError && <ErrorNote title="Search failed">{results.error.message}</ErrorNote>}
 
       {rows.length === 0 && !results.isFetching && !results.isError ? (
         q ? (
-          <Empty>
-            <p>Nothing matches “{q}”.</p>
-            <div>
-              <Button variant="link" onClick={() => setText('')}>
+          <EmptyState
+            icon={SearchXIcon}
+            title={`Nothing matches “${q}”`}
+            action={
+              <Button variant="outline" onClick={() => setText('')}>
                 Clear the search
               </Button>
-            </div>
-          </Empty>
+            }
+          >
+            Try an E-number, an error kind, or fewer words.
+          </EmptyState>
         ) : (
-          <Empty>No errors recorded yet. When a turn fails, it lands here with its E-number.</Empty>
+          <EmptyState icon={CircleCheckIcon} title="No errors recorded">
+            When a turn fails, it lands here with its E-number.
+          </EmptyState>
         )
       ) : (
         <div
@@ -146,6 +150,6 @@ function LogsPage() {
   )
 }
 
-function plural(n: number) {
+function count(n: number) {
   return n === 1 ? '1 error' : `${n} errors`
 }

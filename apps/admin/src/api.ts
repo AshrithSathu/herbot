@@ -63,6 +63,13 @@ export const whoami = createServerFn({ method: 'GET' }).handler(async () => {
   return { signedIn: isSignedIn() }
 })
 
+/** UI state kept in cookies, read on the server so the first paint is right. */
+export const getUiPrefs = createServerFn({ method: 'GET' }).handler(async () => {
+  const { getCookie } = await import('@tanstack/react-start/server')
+  // Written by shadcn's SidebarProvider when you collapse or expand it.
+  return { sidebarOpen: getCookie('sidebar_state') !== 'false' }
+})
+
 export const login = createServerFn({ method: 'POST' })
   .validator((data: { password: string }) => {
     if (typeof data?.password !== 'string') throw new Error('Enter the password')

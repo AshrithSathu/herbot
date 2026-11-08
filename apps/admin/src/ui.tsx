@@ -1,13 +1,14 @@
-// The panel's own building blocks, made from shadcn/ui parts.
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+// The panel's own building blocks, composed from shadcn/ui parts.
+import { useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react'
 import { useQueryErrorResetBoundary } from '@tanstack/react-query'
 import { Link, useRouter, type ErrorComponentProps } from '@tanstack/react-router'
-import { CheckIcon, CircleAlertIcon, CopyIcon } from 'lucide-react'
+import { CheckIcon, CircleAlertIcon, CopyIcon, SearchXIcon, TriangleAlertIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Topic } from './api'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { ago, stateLabel, when } from './format'
@@ -77,17 +78,29 @@ export function Section({ id, title, action, children, className }: {
   )
 }
 
-/** First-run or no-results state: says why it's empty and what to do. */
-export function Empty({ children, className }: { children: ReactNode; className?: string }) {
+/** shadcn Empty: says why it's empty and what to do next. */
+export function EmptyState({ icon: Icon, title, children, action, className, page = false }: {
+  icon?: ComponentType<{ className?: string }>
+  title: string
+  /** The whole page is this state, so its title is the page's h1. */
+  page?: boolean
+  children?: ReactNode
+  action?: ReactNode
+  className?: string
+}) {
   return (
-    <div
-      className={cn(
-        'flex flex-col gap-1 rounded-xl border border-dashed border-input px-5 py-6 text-sm text-muted-foreground',
-        className,
-      )}
-    >
-      {children}
-    </div>
+    <Empty className={cn('border border-dashed p-6 md:p-8', className)}>
+      <EmptyHeader>
+        {Icon && (
+          <EmptyMedia variant="icon">
+            <Icon aria-hidden />
+          </EmptyMedia>
+        )}
+        <EmptyTitle>{page ? <h1>{title}</h1> : title}</EmptyTitle>
+        {children && <EmptyDescription>{children}</EmptyDescription>}
+      </EmptyHeader>
+      {action && <EmptyContent>{action}</EmptyContent>}
+    </Empty>
   )
 }
 
@@ -147,7 +160,7 @@ export function PageSkeleton() {
       </div>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} className="h-[92px] rounded-xl" />
+          <Skeleton key={i} className="h-[104px] rounded-xl" />
         ))}
       </div>
       <Skeleton className="h-48 rounded-xl" />
@@ -162,29 +175,37 @@ export function PageError({ error }: ErrorComponentProps) {
   useEffect(() => reset(), [reset])
   const message = error instanceof Error ? error.message : String(error)
   return (
-    <div className="flex max-w-[60ch] flex-col gap-5">
-      <PageHeader title="This page didn’t load" />
-      <ErrorNote title="Failed">{message}</ErrorNote>
-      <p className="text-sm text-muted-foreground">If it keeps happening, check the herbot-core logs.</p>
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={() => void router.invalidate()}>Try again</Button>
-        <Button variant="ghost" asChild>
-          <Link to="/">Go to overview</Link>
-        </Button>
-      </div>
-    </div>
+    <EmptyState
+      page
+      icon={TriangleAlertIcon}
+      title="This page didn’t load"
+      action={
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button onClick={() => void router.invalidate()}>Try again</Button>
+          <Button variant="ghost" asChild>
+            <Link to="/">Go to overview</Link>
+          </Button>
+        </div>
+      }
+    >
+      <span className="text-destructive">{message}</span>. If it keeps happening, check the herbot-core logs.
+    </EmptyState>
   )
 }
 
 export function NotFound() {
   return (
-    <div className="flex max-w-[60ch] flex-col gap-5">
-      <PageHeader title="Nothing here" description="That page doesn’t exist, or the topic was removed." />
-      <div>
+    <EmptyState
+      page
+      icon={SearchXIcon}
+      title="Nothing here"
+      action={
         <Button asChild>
           <Link to="/topics">See all topics</Link>
         </Button>
-      </div>
-    </div>
+      }
+    >
+      That page doesn’t exist, or the topic was removed.
+    </EmptyState>
   )
 }

@@ -1,11 +1,13 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
+import { MessagesSquareIcon } from 'lucide-react'
 import { topicsQuery } from '../../../queries'
-import { Empty, PageHeader, StaleWarning, Time, TopicState } from '../../../ui'
+import { EmptyState, PageHeader, StaleWarning, Time, TopicState } from '../../../ui'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 export const Route = createFileRoute('/_authed/topics/')({
   loader: ({ context }) => context.queryClient.ensureQueryData(topicsQuery),
+  staticData: { crumb: 'Topics' },
   head: () => ({ meta: [{ title: 'Topics · Herbot admin' }] }),
   component: TopicsPage,
 })
@@ -20,13 +22,10 @@ function TopicsPage() {
       />
       <StaleWarning error={error} />
       {topics.length === 0 ? (
-        <Empty>
-          <p className="font-medium text-foreground">No topics yet</p>
-          <p>
-            Send a message in your Herbot group’s General, or create a topic there. It shows up here as soon as the bot
-            sees it.
-          </p>
-        </Empty>
+        <EmptyState icon={MessagesSquareIcon} title="No topics yet">
+          Send a message in your Herbot group’s General, or create a topic there. It shows up here as soon as the bot
+          sees it.
+        </EmptyState>
       ) : (
         <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
           <Table>

@@ -51,4 +51,10 @@ declare module '@tanstack/react-router' {
   interface Register {
     router: ReturnType<typeof getRouter>
   }
+  interface StaticDataRouteOption {
+    /** This page's name in the header breadcrumb; a function gets the loader's data. */
+    crumb?: string | ((loaderData: unknown) => string | undefined)
+    /** A list page shown before this one, when it isn't a parent route. */
+    crumbParent?: { label: string; to: '/topics' | '/logs' }
+  }
 }

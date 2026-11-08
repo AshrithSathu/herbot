@@ -3,10 +3,11 @@
 // prefetch on hover); components read the same keys with `useSuspenseQuery`,
 // so a page never fetches the same thing twice and mutations update in place.
 import { queryOptions } from '@tanstack/react-query'
-import { getError, getOverview, getTopic, listTopics, searchErrors, whoami } from './api'
+import { getError, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
 
 export const keys = {
   session: ['session'] as const,
+  uiPrefs: ['ui-prefs'] as const,
   overview: ['overview'] as const,
   /** Prefix of the list and every topic detail, so one invalidate hits all. */
   topics: ['topics'] as const,
@@ -23,6 +24,13 @@ export const sessionQuery = queryOptions({
   queryKey: keys.session,
   queryFn: () => whoami(),
   staleTime: 60_000,
+})
+
+/** Read once per page load; after that the sidebar keeps its own state. */
+export const uiPrefsQuery = queryOptions({
+  queryKey: keys.uiPrefs,
+  queryFn: () => getUiPrefs(),
+  staleTime: Infinity,
 })
 
 export const overviewQuery = queryOptions({

@@ -1,12 +1,15 @@
 import { useSuspenseQuery } from '@tanstack/react-query'
-import { Link, createFileRoute } from '@tanstack/react-router'
-import { ArrowLeftIcon } from 'lucide-react'
+import { createFileRoute } from '@tanstack/react-router'
 import { errorQuery } from '../../../queries'
 import { CopyButton, PageHeader, Section, Time } from '../../../ui'
 import { Badge } from '@/components/ui/badge'
 
 export const Route = createFileRoute('/_authed/logs/$id')({
   loader: ({ context, params }) => context.queryClient.ensureQueryData(errorQuery(params.id)),
+  staticData: {
+    crumbParent: { label: 'Logs', to: '/logs' },
+    crumb: (data) => (data as { error_id?: string } | undefined)?.error_id,
+  },
   head: ({ params }) => ({ meta: [{ title: `${params.id} · Herbot admin` }] }),
   component: ErrorPage,
 })
@@ -17,9 +20,6 @@ function ErrorPage() {
   const context = JSON.stringify(e.context, null, 2)
   return (
     <>
-      <Link to="/logs" className="inline-flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeftIcon className="size-3.5" aria-hidden /> All logs
-      </Link>
       <PageHeader title={<span className="font-mono">{e.error_id}</span>}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-muted-foreground">
           <Badge variant="danger">{e.kind}</Badge>
