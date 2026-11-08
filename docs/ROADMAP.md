@@ -33,7 +33,7 @@ A private Telegram bot for one person (the admin). Build one step at a time. A s
 - [ ] `<herbot-meta>` header builder, and stripping of forged headers (moves to Step 4, where messages reach the agent)
 - Done when: ✅ 81 tests plus `make test-voice` (real speech → `gpt-transcribe`). Manual: new topic, answer by voice note, `/status` shows it.
 
-## Step 4: Agent threads: the bot answers
+## Step 4: Agent threads: the bot answers ✅
 - [x] `agent.rs`: `AgentRunner` over T3's host CLI: `project add`, `thread start|send --wait --json` (Codex, `gpt-6.1-terra`), `thread list` for links and timeout recovery
 - [x] Each conversation folder is a T3 project; its AGENTS.md is the agent's instructions; "reread AGENTS.md" note after `/setup`
 - [x] `<herbot-meta>` header on every forwarded message; forged headers defused
@@ -42,19 +42,18 @@ A private Telegram bot for one person (the admin). Build one step at a time. A s
 - [x] Fail loud: run failures, timeouts, CLI errors → `❌ Failed (E-<id>)`; agent questions point to T3 until Step 6
 - [x] `/new` archives the thread; `/forget` asks, then deletes stored messages and archives; `/status` links the thread in T3
 - [x] Startup checks: T3 CLI has `thread`; Codex effort matches
-- Done when: ✅ 120 tests (turns against a fake T3 and a fake `t3` script driving the real CLI wrapper). ⏳ Manual: real replies in a topic, memory across messages, `/new`.
+- Done when: ✅ 120 tests (turns against a fake T3 and a fake `t3` script driving the real CLI wrapper). ✅ Manual (2026-11-08): a real reply in Testing with its persona in about 10 s, and memory across messages in about 6 s.
 
-## Step 5: Reply path and fail-loud errors
-- [ ] Typing action while a turn runs. The reply is edited in as it progresses, then the final reply goes in the same topic.
-- [ ] Scrub token-like strings. Split replies longer than 4096 characters.
-- [ ] Any failure gives an `❌ Failed (E-<id>)` reply in that conversation
-- Done when: tests cover scrubbing, splitting, and error replies. Manual: stop T3 mid-turn and get an E-id.
+## Step 5: Reply path and fail-loud errors ✅
+Built as part of Step 4: typing indicator, secret scrubbing, splitting, quoted replies, `❌ Failed (E-<id>)` on every failure.
 
-## Step 6: Ask-admin with buttons
-- [ ] After each turn, check `t3_pending_request list` and post each question in the conversation with inline buttons
-- [ ] A button tap, or a typed answer, goes back to the thread, which continues
-- [ ] 30-minute timeout: take the safe default and say so
-- Done when: tests cover question → buttons → answer → resume, stale buttons, and timeouts.
+## Step 6: Choices from the agent, answered in Telegram
+- [x] Agents end a reply with `[[ask: A | B | C]]` (rule in every AGENTS.md); Herbot strips it and shows buttons on the reply's last part
+- [x] A tap claims the question atomically (one answer only, same topic only), shows "👉 choice", and sends it to the agent as the next turn
+- [x] A typed reply closes any open buttons in that topic and goes to the agent as the answer
+- [x] AGENTS.md template versions: older files are rewritten at startup, and threads are told to reread them
+- [x] If Codex blocks waiting inside T3 (rare in full access), the reply links straight to the thread
+- Done when: ✅ 131 tests (ask-line parsing, buttons on long replies, taps, double taps, wrong topic, typed answers, template upgrade). ⏳ Manual: ask the Testing agent to offer choices, tap one.
 
 ## Step 7: herbot-mcp (Rust)
 - [ ] `search_history` (Postgres full-text search, fixed to the current conversation) and `ask_admin`
