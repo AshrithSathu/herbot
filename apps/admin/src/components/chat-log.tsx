@@ -238,6 +238,7 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
           // headings are in the list for screen readers.
           <div
             aria-hidden
+            data-floating-day
             className="pointer-events-none absolute inset-x-px top-px z-[1] flex justify-center rounded-t-xl bg-gradient-to-b from-background from-55% to-transparent pt-2 pb-4"
           >
             <span className="rounded-full border bg-card px-2.5 py-0.5 text-xs font-medium text-muted-foreground shadow-xs">
@@ -248,7 +249,7 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
         {unseen > 0 && (
           <Button
             size="sm"
-            className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full shadow-md duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] animate-in fade-in-0 slide-in-from-bottom-2"
+            className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full shadow-md animation-duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] animate-in fade-in-0 slide-in-from-bottom-2"
             onClick={jumpToLatest}
           >
             <ArrowDownIcon aria-hidden />

@@ -243,3 +243,8 @@
     transition: opacity 150ms ease-out !important;
   }
 }
+/* One z-index scale: header 10, sidebar rail 20, overlays 50, toasts 60
+ * (Sonner ships 999999999). */
+:root [data-sonner-toaster][data-sonner-toaster] {
+  z-index: 60 !important;
+}

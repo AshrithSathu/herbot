@@ -14,9 +14,6 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { name: 'robots', content: 'noindex, nofollow' },
       { name: 'color-scheme', content: 'light dark' },
-      // Browser chrome matches the page: --background in each theme.
-      { name: 'theme-color', media: '(prefers-color-scheme: light)', content: '#f8fafc' },
-      { name: 'theme-color', media: '(prefers-color-scheme: dark)', content: '#0b0f14' },
       { title: 'Herbot admin' },
     ],
     links: [
@@ -37,6 +34,10 @@ function Document({ children }: { children: ReactNode }) {
     <html lang="en">
       <head>
         <HeadContent />
+        {/* Browser chrome matches the page (--background in each theme). Written
+            here, not in head(), because HeadContent keeps one meta per name. */}
+        <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8fafc" />
+        <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0b0f14" />
       </head>
       <body>
         {children}

@@ -33,8 +33,12 @@ function Login() {
     if (window.matchMedia('(pointer: fine)').matches) input.current?.focus()
   }, [])
 
+  const submitting = useRef(false) // synchronous: a double submit sends one request
   const signIn = useMutation({
     mutationFn: (pw: string) => login({ data: { password: pw } }),
+    onSettled: () => {
+      submitting.current = false
+    },
     onSuccess: async (result) => {
       if (!result.ok) {
         input.current?.select()
@@ -62,13 +66,14 @@ function Login() {
             <form
               onSubmit={(e) => {
                 e.preventDefault()
-                if (signIn.isPending) return
+                if (submitting.current) return
                 const password = String(new FormData(e.currentTarget).get('password') ?? '')
                 if (!password) {
                   setMissing(true)
                   input.current?.focus()
                   return
                 }
+                submitting.current = true
                 signIn.mutate(password)
               }}
             >

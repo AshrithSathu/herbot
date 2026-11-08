@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute, notFound, useBlocker } from '@tanstack/react-router'
 import { BrushCleaningIcon, ExternalLinkIcon, FileTextIcon, Trash2Icon } from 'lucide-react'
@@ -206,8 +206,14 @@ function Purpose({ topic }: { topic: Topic }) {
   const dirty = draft !== null && draft.trim() !== saved
   const problem = purposeProblem(value)
 
+  // Set synchronously, so a double click can't slip a second save in before
+  // React re-renders with isPending.
+  const submitting = useRef(false)
   const save = useMutation({
     mutationFn: (purpose: string) => savePurpose({ data: { id: topic.id, purpose } }),
+    onSettled: () => {
+      submitting.current = false
+    },
     onSuccess: async (updated) => {
       cache.patch(() => updated)
       setDraft(null)
@@ -218,11 +224,12 @@ function Purpose({ topic }: { topic: Topic }) {
   })
 
   function submit() {
-    if (!dirty || save.isPending) return
+    if (!dirty || submitting.current) return
     if (problem) {
       setShowProblem(true)
       return
     }
+    submitting.current = true
     save.mutate(value.trim())
   }
 
