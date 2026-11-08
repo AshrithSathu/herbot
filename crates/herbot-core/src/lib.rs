@@ -31,3 +31,4 @@ pub mod telegram;
 pub mod telemetry;
 pub mod turns;
 pub mod voice;
+pub mod wipe;

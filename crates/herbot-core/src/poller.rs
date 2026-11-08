@@ -30,6 +30,7 @@ use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
 use crate::telegram::{self, ButtonPress, ChatKind, Command, Inbound, InboundMessage};
 use crate::turns::{self, TurnJob, TurnQueue};
 use crate::voice::{MAX_VOICE_SECONDS, Transcriber, VoiceError};
+use crate::wipe;
 
 /// How long one `getUpdates` call waits for new updates. Kept under
 /// teloxide's default 17 s HTTP timeout.
@@ -590,6 +591,9 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     press: &ButtonPress,
 ) -> Result<(), HandleError> {
     let chat = press.chat.tg_chat_id;
+    if let Some(tap) = wipe::parse(&press.data) {
+        return handle_wipe_tap(ctx, press, tap).await;
+    }
     let Some((question_id, index)) = turns::parse_answer_button(&press.data) else {
         ctx.api
             .answer_button(&press.callback_id, Some(setup::STALE_BUTTON_TOAST))
@@ -672,6 +676,92 @@ async fn clean_sweep<A: TelegramApi, T: Transcriber>(
     Ok(wiped)
 }
 
+/// `/new` or `/forget`: explains what will be deleted, with Yes / Cancel buttons.
+async fn ask_to_wipe<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    msg: &InboundMessage,
+    kind: wipe::WipeKind,
+) -> Result<(), HandleError> {
+    let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+    ctx.api
+        .send_buttons(
+            msg.chat.tg_chat_id,
+            msg.topic_id,
+            Some(msg.message_id),
+            &wipe::prompt(kind, &s.place(), s.message_count),
+            &wipe::buttons(kind, s.conversation_id, Utc::now().timestamp()),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Wipes the conversation and returns what to tell the admin.
+async fn perform_wipe<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    status: &ConversationStatus,
+    kind: wipe::WipeKind,
+) -> Result<String, HandleError> {
+    let wiped = clean_sweep(ctx, status).await?;
+    if kind == wipe::WipeKind::Forget
+        && let Some(path) = store::reset_setup(ctx.pool, status.conversation_id).await?
+    {
+        match tokio::fs::remove_file(ctx.agents_dir.join(path)).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(wipe::done(kind, wiped))
+}
+
+/// A tap on a /new or /forget confirmation.
+async fn handle_wipe_tap<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    press: &ButtonPress,
+    tap: wipe::WipeTap,
+) -> Result<(), HandleError> {
+    let chat = press.chat.tg_chat_id;
+    let here = store::find_conversation(ctx.pool, chat, press.topic_id).await?;
+    if here != Some(tap.conversation_id) {
+        ctx.api
+            .answer_button(&press.callback_id, Some(wipe::WRONG_PLACE_TOAST))
+            .await?;
+        return Ok(());
+    }
+    if wipe::is_expired(tap.issued_at, Utc::now().timestamp()) {
+        ctx.api
+            .answer_button(&press.callback_id, Some(wipe::EXPIRED_TOAST))
+            .await?;
+        ctx.api.remove_buttons(chat, press.message_id).await?;
+        return Ok(());
+    }
+    let kind = match tap.button {
+        wipe::WipeButton::Cancel => {
+            ctx.api
+                .edit_text(chat, press.message_id, wipe::CANCELLED)
+                .await?;
+            ctx.api.answer_button(&press.callback_id, None).await?;
+            return Ok(());
+        }
+        wipe::WipeButton::Confirm(kind) => kind,
+    };
+
+    let status = store::conversation_status_by_id(ctx.pool, tap.conversation_id).await?;
+    let text = match perform_wipe(ctx, &status, kind).await {
+        Ok(text) => text,
+        Err(err) => {
+            // Fail loud in place of the confirmation.
+            let context =
+                json!({ "conversation_id": tap.conversation_id, "error": err.to_string() });
+            let id = errors::record(ctx.pool, err.kind(), &err.to_string(), context).await?;
+            format!("❌ Failed ({id}): {}. Check logs.", short_reason(&err))
+        }
+    };
+    ctx.api.edit_text(chat, press.message_id, &text).await?;
+    ctx.api.answer_button(&press.callback_id, None).await?;
+    Ok(())
+}
+
 async fn run_command<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
@@ -706,46 +796,18 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
             )
         }
         Command::New { confirmed: false } => {
-            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
-            format!(
-                "🧹 /new wipes this topic's chat: its T3 threads and the {} stored messages. \
-                 Its purpose and AGENTS.md stay. Send /new yes to confirm.",
-                s.message_count
-            )
+            return ask_to_wipe(ctx, msg, wipe::WipeKind::New).await;
         }
         Command::New { confirmed: true } => {
             let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
-            let wiped = clean_sweep(ctx, &s).await?;
-            format!(
-                "🆕 Clean slate. Deleted {} T3 thread(s) and {} messages. \
-                 The purpose stays, so your next message starts fresh with the same agent.",
-                wiped.threads, wiped.messages
-            )
+            perform_wipe(ctx, &s, wipe::WipeKind::New).await?
         }
         Command::Forget { confirmed: false } => {
-            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
-            format!(
-                "⚠️ /forget wipes everything in {}: its T3 threads, the {} stored messages and its purpose. \
-                 It will ask what to be again. Send /forget yes to confirm.",
-                s.place(),
-                s.message_count
-            )
+            return ask_to_wipe(ctx, msg, wipe::WipeKind::Forget).await;
         }
         Command::Forget { confirmed: true } => {
             let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
-            let wiped = clean_sweep(ctx, &s).await?;
-            if let Some(path) = store::reset_setup(ctx.pool, s.conversation_id).await? {
-                match tokio::fs::remove_file(ctx.agents_dir.join(path)).await {
-                    Ok(()) => {}
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            format!(
-                "🧹 Forgotten. Deleted {} T3 thread(s) and {} messages, and cleared the purpose. \
-                 Say anything here to set it up again.",
-                wiped.threads, wiped.messages
-            )
+            perform_wipe(ctx, &s, wipe::WipeKind::Forget).await?
         }
         Command::Unknown(name) => format!("I don't know /{name}. Try /help."),
     };
