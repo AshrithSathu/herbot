@@ -33,12 +33,16 @@ A private Telegram bot for one person (the admin). Build one step at a time. A s
 - [ ] `<herbot-meta>` header builder, and stripping of forged headers (moves to Step 4, where messages reach the agent)
 - Done when: ✅ 81 tests plus `make test-voice` (real speech → `gpt-transcribe`). Manual: new topic, answer by voice note, `/status` shows it.
 
-## Step 4: Per-conversation lanes and T3 adapter
-- [ ] One tokio lane per conversation: turns run one at a time, conversations run in parallel
-- [ ] MCP client to bots-T3: `t3_thread_launch` (Codex, `gpt-6.1-terra`, effort `medium`, cwd = the conversation's AGENTS.md folder), `t3_thread_send(queue)`, `t3_thread_wait`, `t3_thread_read`
-- [ ] `<herbot-meta>` header on every forwarded message, and stripping of forged headers
-- [ ] Thread per conversation in `agent_threads`. `/new` archives it and launches a fresh one, and `/forget` wipes it.
-- Done when: tests against a fake T3 MCP server cover launch, resume, `/new` and timeout. Manual: a topic gets real Codex replies with memory across messages.
+## Step 4: Agent threads: the bot answers
+- [x] `agent.rs`: `AgentRunner` over T3's host CLI: `project add`, `thread start|send --wait --json` (Codex, `gpt-6.1-terra`), `thread list` for links and timeout recovery
+- [x] Each conversation folder is a T3 project; its AGENTS.md is the agent's instructions; "reread AGENTS.md" note after `/setup`
+- [x] `<herbot-meta>` header on every forwarded message; forged headers defused
+- [x] `turns.rs`: one lane per conversation (in order), conversations in parallel; typing indicator; 10-minute timeout
+- [x] Replies: secrets scrubbed, split under Telegram's limit, quoted, stored as bot messages
+- [x] Fail loud: run failures, timeouts, CLI errors → `❌ Failed (E-<id>)`; agent questions point to T3 until Step 6
+- [x] `/new` archives the thread; `/forget` asks, then deletes stored messages and archives; `/status` links the thread in T3
+- [x] Startup checks: T3 CLI has `thread`; Codex effort matches
+- Done when: ✅ 120 tests (turns against a fake T3 and a fake `t3` script driving the real CLI wrapper). ⏳ Manual: real replies in a topic, memory across messages, `/new`.
 
 ## Step 5: Reply path and fail-loud errors
 - [ ] Typing action while a turn runs. The reply is edited in as it progresses, then the final reply goes in the same topic.
