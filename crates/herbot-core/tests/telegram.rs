@@ -827,6 +827,32 @@ async fn a_named_topic_greets_and_titles_its_agents_md_by_name(pool: PgPool) {
     );
 }
 
+#[sqlx::test(migrations = "./migrations")]
+async fn a_one_word_answer_is_not_a_purpose(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text"]).await;
+    // The admin's next message is just "Hi".
+    h.api.clear();
+    let mut update = fixture("admin_topic_third");
+    if let teloxide::types::UpdateKind::Message(m) = &mut update.kind
+        && let teloxide::types::MessageKind::Common(c) = &mut m.kind
+        && let teloxide::types::MediaKind::Text(t) = &mut c.media_kind
+    {
+        t.text = "Hi".into();
+    }
+    assert!(poller::process(&h.ctx(LOCKED), &update).await.is_none());
+    assert_eq!(
+        h.api.sent_texts(),
+        [setup::PurposeError::TooShort.to_string()]
+    );
+    let (purpose, state, _, _) = h.setup_row(Some(7)).await;
+    assert_eq!(
+        (purpose, state.as_str()),
+        (None, "awaiting_purpose"),
+        "still waiting"
+    );
+}
+
 // ---- 👀 "seen it" reactions ----
 
 #[sqlx::test(migrations = "./migrations")]

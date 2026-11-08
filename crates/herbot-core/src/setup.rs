@@ -9,6 +9,9 @@
 /// voice note fits comfortably.
 pub const MAX_PURPOSE_CHARS: usize = 8000;
 
+/// Fewest words that count as a purpose, so "hi" or "ok" can't become an agent.
+pub const MIN_PURPOSE_WORDS: usize = 3;
+
 /// What General (the group's main chat) is for, unless changed with /setup.
 pub const DEFAULT_GENERAL_PURPOSE: &str = "Everyday chat, Grok-style: a direct, curious, slightly witty \
 general assistant. Answer anything, search the web when facts matter, and keep it concise.";
@@ -66,6 +69,7 @@ pub const NOTHING_HEARD: &str = "🎙️ I couldn't make out any words in that v
 #[derive(Debug, PartialEq, Eq)]
 pub enum PurposeError {
     Empty,
+    TooShort,
     TooLong { chars: usize },
 }
 
@@ -73,6 +77,10 @@ impl std::fmt::Display for PurposeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PurposeError::Empty => write!(f, "That's empty. Tell me what this topic is for."),
+            PurposeError::TooShort => write!(
+                f,
+                "That's a bit short for a whole agent. Tell me more about what this topic should do, typed or as a voice note."
+            ),
             PurposeError::TooLong { chars } => write!(
                 f,
                 "That's {chars} characters. Keep it under {MAX_PURPOSE_CHARS}, or split the details into later messages."
@@ -87,6 +95,8 @@ pub fn validate_purpose(text: &str) -> Result<String, PurposeError> {
     let chars = trimmed.chars().count();
     if chars == 0 {
         Err(PurposeError::Empty)
+    } else if trimmed.split_whitespace().count() < MIN_PURPOSE_WORDS {
+        Err(PurposeError::TooShort)
     } else if chars > MAX_PURPOSE_CHARS {
         Err(PurposeError::TooLong { chars })
     } else {
@@ -105,15 +115,23 @@ mod tests {
             Ok("roast my ideas".into())
         );
         assert_eq!(validate_purpose("   "), Err(PurposeError::Empty));
-        let long = "x".repeat(MAX_PURPOSE_CHARS + 1);
+        for short in ["Hi", "ok", "test this"] {
+            assert_eq!(
+                validate_purpose(short),
+                Err(PurposeError::TooShort),
+                "{short}"
+            );
+        }
+        assert!(validate_purpose("plan my trips").is_ok());
+        let long = "x ".repeat(MAX_PURPOSE_CHARS / 2 + 1);
         assert_eq!(
             validate_purpose(&long),
             Err(PurposeError::TooLong {
-                chars: MAX_PURPOSE_CHARS + 1
+                chars: long.trim().chars().count()
             })
         );
         // Long, multi-paragraph answers are fine; characters, not bytes, count.
-        assert!(validate_purpose(&"é".repeat(MAX_PURPOSE_CHARS)).is_ok());
+        assert!(validate_purpose(&"é é ".repeat(MAX_PURPOSE_CHARS / 4)).is_ok());
     }
 
     #[test]
