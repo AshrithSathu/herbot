@@ -18,7 +18,9 @@ use teloxide::types::Update;
 
 use herbot_core::errors::ErrorId;
 use herbot_core::policy::{LEFT_ADDED_BY_STRANGER, LEFT_OUTSIDE_HOME, Rules};
-use herbot_core::poller::{self, ApiError, Ctx, HELP_TEXT, TelegramApi, WELCOME_TEXT};
+use herbot_core::poller::{
+    self, ApiError, Ctx, HELP_TEXT, SEEN_REACTION, TelegramApi, WELCOME_TEXT,
+};
 use herbot_core::setup;
 use herbot_core::store;
 use herbot_core::telegram::{self, ChatKind, Command, Inbound};
@@ -77,7 +79,10 @@ enum Call {
 #[derive(Default)]
 struct FakeApi {
     calls: Mutex<Vec<Call>>,
+    /// 👀 reactions, kept apart so other tests can compare `calls` exactly.
+    reactions: Mutex<Vec<(i64, i32, String)>>,
     fail_sends: bool,
+    fail_reactions: bool,
 }
 
 impl FakeApi {
@@ -86,6 +91,10 @@ impl FakeApi {
     }
     fn clear(&self) {
         self.calls.lock().unwrap().clear();
+        self.reactions.lock().unwrap().clear();
+    }
+    fn reactions(&self) -> Vec<(i64, i32, String)> {
+        self.reactions.lock().unwrap().clone()
     }
     fn push(&self, call: Call) {
         self.calls.lock().unwrap().push(call);
@@ -163,6 +172,17 @@ impl TelegramApi for FakeApi {
 
     async fn leave_chat(&self, chat_id: i64) -> Result<(), ApiError> {
         self.push(Call::Leave { chat: chat_id });
+        Ok(())
+    }
+
+    async fn react(&self, chat_id: i64, message_id: i32, emoji: &str) -> Result<(), ApiError> {
+        if self.fail_reactions {
+            return Err(ApiError("reactions are disabled in this chat".into()));
+        }
+        self.reactions
+            .lock()
+            .unwrap()
+            .push((chat_id, message_id, emoji.to_string()));
         Ok(())
     }
 
@@ -804,6 +824,59 @@ async fn a_named_topic_greets_and_titles_its_agents_md_by_name(pool: PgPool) {
     assert_eq!(
         h.api.sent_texts()[0],
         setup::greeting("Herbot HQ › Daily News")
+    );
+}
+
+// ---- 👀 "seen it" reactions ----
+
+#[sqlx::test(migrations = "./migrations")]
+async fn every_admin_message_gets_a_seen_reaction(pool: PgPool) {
+    let h = H::new(pool);
+    h.voice.set(Ok("hello by voice".into()));
+    h.run(&[
+        "admin_topic_text",
+        "admin_general_text",
+        "voice_in_general",
+        "admin_status_in_topic",
+    ])
+    .await;
+    let eyes = |m| (HQ, m, SEEN_REACTION.to_string());
+    assert_eq!(h.api.reactions(), [eyes(21), eyes(40), eyes(46), eyes(23)]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn nobody_else_gets_a_reaction(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&[
+        "stranger_in_topic",
+        "other_bot_in_group",
+        "admin_dm_text",
+        "admin_status_dm",
+        "admin_side_text",
+        "button_stranger",
+    ])
+    .await;
+    assert!(h.api.reactions().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_failed_reaction_is_recorded_but_the_message_still_counts(pool: PgPool) {
+    let mut h = H::new(pool);
+    h.api.fail_reactions = true;
+    h.run(&["admin_general_text"]).await;
+    assert_eq!(
+        h.count("SELECT count(*) FROM messages").await,
+        1,
+        "still stored"
+    );
+    assert_eq!(
+        h.count("SELECT count(*) FROM errors WHERE kind = 'telegram.react'")
+            .await,
+        1
+    );
+    assert!(
+        h.api.sent_texts().is_empty(),
+        "no ❌ reply just for a missing reaction"
     );
 }
 
