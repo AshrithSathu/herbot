@@ -2,7 +2,8 @@
 # Starts the real herbot-core binary, checks /health and /ready, then stops it.
 set -euo pipefail
 
-BIND="${HERBOT_BIND:-127.0.0.1:8788}"
+# Own port, so a running dev bot (HERBOT_BIND from .env) is never touched.
+BIND="${SMOKE_BIND:-127.0.0.1:8788}"
 LOG="$(mktemp -t herbot-smoke.XXXXXX)"
 
 cargo build -q -p herbot-core
