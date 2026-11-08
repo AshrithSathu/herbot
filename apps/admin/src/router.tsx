@@ -1,0 +1,54 @@
+import { MutationCache, QueryCache, QueryClient } from '@tanstack/react-query'
+import { createRouter } from '@tanstack/react-router'
+import { setupRouterSsrQueryIntegration } from '@tanstack/react-router-ssr-query'
+import { routeTree } from './routeTree.gen'
+import { isSignedOut } from './session'
+import { NotFound, PageError, PageSkeleton } from './ui'
+
+export function getRouter() {
+  // One client per request on the server, one for the tab in the browser.
+  const queryClient: QueryClient = new QueryClient({
+    queryCache: new QueryCache({ onError: (error) => signInAgainIfSignedOut(error) }),
+    mutationCache: new MutationCache({ onError: (error) => signInAgainIfSignedOut(error) }),
+    defaultOptions: {
+      queries: {
+        // Fresh enough to skip refetching when you bounce between pages.
+        staleTime: 5_000,
+        // Fail loud: an error shows straight away instead of after silent retries.
+        retry: false,
+        refetchOnWindowFocus: true,
+      },
+    },
+  })
+
+  const router = createRouter({
+    routeTree,
+    context: { queryClient },
+    scrollRestoration: true,
+    // Hovering a link runs its loader, which warms the query cache.
+    defaultPreload: 'intent',
+    // Let TanStack Query decide freshness, not the router's own cache.
+    defaultPreloadStaleTime: 0,
+    // Quick pages show no skeleton; slow ones show it long enough to not flicker.
+    defaultPendingMs: 250,
+    defaultPendingMinMs: 300,
+    defaultPendingComponent: PageSkeleton,
+    defaultErrorComponent: PageError,
+    defaultNotFoundComponent: NotFound,
+  })
+
+  function signInAgainIfSignedOut(error: unknown) {
+    if (!isSignedOut(error)) return
+    queryClient.clear()
+    void router.navigate({ to: '/login' })
+  }
+
+  setupRouterSsrQueryIntegration({ router, queryClient })
+  return router
+}
+
+declare module '@tanstack/react-router' {
+  interface Register {
+    router: ReturnType<typeof getRouter>
+  }
+}
