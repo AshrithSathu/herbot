@@ -33,7 +33,8 @@ for port in "${CORE##*:}" "$PANEL_PORT"; do
   fi
 done
 
-psql_() { docker compose exec -T postgres psql -q -v ON_ERROR_STOP=1 -U herbot "$@"; }
+ROOT="$PWD"
+psql_() { docker compose -f "$ROOT/docker-compose.yml" exec -T postgres psql -q -v ON_ERROR_STOP=1 -U herbot "$@"; }
 psql_ -d herbot -c "DROP DATABASE IF EXISTS $DB" -c "CREATE DATABASE $DB"
 
 # A T3 that refuses everything, so no test can reach real threads.
@@ -48,7 +49,12 @@ DATABASE_URL="$PG/$DB" HERBOT_BIND="$CORE" TELEGRAM_BOT_TOKEN= HERBOT_INTERNAL_T
 PIDS+=($!)
 wait_for "http://$CORE/health"
 
-psql_ -d "$DB" <apps/admin/e2e/seed.sql
+# Empties every table, then loads a seed file from apps/admin/e2e/.
+SEED_DIR="$PWD/apps/admin/e2e"
+seed() {
+  psql_ -d "$DB" -c "TRUNCATE bots, chats, conversations, messages, agent_threads, pending_questions, kv, errors, audit_log RESTART IDENTITY CASCADE"
+  psql_ -d "$DB" <"$SEED_DIR/$1"
+}
 
 cd apps/admin
 pnpm -s build
@@ -59,8 +65,23 @@ HERBOT_CORE_URL="http://$CORE" HERBOT_ADMIN_TOKEN="$ADMIN_TOKEN" HERBOT_ADMIN_PA
 PIDS+=($!)
 wait_for "http://127.0.0.1:$PANEL_PORT/login"
 
-if ! E2E_BASE_URL="http://127.0.0.1:$PANEL_PORT" pnpm -s exec playwright test "$@"; then
-  echo "--- herbot-core log"; tail -40 "$WORK/core.log"
-  echo "--- panel log"; tail -40 "$WORK/panel.log"
-  exit 1
+export E2E_BASE_URL="http://127.0.0.1:$PANEL_PORT" E2E_DB="$DB"
+run() {
+  if ! pnpm -s exec playwright test "$@"; then
+    echo "--- herbot-core log"; tail -40 "$WORK/core.log"
+    echo "--- panel log"; tail -40 "$WORK/panel.log"
+    exit 1
+  fi
+}
+
+if [ $# -gt 0 ]; then
+  # Specific specs: one seed (E2E_SEED=stress for the worst-case data).
+  if [ "${E2E_SEED:-}" = "stress" ]; then seed seed-stress.sql; else seed seed.sql; fi
+  run "$@"
+else
+  # Everything: normal behaviour on small data, then the worst case.
+  seed seed.sql
+  run e2e/panel.spec.ts
+  seed seed-stress.sql
+  run e2e/stress.spec.ts
 fi
