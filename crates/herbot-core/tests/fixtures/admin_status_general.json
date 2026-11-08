@@ -1,0 +1,1 @@
+{"update_id":1020,"message":{"message_id":44,"from":{"id":111,"is_bot":false,"first_name":"Ashrith","username":"ashrith"},"chat":{"id":-1001234567890,"title":"Herbot HQ","type":"supergroup","is_forum":true},"date":1762600200,"text":"/status","entities":[{"offset":0,"length":7,"type":"bot_command"}]}}
