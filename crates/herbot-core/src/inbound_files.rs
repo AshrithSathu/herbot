@@ -175,9 +175,9 @@ async fn describe_audio<T: Transcriber>(
     shown: &str,
     attachment: &Attachment,
 ) -> Result<String, FileError> {
-    let seconds = match attachment.duration_secs {
+    let seconds = match attachment.duration_secs.filter(|&d| d > 0) {
         Some(d) => d,
-        None => probe_duration(audio).await.unwrap_or(0.0) as u32,
+        None => probe_duration(audio).await.unwrap_or(0.0).round() as u32,
     };
     let mut note = format!("[Audio: {shown}, {}.", human_duration(seconds));
     note.push_str(&soundtrack(transcriber, audio, seconds).await?);
