@@ -665,27 +665,37 @@ impl HandleError {
 /// The "seen it" reaction on every admin message, so it's clear the bot is listening.
 pub const SEEN_REACTION: &str = "👀";
 
-pub const HELP_TEXT: &str = "/tasks — manage scheduled prompts in this topic\n\nHerbot: your private bot.\n\n\
-General is the everyday chat. Every other topic is its own agent with its own memory.\n\n\
-/setup: set what this conversation is for\n\
-/voice: spoken replies and voice picker\n\
-/speak: reply to a bot message to read it aloud once\n\
-/persona: choose a purpose preset and matching voice\n\
-/status: this conversation's details\n\
-/new: wipe this topic's chat and start fresh (keeps its purpose)\n\
-/forget: wipe this topic completely, purpose included\n\
-/memory: view and forget shared memories\n\
-/customize [text|clear]: global answer instructions\n\
-/aboutme <text|clear>: what Herbot should know about you\n\
-/mode: choose Fast, Auto, Expert or Heavy\n\
-/fast <question>: a quick answer\n\
-/think <question>: think carefully\n\
-/heavy <question>: use several agents\n\
-/deepsearch <question>: research with sources\n\
-/video <prompt>: generate a video\n\
-/imagine <prompt>: generate an image\n\
-/sticker: reply to a photo, or add a prompt\n\
-/summary [count|today]: summarise history or a replied message/document\n\
+pub const HELP_TEXT: &str = "Herbot: your private bot.\n\n\
+General is the everyday chat. Every other topic is its own agent with its own memory. \
+Send text, voice notes, photos, documents, video or audio.\n\n\
+Thinking\n\
+/mode: Fast, Auto, Expert or Heavy for this topic\n\
+/fast, /think, /heavy <question>: one answer in that mode\n\
+/deepsearch <question>: research across the web, with sources\n\n\
+Making things\n\
+/imagine <prompt>: an image (or edit a photo you reply to)\n\
+/video <prompt>: a video\n\
+/sticker: a sticker from a photo you reply to, or a prompt\n\n\
+Voice\n\
+/voice: spoken replies on or off, and the voice\n\
+/speak: reply to a bot message to hear it\n\
+/persona: a ready-made purpose with its own voice\n\n\
+Conversation\n\
+/retry: answer your last message again\n\
+/search <words>: search history\n\
+/summary [count|today]: summarise history, or a message you reply to\n\
+/export: this topic as Markdown and HTML\n\
+/private on|off: stop or resume storing this topic\n\
+/tasks: scheduled and recurring prompts\n\n\
+About you\n\
+/memory: what Herbot remembers (and forget it)\n\
+/customize [text|clear]: how you want every answer\n\
+/aboutme <text|clear>: what Herbot should know about you\n\n\
+This topic\n\
+/setup: set what it's for\n\
+/status: its details\n\
+/new: wipe its chat and start fresh (keeps its purpose)\n\
+/forget: wipe it completely, purpose included\n\
 /help: this list";
 
 pub const WELCOME_TEXT: &str = "👋 Herbot is here. General is our everyday chat. Every other topic is its own agent: say anything in a new topic and I'll ask what it should be.";
