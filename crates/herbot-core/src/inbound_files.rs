@@ -106,9 +106,9 @@ pub async fn describe_saved<T: Transcriber>(
             }
         }
         AttachmentKind::Video | AttachmentKind::VideoNote | AttachmentKind::Animation => {
-            describe_video(transcriber, &absolute, &shown, message_id, attachment).await?
+            describe_video(transcriber, absolute, shown, message_id, attachment).await?
         }
-        AttachmentKind::Audio => describe_audio(transcriber, &absolute, &shown, attachment).await?,
+        AttachmentKind::Audio => describe_audio(transcriber, absolute, shown, attachment).await?,
     };
     Ok(note)
 }

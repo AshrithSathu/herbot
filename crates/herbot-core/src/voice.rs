@@ -128,6 +128,12 @@ impl Transcriber for AnyTranscriber {
     }
 }
 
+impl<T: Transcriber + Send> Transcriber for std::sync::Arc<T> {
+    async fn transcribe(&self, audio: Vec<u8>) -> Result<String, VoiceError> {
+        (**self).transcribe(audio).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,11 +273,5 @@ mod tests {
             text.contains("japan") && text.contains("trip"),
             "heard: {text}"
         );
-    }
-}
-
-impl<T: Transcriber + Send> Transcriber for std::sync::Arc<T> {
-    async fn transcribe(&self, audio: Vec<u8>) -> Result<String, VoiceError> {
-        (**self).transcribe(audio).await
     }
 }
