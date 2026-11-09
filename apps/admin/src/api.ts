@@ -336,3 +336,19 @@ export const sendMessage = createServerFn({ method: 'POST' })
     if (!response.ok) throw new Error(result.error ?? 'Message failed')
     return result
   })
+
+export const companionReply = createServerFn({ method: 'POST' })
+  .validator((data: { id: number; text: string }) => data)
+  .handler(async ({ data }) => {
+    const { requireSignIn } = await import('./server/auth')
+    requireSignIn()
+    const { env } = await import('./server/env')
+    if (!Number.isSafeInteger(data.id) || data.id < 1) throw new Error('Invalid topic')
+    const form = new FormData(); form.set('text', data.text)
+    const response = await fetch(`${env.coreUrl()}/admin/api/conversations/${data.id}/messages?wait=true`, {
+      method: 'POST', headers: { authorization: `Bearer ${env.adminToken()}` }, body: form,
+    })
+    const result = await response.json() as { reply: string; error?: string }
+    if (!response.ok) throw new Error(result.error ?? 'Conversation failed')
+    return result.reply
+  })

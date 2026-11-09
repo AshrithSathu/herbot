@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthedIndexRouteImport } from './routes/_authed/index'
+import { Route as AuthedCompanionsRouteImport } from './routes/_authed/companions'
 import { Route as AuthedConnectorsRouteImport } from './routes/_authed/connectors'
 import { Route as AuthedMemoryRouteImport } from './routes/_authed/memory'
 import { Route as AuthedPersonalizeRouteImport } from './routes/_authed/personalize'
@@ -22,6 +23,7 @@ import { Route as AuthedTasksIndexRouteImport } from './routes/_authed/tasks/ind
 import { Route as AuthedTopicsIndexRouteImport } from './routes/_authed/topics/index'
 import { Route as AuthedTopicsIdRouteImport } from './routes/_authed/topics/$id'
 import { Route as ApiFilesSplatRouteImport } from './routes/api/files.$'
+import { Route as ApiVoiceSplatRouteImport } from './routes/api/voice.$'
 
 const AuthedRoute = AuthedRouteImport.update({
   id: '/_authed',
@@ -35,6 +37,11 @@ const LoginRoute = LoginRouteImport.update({
 const AuthedIndexRoute = AuthedIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedCompanionsRoute = AuthedCompanionsRouteImport.update({
+  id: '/companions',
+  path: '/companions',
   getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedConnectorsRoute = AuthedConnectorsRouteImport.update({
@@ -87,10 +94,16 @@ const ApiFilesSplatRoute = ApiFilesSplatRouteImport.update({
   path: '/api/files/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiVoiceSplatRoute = ApiVoiceSplatRouteImport.update({
+  id: '/api/voice/$',
+  path: '/api/voice/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthedIndexRoute
   '/login': typeof LoginRoute
+  '/companions': typeof AuthedCompanionsRoute
   '/connectors': typeof AuthedConnectorsRoute
   '/memory': typeof AuthedMemoryRoute
   '/personalize': typeof AuthedPersonalizeRoute
@@ -98,12 +111,14 @@ export interface FileRoutesByFullPath {
   '/logs/$id': typeof AuthedLogsIdRoute
   '/topics/$id': typeof AuthedTopicsIdRoute
   '/api/files/$': typeof ApiFilesSplatRoute
+  '/api/voice/$': typeof ApiVoiceSplatRoute
   '/logs/': typeof AuthedLogsIndexRoute
   '/tasks/': typeof AuthedTasksIndexRoute
   '/topics/': typeof AuthedTopicsIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
+  '/companions': typeof AuthedCompanionsRoute
   '/connectors': typeof AuthedConnectorsRoute
   '/memory': typeof AuthedMemoryRoute
   '/personalize': typeof AuthedPersonalizeRoute
@@ -112,6 +127,7 @@ export interface FileRoutesByTo {
   '/logs/$id': typeof AuthedLogsIdRoute
   '/topics/$id': typeof AuthedTopicsIdRoute
   '/api/files/$': typeof ApiFilesSplatRoute
+  '/api/voice/$': typeof ApiVoiceSplatRoute
   '/logs': typeof AuthedLogsIndexRoute
   '/tasks': typeof AuthedTasksIndexRoute
   '/topics': typeof AuthedTopicsIndexRoute
@@ -120,6 +136,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
+  '/_authed/companions': typeof AuthedCompanionsRoute
   '/_authed/connectors': typeof AuthedConnectorsRoute
   '/_authed/memory': typeof AuthedMemoryRoute
   '/_authed/personalize': typeof AuthedPersonalizeRoute
@@ -128,6 +145,7 @@ export interface FileRoutesById {
   '/_authed/logs/$id': typeof AuthedLogsIdRoute
   '/_authed/topics/$id': typeof AuthedTopicsIdRoute
   '/api/files/$': typeof ApiFilesSplatRoute
+  '/api/voice/$': typeof ApiVoiceSplatRoute
   '/_authed/logs/': typeof AuthedLogsIndexRoute
   '/_authed/tasks/': typeof AuthedTasksIndexRoute
   '/_authed/topics/': typeof AuthedTopicsIndexRoute
@@ -137,6 +155,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/companions'
     | '/connectors'
     | '/memory'
     | '/personalize'
@@ -144,12 +163,14 @@ export interface FileRouteTypes {
     | '/logs/$id'
     | '/topics/$id'
     | '/api/files/$'
+    | '/api/voice/$'
     | '/logs/'
     | '/tasks/'
     | '/topics/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
+    | '/companions'
     | '/connectors'
     | '/memory'
     | '/personalize'
@@ -158,6 +179,7 @@ export interface FileRouteTypes {
     | '/logs/$id'
     | '/topics/$id'
     | '/api/files/$'
+    | '/api/voice/$'
     | '/logs'
     | '/tasks'
     | '/topics'
@@ -165,6 +187,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_authed'
     | '/login'
+    | '/_authed/companions'
     | '/_authed/connectors'
     | '/_authed/memory'
     | '/_authed/personalize'
@@ -173,6 +196,7 @@ export interface FileRouteTypes {
     | '/_authed/logs/$id'
     | '/_authed/topics/$id'
     | '/api/files/$'
+    | '/api/voice/$'
     | '/_authed/logs/'
     | '/_authed/tasks/'
     | '/_authed/topics/'
@@ -182,6 +206,7 @@ export interface RootRouteChildren {
   AuthedRoute: typeof AuthedRouteWithChildren
   LoginRoute: typeof LoginRoute
   ApiFilesSplatRoute: typeof ApiFilesSplatRoute
+  ApiVoiceSplatRoute: typeof ApiVoiceSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -205,6 +230,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AuthedIndexRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/companions': {
+      id: '/_authed/companions'
+      path: '/companions'
+      fullPath: '/companions'
+      preLoaderRoute: typeof AuthedCompanionsRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/connectors': {
@@ -277,10 +309,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiFilesSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/voice/$': {
+      id: '/api/voice/$'
+      path: '/api/voice/$'
+      fullPath: '/api/voice/$'
+      preLoaderRoute: typeof ApiVoiceSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 interface AuthedRouteChildren {
+  AuthedCompanionsRoute: typeof AuthedCompanionsRoute
   AuthedConnectorsRoute: typeof AuthedConnectorsRoute
   AuthedMemoryRoute: typeof AuthedMemoryRoute
   AuthedPersonalizeRoute: typeof AuthedPersonalizeRoute
@@ -294,6 +334,7 @@ interface AuthedRouteChildren {
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedCompanionsRoute: AuthedCompanionsRoute,
   AuthedConnectorsRoute: AuthedConnectorsRoute,
   AuthedMemoryRoute: AuthedMemoryRoute,
   AuthedPersonalizeRoute: AuthedPersonalizeRoute,
@@ -313,6 +354,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthedRoute: AuthedRouteWithChildren,
   LoginRoute: LoginRoute,
   ApiFilesSplatRoute: ApiFilesSplatRoute,
+  ApiVoiceSplatRoute: ApiVoiceSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
