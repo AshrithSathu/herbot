@@ -13,8 +13,32 @@ export function when(iso: string): string {
   return new Date(iso).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-export function stateLabel(state: 'new' | 'awaiting_purpose' | 'ready'): string {
-  return { new: 'Not set up', awaiting_purpose: 'Asking its purpose', ready: 'Ready' }[state]
+/** A topic's status, the one place it's worked out: the on/off switch
+ * first, then where setup is (`SetupState` in herbot-core's store.rs). The
+ * badge and the sidebar dot both show this, so they always agree. */
+export type TopicStatus = {
+  label: string
+  /** Badge variant, and the dot's colour. */
+  tone: 'danger' | 'success' | 'warning' | 'muted'
+}
+
+export function topicStatus(topic: {
+  enabled: boolean
+  setup_state: 'new' | 'awaiting_purpose' | 'ready'
+  purpose: string | null
+}): TopicStatus {
+  if (!topic.enabled) return { label: 'Off', tone: 'danger' }
+  switch (topic.setup_state) {
+    case 'ready':
+      return { label: 'Ready', tone: 'success' }
+    case 'awaiting_purpose':
+      // After /setup the old purpose stays until the next message replaces it.
+      return topic.purpose
+        ? { label: 'Waiting for a new purpose', tone: 'warning' }
+        : { label: 'Asking its purpose', tone: 'warning' }
+    case 'new':
+      return { label: 'Not set up', tone: 'muted' }
+  }
 }
 
 export function plural(n: number, one: string, many = `${one}s`): string {

@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
-import { ago, stateLabel, when } from './format'
+import { ago, topicStatus, when } from './format'
 
 /** Re-renders every `ms` once mounted, so relative times stay true. */
 function useTick(ms: number): number {
@@ -36,11 +36,9 @@ export function Time({ iso, relative = false }: { iso: string | null; relative?:
 }
 
 /** On/off plus setup state, as one badge. */
-export function TopicState({ topic }: { topic: Pick<Topic, 'enabled' | 'setup_state'> }) {
-  if (!topic.enabled) return <Badge variant="danger">Off</Badge>
-  return (
-    <Badge variant={topic.setup_state === 'ready' ? 'success' : 'warning'}>{stateLabel(topic.setup_state)}</Badge>
-  )
+export function TopicState({ topic }: { topic: Pick<Topic, 'enabled' | 'setup_state' | 'purpose'> }) {
+  const { label, tone } = topicStatus(topic)
+  return <Badge variant={tone}>{label}</Badge>
 }
 
 export function PageHeader({ title, description, children, className }: {

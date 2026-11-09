@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
 import { HashIcon, LayoutGridIcon, LogOutIcon, MessageCircleIcon, MessagesSquareIcon, ScrollTextIcon } from 'lucide-react'
 import { logout, type Topic } from '../api'
+import { topicStatus, type TopicStatus } from '../format'
 import { topicsQuery } from '../queries'
 import {
   Sidebar,
@@ -127,13 +128,17 @@ function TopicLinks({ onPick }: { onPick: () => void }) {
   )
 }
 
+const DOT: Record<TopicStatus['tone'], string> = {
+  danger: 'bg-destructive',
+  success: 'bg-success',
+  warning: 'bg-warning',
+  muted: 'bg-muted-foreground',
+}
+
 /** Status as a dot, with its meaning for screen readers and on hover. */
 function TopicDot({ topic }: { topic: Topic }) {
-  const [label, color] = !topic.enabled
-    ? ['off', 'bg-destructive']
-    : topic.setup_state === 'ready'
-      ? ['ready', 'bg-success']
-      : ['asking its purpose', 'bg-warning']
+  const { label, tone } = topicStatus(topic)
+  const color = DOT[tone]
   return (
     <SidebarMenuBadge title={label}>
       <span className={cn('size-1.5 rounded-full', color)} aria-hidden />
