@@ -237,7 +237,14 @@ async fn main() -> anyhow::Result<()> {
             };
             tracing::info!("admin API on");
             let state = Arc::new(state);
-            Some(admin::router(state.clone()).merge(herbot_core::panel::router(state, panel_live)))
+            Some(
+                admin::router(state.clone())
+                    .merge(herbot_core::panel_voice::router(
+                        state.clone(),
+                        config.openai.as_ref(),
+                    ))
+                    .merge(herbot_core::panel::router(state, panel_live)),
+            )
         }
         None => {
             tracing::warn!("HERBOT_ADMIN_TOKEN not set; the admin panel can't connect");

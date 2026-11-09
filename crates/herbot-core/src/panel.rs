@@ -39,6 +39,7 @@ struct Panel {
     admin: Arc<AdminState>,
     live: Option<Live>,
     processing: tokio::sync::Mutex<()>,
+    replies: std::sync::Mutex<std::collections::HashMap<i32, crate::turns::ReplySlot>>,
 }
 type Failure = (StatusCode, Json<Value>);
 type Result<T> = std::result::Result<T, Failure>;
@@ -72,6 +73,7 @@ pub fn router(admin: Arc<AdminState>, live: Option<Live>) -> Router {
         admin,
         live,
         processing: tokio::sync::Mutex::new(()),
+        replies: Default::default(),
     });
     if state.live.is_some() {
         let resume = state.clone();
@@ -199,10 +201,16 @@ async fn mode(
     store::set_mode(&s.admin.pool, id, mode).await.map_err(io)?;
     Ok(Json(json!({"mode":mode.as_str()})))
 }
+#[derive(Deserialize)]
+struct SendOptions {
+    #[serde(default)]
+    wait: bool,
+}
 async fn send(
     State(s): State<Arc<Panel>>,
     h: HeaderMap,
     Path(id): Path<i64>,
+    Query(options): Query<SendOptions>,
     mut form: Multipart,
 ) -> Result<Json<Value>> {
     auth(&s, &h)?;
@@ -343,6 +351,7 @@ async fn send(
         style: style.map(|s| s.as_str().to_string()),
         sent_at: Utc::now(),
     };
+    let processing = s.processing.lock().await;
     sqlx::query(
         "INSERT INTO panel_inbox (conversation_id,tg_message_id,payload) VALUES ($1,$2,$3)",
     )
@@ -352,10 +361,37 @@ async fn send(
     .execute(&s.admin.pool)
     .await
     .map_err(io)?;
+    let answer = if options.wait {
+        let (slot, answer) = crate::turns::ReplySlot::new();
+        s.replies
+            .lock()
+            .expect("panel replies")
+            .insert(message_id, slot);
+        Some(answer)
+    } else {
+        None
+    };
+    drop(processing);
     let pending = s.clone();
     tokio::spawn(async move {
         drain_inbox(pending).await;
     });
+    if let Some(answer) = answer {
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(180), answer).await;
+        s.replies.lock().expect("panel replies").remove(&message_id);
+        return match outcome {
+            Ok(Ok(Ok(reply))) => Ok(Json(json!({"message_id":message_id,"reply":reply}))),
+            Ok(Ok(Err(reason))) => Err(fail(StatusCode::BAD_GATEWAY, reason)),
+            Ok(Err(_)) => Err(fail(
+                StatusCode::CONFLICT,
+                "No agent reply; check the topic setup before sending again",
+            )),
+            Err(_) => Err(fail(
+                StatusCode::GATEWAY_TIMEOUT,
+                "Reply timed out; the turn may still finish in Telegram. Do not resend automatically",
+            )),
+        };
+    }
     Ok(Json(json!({"message_id":message_id})))
 }
 
@@ -499,6 +535,10 @@ async fn deliver_queued(
         sent_at: queued.sent_at,
         command: None,
     };
+    let turns = WaitingTurns {
+        inner: &*l.turns,
+        reply: s.replies.lock().expect("panel replies").remove(&message_id),
+    };
     let ctx = poller::Ctx {
         pool: &s.admin.pool,
         speaker: &*l.speaker,
@@ -508,12 +548,26 @@ async fn deliver_queued(
         bot_username: &l.username,
         agents_dir: &s.admin.agents_dir,
         agent_label: &s.admin.agent_label,
-        turns: &*l.turns,
+        turns: &turns,
         projects: &*s.admin.projects,
     };
     poller::store_and_continue(&ctx, &msg, style)
         .await
         .map_err(|e| e.to_string())
+}
+
+struct WaitingTurns<'a> {
+    inner: &'a dyn TurnQueue,
+    reply: Option<crate::turns::ReplySlot>,
+}
+impl TurnQueue for WaitingTurns<'_> {
+    fn submit(&self, mut job: crate::turns::TurnJob) {
+        job.reply = self.reply.clone();
+        self.inner.submit(job);
+    }
+    fn in_progress(&self, id: i64) -> bool {
+        self.inner.in_progress(id)
+    }
 }
 
 #[derive(Deserialize)]

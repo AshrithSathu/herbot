@@ -47,3 +47,5 @@ pub mod wipe;
 
 pub mod panel;
 pub mod tasks;
+
+pub mod panel_voice;

@@ -71,14 +71,19 @@ impl OpenAiTranscriber {
     }
 }
 
-impl Transcriber for OpenAiTranscriber {
-    async fn transcribe(&self, audio: Vec<u8>) -> Result<String, VoiceError> {
+impl OpenAiTranscriber {
+    pub async fn transcribe_file(
+        &self,
+        audio: Vec<u8>,
+        filename: &str,
+        mime: &str,
+    ) -> Result<String, VoiceError> {
         if audio.len() > MAX_AUDIO_BYTES {
             return Err(VoiceError::TooLarge(audio.len()));
         }
         let file = reqwest::multipart::Part::bytes(audio)
-            .file_name(VOICE_FILENAME)
-            .mime_str(VOICE_MIME)
+            .file_name(filename.to_owned())
+            .mime_str(mime)
             .map_err(|e| VoiceError::Request(e.to_string()))?;
         let form = reqwest::multipart::Form::new()
             .part("file", file)
@@ -109,6 +114,13 @@ impl Transcriber for OpenAiTranscriber {
             });
         }
         Ok(body.trim().to_string())
+    }
+}
+
+impl Transcriber for OpenAiTranscriber {
+    async fn transcribe(&self, audio: Vec<u8>) -> Result<String, VoiceError> {
+        self.transcribe_file(audio, VOICE_FILENAME, VOICE_MIME)
+            .await
     }
 }
 

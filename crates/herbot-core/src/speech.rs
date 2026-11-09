@@ -53,6 +53,13 @@ pub enum SpeechError {
     Db(#[from] sqlx::Error),
 }
 pub trait Speaker: Send + Sync {
+    fn speak_mp3<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SpeechError>> + Send + 'a>> {
+        Box::pin(async { Err(SpeechError::NotConfigured) })
+    }
     fn speak<'a>(
         &'a self,
         text: &'a str,
@@ -91,31 +98,46 @@ impl OpenAiSpeaker {
         }
     }
 }
+impl OpenAiSpeaker {
+    async fn synthesize(
+        &self,
+        text: &str,
+        voice: &str,
+        format: &str,
+    ) -> Result<Vec<u8>, SpeechError> {
+        if !valid_voice(voice) {
+            return Err(SpeechError::InvalidVoice);
+        }
+        let input = speakable(text);
+        if input.is_empty() {
+            return Err(SpeechError::Empty);
+        }
+        let response = self.client.post(format!("{}/audio/speech", self.base_url)).bearer_auth(&self.key)
+            .json(&serde_json::json!({"model":self.model,"voice":voice,"input":input,"response_format":format})).send().await?;
+        if !response.status().is_success() {
+            return Err(SpeechError::Api(response.status().as_u16()));
+        }
+        let bytes = response.bytes().await?.to_vec();
+        if bytes.is_empty() || (format == "opus" && !bytes.starts_with(b"OggS")) {
+            return Err(SpeechError::InvalidAudio);
+        }
+        Ok(bytes)
+    }
+}
 impl Speaker for OpenAiSpeaker {
+    fn speak_mp3<'a>(
+        &'a self,
+        text: &'a str,
+        voice: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SpeechError>> + Send + 'a>> {
+        Box::pin(self.synthesize(text, voice, "mp3"))
+    }
     fn speak<'a>(
         &'a self,
         text: &'a str,
         voice: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SpeechError>> + Send + 'a>> {
-        Box::pin(async move {
-            if !valid_voice(voice) {
-                return Err(SpeechError::InvalidVoice);
-            }
-            let input = speakable(text);
-            if input.is_empty() {
-                return Err(SpeechError::Empty);
-            }
-            let response = self.client.post(format!("{}/audio/speech", self.base_url)).bearer_auth(&self.key)
-                .json(&serde_json::json!({"model": self.model, "voice": voice, "input": input, "response_format": "opus"})).send().await?;
-            if !response.status().is_success() {
-                return Err(SpeechError::Api(response.status().as_u16()));
-            }
-            let bytes = response.bytes().await?.to_vec();
-            if !bytes.starts_with(b"OggS") {
-                return Err(SpeechError::InvalidAudio);
-            }
-            Ok(bytes)
-        })
+        Box::pin(self.synthesize(text, voice, "opus"))
     }
 }
 pub fn configured(config: Option<&OpenAiConfig>) -> Arc<dyn Speaker> {
@@ -563,7 +585,7 @@ mod tests {
                     assert_eq!(headers["authorization"], "Bearer test-key");
                     assert_eq!(body["model"], "test-model");
                     assert_eq!(body["voice"], "marin");
-                    assert_eq!(body["response_format"], "opus");
+                    assert!(body["response_format"] == "opus" || body["response_format"] == "mp3");
                     assert_eq!(body["input"], "Hello world");
                     (StatusCode::TOO_MANY_REQUESTS, "quota")
                 },
@@ -580,6 +602,10 @@ mod tests {
         assert!(matches!(
             client.speak("hello", "invalid").await,
             Err(SpeechError::InvalidVoice)
+        ));
+        assert!(matches!(
+            client.speak_mp3("Hello world", "marin").await,
+            Err(SpeechError::Api(429))
         ));
         server.abort();
     }
