@@ -1,4 +1,4 @@
-// The panel in production: `pnpm build`, then `pnpm start` runs this.
+// The panel in production, on Bun: `bun run build`, then `bun run start` runs this.
 //
 // srvx's own CLI would serve it too, but it sends the hashed assets with no
 // cache lifetime (so every page view revalidates each one), recompresses them

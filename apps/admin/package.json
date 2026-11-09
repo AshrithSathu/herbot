@@ -1,11 +1,12 @@
 {
   "name": "herbot-admin",
   "private": true,
+  "packageManager": "bun@1.4.2",
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build && node scripts/precompress.mjs",
-    "start": "NODE_ENV=production node server.mjs",
+    "dev": "bun --bun vite dev",
+    "build": "bun --bun vite build && bun scripts/precompress.mjs",
+    "start": "NODE_ENV=production bun server.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

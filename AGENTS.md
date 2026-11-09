@@ -15,7 +15,7 @@ Telegram Bot API ⇄ crates/herbot-core (Rust, teloxide) ⇄ bots-T3 (Codex, ful
 |---|---|---|
 | `crates/herbot-core` | Telegram polling, admin-only policy, conversations, topic setup and AGENTS.md, voice transcription, per-conversation lanes, T3 adapter, admin API | Rust (tokio, axum, sqlx, teloxide, reqwest) |
 | `crates/herbot-mcp` | MCP server Codex starts over stdio: `list_topics`, `search_messages`, `read_topic` (via `herbot_core::hub`), and General's `ask_topic` and `post_to_topic` (via herbot-core's `/internal` API) | Rust (`rmcp`) |
-| `apps/admin` | Admin panel: TanStack Query for data, shadcn/ui on Tailwind v4, `server.mjs` for production | TanStack Start |
+| `apps/admin` | Admin panel: TanStack Query for data, shadcn/ui on Tailwind v4, `server.mjs` for production | TanStack Start on Bun (runtime and package manager) |
 | `bots/<slug>/` | One T3 project per bot persona. `AGENTS.md` there is the persona. | Markdown |
 
 A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no topic. In a forum supergroup, each topic is its own conversation, and "General" has no topic ID.

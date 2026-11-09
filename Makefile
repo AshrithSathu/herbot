@@ -42,7 +42,7 @@ smoke: db-up ## Start the real binary, hit /health and /ready, stop it
 	./scripts/smoke.sh
 
 admin: ## Run the admin panel (dev) on 127.0.0.1:3300 against the running herbot-core
-	HERBOT_CORE_URL=$${HERBOT_CORE_URL:-http://$${HERBOT_BIND:-127.0.0.1:8787}} pnpm -C apps/admin dev
+	HERBOT_CORE_URL=$${HERBOT_CORE_URL:-http://$${HERBOT_BIND:-127.0.0.1:8787}} bun run --cwd apps/admin dev
 
-admin-build: ## Type-check and build the admin panel (serve it with `pnpm -C apps/admin start`)
-	pnpm -C apps/admin typecheck && pnpm -C apps/admin build
+admin-build: ## Type-check and build the admin panel (serve it with `bun run --cwd apps/admin start`)
+	bun install --cwd apps/admin --frozen-lockfile && bun run --cwd apps/admin typecheck && bun run --cwd apps/admin build

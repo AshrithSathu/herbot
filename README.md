@@ -76,7 +76,7 @@ make run               # run herbot-core with pretty logs on 127.0.0.1:8787
 make check             # fmt + clippy (warnings are errors) + tests
 make test-voice        # real OpenAI transcription of generated speech (fractions of a cent)
 make db-down           # stop Postgres (make db-reset also deletes data)
-make admin             # admin panel on 127.0.0.1:3300 (needs pnpm and the admin settings above)
+make admin             # admin panel on 127.0.0.1:3300 (needs [Bun](https://bun.sh) and the admin settings above)
 ```
 
 ### Admin panel
@@ -89,7 +89,7 @@ make admin             # admin panel on 127.0.0.1:3300 (needs pnpm and the admin
 
 Data goes through TanStack Query: route loaders fill the cache on the server, so pages arrive rendered, hovering a link prefetches its page, the on/off switch updates optimistically and rolls back if herbot-core refuses, and a failed background refresh keeps the last data on screen with a warning. Every part is [shadcn/ui](https://ui.shadcn.com) on Tailwind v4: the Sidebar (lists every agent with its status, collapses to icons with ⌘B, becomes a sheet on phones, remembers its state in a cookie read on the server), Breadcrumb, Card, Table, Field, InputGroup, Item, Empty, Alert, AlertDialog, Switch, Badge, Kbd, Spinner, Skeleton and Sonner toasts. The palette is OKLCH: blue for actions, green, amber and red for status only, and light and dark modes that follow the system.
 
-In production, `make admin-build` and then `pnpm -C apps/admin start` run `apps/admin/server.mjs`. It caches the content-hashed `/assets` for a year without revalidating, and serves them as brotli or gzip files written at build time (718 KB of JavaScript and CSS goes out as 196 KB). Pages and server-function data are compressed as they stream out.
+In production, `make admin-build` and then `bun run --cwd apps/admin start` run `apps/admin/server.mjs` on Bun (Bun is the panel's runtime and package manager). It caches the content-hashed `/assets` for a year without revalidating, and serves them as brotli or gzip files written at build time (718 KB of JavaScript and CSS goes out as 196 KB). Pages and server-function data are compressed as they stream out.
 
 Tests run when Ashrith asks for them, not on every change. The panel has no browser (e2e) tests; they were removed on 2026-11-09.
 
