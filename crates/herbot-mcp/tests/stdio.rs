@@ -151,7 +151,7 @@ async fn seed(pool: &PgPool) -> (String, String) {
 }
 
 #[sqlx::test(migrations = "../herbot-core/migrations")]
-async fn lists_all_five_tools_with_caller_required(pool: PgPool) {
+async fn lists_all_tools_with_caller_required(pool: PgPool) {
     let mut mcp = Mcp::start(&url_for(&pool)).await;
     let tools = mcp.request("tools/list", json!({})).await;
     let tools = tools["result"]["tools"].as_array().unwrap().clone();
@@ -161,6 +161,7 @@ async fn lists_all_five_tools_with_caller_required(pool: PgPool) {
         names,
         [
             "ask_topic",
+            "generate_video",
             "list_topics",
             "post_to_topic",
             "read_topic",
@@ -232,6 +233,13 @@ async fn general_sees_everything_and_a_topic_only_itself(pool: PgPool) {
 
     let (err, text) = mcp
         .call("list_topics", json!({ "caller": "hb_forged" }))
+        .await;
+    assert!(err && text.contains("unknown caller token"), "{text}");
+    let (err, text) = mcp
+        .call(
+            "generate_video",
+            json!({"caller": "hb_forged", "prompt": "a boat"}),
+        )
         .await;
     assert!(err && text.contains("unknown caller token"), "{text}");
 }

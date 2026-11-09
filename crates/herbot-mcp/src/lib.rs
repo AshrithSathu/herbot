@@ -33,6 +33,19 @@ pub struct HerbotTools {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct VideoArgs {
+    /// The caller token from <herbot-meta>.
+    pub caller: String,
+    pub prompt: String,
+    /// 4 (default), 8 or 12 seconds.
+    pub seconds: Option<u32>,
+    /// Default 720x1280; also 1280x720, 1024x1792, 1792x1024.
+    pub size: Option<String>,
+    /// Reference image inside your topic folder; must match output resolution.
+    pub image_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CallerOnly {
     /// The `caller` value from your <herbot-meta> header.
     pub caller: String,
@@ -203,6 +216,81 @@ impl HerbotTools {
         Parameters(args): Parameters<PostArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.core_action("/internal/post", &args).await
+    }
+
+    /// Generate a video with OpenAI Sora, save it in your topic's files/out,
+    /// and return its MP4 path for [[file: path]]. May take up to nine minutes.
+    #[tool]
+    pub async fn generate_video(
+        &self,
+        Parameters(args): Parameters<VideoArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let caller = match self.caller(&args.caller).await {
+            Ok(c) => c,
+            Err(e) => return hub_error(e),
+        };
+        let status =
+            match herbot_core::store::conversation_status_by_id(&self.pool, caller.conversation_id)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => return tool_error(e.to_string()),
+            };
+        let key = match std::env::var("OPENAI_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+        {
+            Some(k) => k,
+            None => return tool_error("OPENAI_API_KEY is not set for herbot-mcp"),
+        };
+        let root = match std::env::var("HERBOT_AGENTS_DIR")
+            .ok()
+            .filter(|r| std::path::Path::new(r).is_absolute())
+        {
+            Some(root) => root,
+            None => {
+                return tool_error(
+                    "Set HERBOT_AGENTS_DIR to the absolute agents root for herbot-mcp",
+                );
+            }
+        };
+        let topic = std::path::Path::new(&root).join(herbot_core::agents_md::relative_dir(
+            status.tg_chat_id,
+            status.tg_topic_id,
+        ));
+        let model = std::env::var("HERBOT_VIDEO_MODEL").unwrap_or_else(|_| "sora-2".into());
+        match herbot_core::imagine::generate_video(
+            &key,
+            &model,
+            &topic,
+            &args.prompt,
+            args.seconds.unwrap_or(4),
+            args.size.as_deref().unwrap_or("720x1280"),
+            args.image_path.as_deref().map(std::path::Path::new),
+        )
+        .await
+        {
+            Ok(video) => ok_json(&video),
+            Err(e) => {
+                let id = herbot_core::errors::record(
+                    &self.pool,
+                    "imagine.video",
+                    &e.to_string(),
+                    serde_json::json!({"conversation_id": caller.conversation_id}),
+                )
+                .await;
+                match id {
+                    Ok(id) => {
+                        tracing::error!(error_id = %id, error = %e, "video generation failed");
+                        tool_error(format!("Failed ({id}): {e}"))
+                    }
+                    Err(db) => {
+                        tracing::error!(error = %e, %db, "could not record video failure");
+                        tool_error(e.to_string())
+                    }
+                }
+            }
+        }
     }
 
     async fn core_action<T: Serialize>(
