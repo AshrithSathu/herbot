@@ -797,6 +797,10 @@ pub struct Wiped {
 /// folder must be re-added to T3 on the next turn.
 pub async fn wipe_conversation(pool: &PgPool, conversation_id: i64) -> Result<Wiped, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM panel_inbox WHERE conversation_id=$1")
+        .bind(conversation_id)
+        .execute(&mut *tx)
+        .await?;
     let messages = sqlx::query("DELETE FROM messages WHERE conversation_id = $1")
         .bind(conversation_id)
         .execute(&mut *tx)

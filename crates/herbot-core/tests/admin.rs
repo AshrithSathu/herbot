@@ -282,6 +282,9 @@ async fn conversations_can_be_turned_off_and_on(pool: PgPool) {
 #[sqlx::test(migrations = "./migrations")]
 async fn wiping_from_the_panel_uses_the_same_safe_sweep(pool: PgPool) {
     let h = harness(pool, FakeT3::default()).await;
+    sqlx::query("INSERT INTO panel_inbox (conversation_id,tg_message_id,payload) VALUES (2,3,$1)")
+        .bind(json!({"text":"Do not resurrect this after a wipe", "files":[],"style":null,"sent_at":chrono::Utc::now()}))
+        .execute(&h.pool).await.unwrap();
     let (status, body) = call(
         &h,
         Method::POST,
@@ -295,6 +298,12 @@ async fn wiping_from_the_panel_uses_the_same_safe_sweep(pool: PgPool) {
         (Some(1), Some(2))
     );
     assert_eq!(*h.t3.removed.lock().unwrap(), [PROJECT]);
+    let queued: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM panel_inbox WHERE conversation_id=2")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(queued, 0, "a wipe also discards unhandled panel messages");
     let purpose: Option<String> =
         sqlx::query_scalar("SELECT purpose FROM conversations WHERE id = 2")
             .fetch_one(&h.pool)

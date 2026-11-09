@@ -127,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
                 turns: shared_turns.clone(),
                 rules,
                 username: username.clone(),
+                bot_user_id: me.id.0,
                 transcriber: transcriber.clone(),
             });
             let settings = poller::RunSettings {

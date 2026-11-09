@@ -17,7 +17,7 @@ use axum::{
     routing::{get, post, put},
 };
 use chrono::Utc;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     path::{Path as FsPath, PathBuf},
@@ -31,11 +31,13 @@ pub struct Live {
     pub turns: Arc<dyn TurnQueue>,
     pub rules: crate::policy::Rules,
     pub username: String,
+    pub bot_user_id: u64,
     pub transcriber: Arc<crate::voice::AnyTranscriber>,
 }
 struct Panel {
     admin: Arc<AdminState>,
     live: Option<Live>,
+    processing: tokio::sync::Mutex<()>,
 }
 type Failure = (StatusCode, Json<Value>);
 type Result<T> = std::result::Result<T, Failure>;
@@ -65,7 +67,17 @@ fn live(s: &Panel) -> Result<&Live> {
     })
 }
 pub fn router(admin: Arc<AdminState>, live: Option<Live>) -> Router {
-    let state = Arc::new(Panel { admin, live });
+    let state = Arc::new(Panel {
+        admin,
+        live,
+        processing: tokio::sync::Mutex::new(()),
+    });
+    if state.live.is_some() {
+        let resume = state.clone();
+        tokio::spawn(async move {
+            drain_inbox(resume).await;
+        });
+    }
     Router::new()
         .route("/admin/api/conversations/{id}/messages", post(send))
         .route("/admin/api/conversations/{id}/activity", get(activity))
@@ -155,8 +167,14 @@ async fn activity(
 ) -> Result<Json<Value>> {
     auth(&s, &h)?;
     status(&s, id).await?;
+    let queued: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM panel_inbox WHERE conversation_id=$1)")
+            .bind(id)
+            .fetch_one(&s.admin.pool)
+            .await
+            .map_err(io)?;
     Ok(Json(
-        json!({"in_progress": s.live.as_ref().is_some_and(|l| l.turns.in_progress(id))}),
+        json!({"in_progress":queued || s.live.as_ref().is_some_and(|l|l.turns.in_progress(id))}),
     ))
 }
 #[derive(Deserialize)]
@@ -318,6 +336,146 @@ async fn send(
             size: bytes.len() as u64,
         });
     }
+    let queued = QueuedMessage {
+        text,
+        files: saved,
+        style: style.map(|s| s.as_str().to_string()),
+        sent_at: Utc::now(),
+    };
+    sqlx::query(
+        "INSERT INTO panel_inbox (conversation_id,tg_message_id,payload) VALUES ($1,$2,$3)",
+    )
+    .bind(id)
+    .bind(message_id)
+    .bind(serde_json::to_value(queued).map_err(io)?)
+    .execute(&s.admin.pool)
+    .await
+    .map_err(io)?;
+    let pending = s.clone();
+    tokio::spawn(async move {
+        drain_inbox(pending).await;
+    });
+    Ok(Json(json!({"message_id":message_id})))
+}
+
+#[derive(Serialize, Deserialize)]
+struct QueuedMessage {
+    text: String,
+    files: Vec<SavedFile>,
+    style: Option<String>,
+    sent_at: chrono::DateTime<Utc>,
+}
+
+async fn drain_inbox(s: Arc<Panel>) {
+    let _guard = s.processing.lock().await;
+    let Some(l) = &s.live else {
+        return;
+    };
+    loop {
+        let mut tx = match s.admin.pool.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                inbox_failure(&s, None, &e.to_string()).await;
+                return;
+            }
+        };
+        let row: std::result::Result<Option<(i64, i64, i32, Value)>, _> = sqlx::query_as(
+            "SELECT id,conversation_id,tg_message_id,payload FROM panel_inbox ORDER BY id LIMIT 1 FOR UPDATE",
+        )
+        .fetch_optional(&mut *tx)
+        .await;
+        let (row_id, id, message_id, payload) = match row {
+            Ok(Some(row)) => row,
+            Ok(None) => return,
+            Err(e) => {
+                inbox_failure(&s, None, &e.to_string()).await;
+                return;
+            }
+        };
+        if let Err(e) = deliver_queued(&s, l, id, message_id, payload).await {
+            inbox_failure(&s, Some((id, message_id)), &e).await;
+        }
+        // Failed turns are reported and consumed too: replay is for crashes, never an automatic retry.
+        if let Err(e) = sqlx::query("DELETE FROM panel_inbox WHERE id=$1")
+            .bind(row_id)
+            .execute(&mut *tx)
+            .await
+        {
+            inbox_failure(&s, None, &e.to_string()).await;
+            return;
+        }
+        if let Err(e) = tx.commit().await {
+            inbox_failure(&s, None, &e.to_string()).await;
+            return;
+        }
+    }
+}
+
+async fn inbox_failure(s: &Panel, target: Option<(i64, i32)>, reason: &str) {
+    let error_id = match crate::errors::record(
+        &s.admin.pool,
+        "panel.inbox",
+        reason,
+        json!({"target":target}),
+    )
+    .await
+    {
+        Ok(id) => id.to_string(),
+        Err(e) => {
+            tracing::error!(error = %e, "could not record panel inbox failure");
+            return;
+        }
+    };
+    tracing::error!(%error_id,error=reason,"panel inbox failed");
+    if let Some((id, message_id)) = target
+        && let Some(l) = &s.live
+        && let Ok(st) = store::conversation_status_by_id(&s.admin.pool, id).await
+        && l.rules.home_chat_id == Some(st.tg_chat_id)
+    {
+        let text = format!("❌ Failed ({error_id}): panel message failed. Check logs.");
+        match l
+            .api
+            .send_text(st.tg_chat_id, st.tg_topic_id, Some(message_id), &text)
+            .await
+        {
+            Ok(sent) => {
+                if let Err(e) =
+                    store::store_bot_message(&s.admin.pool, id, sent, l.bot_user_id, &text).await
+                {
+                    tracing::error!(%error_id,error=%e,"could not store failure reply");
+                }
+            }
+            Err(e) => tracing::error!(%error_id,error=%e,"could not send failure reply"),
+        }
+    }
+}
+
+async fn deliver_queued(
+    s: &Panel,
+    l: &Live,
+    id: i64,
+    message_id: i32,
+    payload: Value,
+) -> std::result::Result<(), String> {
+    let queued: QueuedMessage = serde_json::from_value(payload).map_err(|e| e.to_string())?;
+    let st = store::conversation_status_by_id(&s.admin.pool, id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !st.enabled {
+        return Ok(());
+    }
+    if l.rules.home_chat_id != Some(st.tg_chat_id) {
+        return Err("Topic is outside the home group".into());
+    }
+    let style = match queued.style.as_deref() {
+        None => None,
+        Some("auto") => Some(Style::Auto),
+        Some("fast") => Some(Style::Fast),
+        Some("think") => Some(Style::Think),
+        Some("heavy") => Some(Style::Heavy),
+        Some("deepsearch") => Some(Style::DeepSearch),
+        _ => return Err("Invalid queued message mode".into()),
+    };
     let msg = InboundMessage {
         chat: ChatRef {
             tg_chat_id: st.tg_chat_id,
@@ -330,12 +488,12 @@ async fn send(
         from_user_id: l.rules.admin_user_id,
         from_name: "Ashrith".into(),
         from_is_bot: false,
-        text,
+        text: queued.text,
         voice: None,
         attachment: None,
-        files: saved,
+        files: queued.files,
         reply_to_message_id: None,
-        sent_at: Utc::now(),
+        sent_at: queued.sent_at,
         command: None,
     };
     let ctx = poller::Ctx {
@@ -351,9 +509,9 @@ async fn send(
     };
     poller::store_and_continue(&ctx, &msg, style)
         .await
-        .map_err(io)?;
-    Ok(Json(json!({"message_id":message_id})))
+        .map_err(|e| e.to_string())
 }
+
 #[derive(Deserialize)]
 struct NewTopic {
     name: String,
