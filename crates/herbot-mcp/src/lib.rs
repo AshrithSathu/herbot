@@ -106,6 +106,17 @@ pub struct ForgetArgs {
     pub id: i64,
 }
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchXArgs {
+    pub caller: String,
+    /// X search syntax, e.g. `"rust 1.99" -is:retweet lang:en`.
+    pub query: String,
+    /// 10 to 100 posts (default 25).
+    pub limit: Option<u32>,
+    /// Most relevant first instead of newest first.
+    pub relevant: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct RecallArgs {
     pub caller: String,
     pub query: Option<String>,
@@ -300,6 +311,29 @@ impl HerbotTools {
         }
     }
     /// List global memories, optionally filtering by a case-insensitive substring.
+    /// Search real-time posts on X (Twitter) from the last seven days, with
+    /// authors, dates, engagement and links. Needs X_BEARER_TOKEN; if it
+    /// isn't set, search the live web for x.com posts instead.
+    #[tool(annotations(read_only_hint = true))]
+    pub async fn search_x(
+        &self,
+        Parameters(args): Parameters<SearchXArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Err(e) = self.caller(&args.caller).await {
+            return hub_error(e);
+        }
+        match herbot_core::xsearch::search_recent(
+            &args.query,
+            args.limit.unwrap_or(25),
+            args.relevant.unwrap_or(false),
+        )
+        .await
+        {
+            Ok(posts) => ok_json(&posts),
+            Err(e) => tool_error(e.to_string()),
+        }
+    }
+
     #[tool(annotations(read_only_hint = true))]
     pub async fn recall(
         &self,
