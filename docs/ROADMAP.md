@@ -76,12 +76,18 @@ Built as part of Step 4: typing indicator, secret scrubbing, splitting, quoted r
 - [x] Inbound lanes (migration 0009 `inbox`): each topic's updates in order, topics side by side, so a long voice note no longer holds up other topics; saved before Telegram is acknowledged and resumed after a crash
 - Done when: ✅ 14 admin API tests (auth, purpose, on/off, wipe, errors, message and error paging, literal search, exact message counters, short list purposes). The browser (e2e) suites were removed on 2026-11-09. ⏳ Ashrith signs in and clicks through it himself.
 
-## Step 9: Isolated bots-T3 and VPS deploy
+## Step 9: Grok parity
+Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstreams (W0 by the lead, W1–W6 by GPT-6.1 Sol sub-agents) on `step-9/grok-parity`.
+- [x] W0 foundation: photos, documents, video and audio reach the agent (saved in the topic's `files/`, video as stills plus transcript); rich Markdown replies; agents send files with `[[file: …]]` (and local Markdown images); modes (`/mode` Fast/Auto/Expert/Heavy, per-topic Codex reasoning effort) and one-message `/fast`, `/think`, `/heavy`, `/deepsearch`; live web search, image generation, image viewing and sub-agents on for every topic (`agents/.codex/config.toml`); AGENTS.md ground rules v5; `/internal/simulate` for offline runs (`HERBOT_SIMULATE=1`)
+- [ ] W1 voice replies, voices, personas · W2 tasks · W3 memory and custom instructions · W4 panel as a chat app · W5 retry/edit/export/search/private/feedback/progress · W6 video generation, stickers, summaries
+- Done when: every row in GROK_PARITY.md is ✅ or ⛔ with a reason, and each feature ran once for real (simulated messages through the live bot).
+
+## Step 10: Isolated bots-T3 and VPS deploy
 - [ ] bots-T3 container: separate user, no host mounts except `bots/`, resource limits, rebuildable
 - [ ] Production `docker-compose`, webhook or long polling, Tailscale-only admin, nightly encrypted Postgres backup
 - [ ] Admin panel on real hardware (deferred from Step 8 on 2026-11-09): iPhone sheet clears the home indicator, the purpose box stays above the keyboard, history flick-scrolls smoothly on a mid-range Android, VoiceOver reads a topic well
 - Done when: a fresh VPS comes up from the README alone.
 
-## Step 10: Hardening
+## Step 11: Hardening
 - [ ] Rate limits, retention job, health alerts to the admin
 - Done when: a week runs with no manual restarts.

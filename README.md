@@ -31,6 +31,11 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 | `/help` | Lists commands |
 | `/new` | Clean slate: deletes this topic's T3 threads and its stored history, and keeps its purpose. Confirm with the **🧹 Yes** button (expires after 10 minutes) or **Cancel** |
 | `/forget` | Same, and also clears the purpose, so the topic sets up again. Same Yes / Cancel buttons |
+| `/mode` | This topic's mode: ⚡ Fast, ✨ Auto, 🧠 Expert or 🏋️ Heavy (sub-agents in parallel), as buttons, or `/mode fast` |
+| `/fast`, `/think`, `/heavy` + question | One message in that mode |
+| `/deepsearch` + question | Researches it across the live web and replies with a cited report, plus the report as a file |
+
+Send photos, documents, videos, GIFs and audio too: they're saved in the topic's folder, and the agent looks at images, reads documents and gets videos as stills plus a transcript. Agents search the live web, generate and edit images, and send back files (images, PDFs, DOCX, charts). See [docs/GROK_PARITY.md](docs/GROK_PARITY.md) for everything Herbot does that Grok does.
 
 ## Setup
 
