@@ -186,6 +186,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_recordings_keep_their_container_type() {
+        let (base, seen) = fake_openai(StatusCode::OK, "Hello").await;
+        let t = OpenAiTranscriber::with_base_url("test".into(), DEFAULT_MODEL.into(), base);
+        assert_eq!(
+            t.transcribe_file(b"webm".to_vec(), "recording.webm", "audio/webm")
+                .await
+                .unwrap(),
+            "Hello"
+        );
+        let seen = seen.lock().unwrap();
+        let body = String::from_utf8_lossy(&seen.body);
+        assert!(body.contains("filename=\"recording.webm\""));
+        assert!(body.contains("Content-Type: audio/webm"));
+    }
+
+    #[tokio::test]
     async fn sends_english_gpt_transcribe_request_and_returns_text() {
         let (base, seen) = fake_openai(StatusCode::OK, "  Make this my research agent.\n").await;
         let t = OpenAiTranscriber::with_base_url("sk-test".into(), DEFAULT_MODEL.into(), base);

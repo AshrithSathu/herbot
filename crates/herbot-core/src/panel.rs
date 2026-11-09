@@ -801,6 +801,36 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn waiting_turns_returns_the_submitted_turn_outcome() {
+        struct ReplyQueue;
+        impl TurnQueue for ReplyQueue {
+            fn submit(&self, job: crate::turns::TurnJob) {
+                job.reply.unwrap().deliver(Ok(job.text));
+            }
+        }
+        let (slot, answer) = crate::turns::ReplySlot::new();
+        let queue = WaitingTurns {
+            inner: &ReplyQueue,
+            reply: Some(slot),
+        };
+        queue.submit(crate::turns::TurnJob {
+            conversation_id: 1,
+            tg_chat_id: -1,
+            topic_id: Some(2),
+            reply_to: 3,
+            text: "this turn only".into(),
+            is_voice: false,
+            sender_name: "Ashrith".into(),
+            sender_id: 1,
+            sent_at: Utc::now(),
+            reply: None,
+            style: None,
+            album: None,
+        });
+        assert_eq!(answer.await.unwrap().unwrap(), "this turn only");
+    }
+
+    #[tokio::test]
     async fn file_paths_reject_traversal_absolute_paths_and_symlink_escape() {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
