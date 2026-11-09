@@ -420,6 +420,7 @@ async fn send_files<A: TelegramApi, R: AgentRunner>(
 ) -> Result<Vec<String>, TurnError> {
     let folder = agents_md::relative_dir(job.tg_chat_id, job.topic_id);
     let mut sent = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for (i, wanted) in file_refs.iter().enumerate() {
         let reply_to = (reply_to_first && i == 0).then_some(job.reply_to);
         let resolved = match outbound_files::resolve(&deps.agents_dir, &folder, wanted).await {
@@ -444,6 +445,9 @@ async fn send_files<A: TelegramApi, R: AgentRunner>(
                 continue;
             }
         };
+        if !seen.insert(resolved.file.path.clone()) {
+            continue; // the same file named twice ([[file]] and an image link)
+        }
         let _ = deps
             .api
             .activity(

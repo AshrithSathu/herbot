@@ -24,6 +24,11 @@ static FILE_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?im)^[ \t]*\[\[file:\s*(.+?)\s*\]\][ \t]*$").expect("file pattern is valid")
 });
 
+/// `![alt](path)` with a local path (how the Codex app shows images it made).
+static LOCAL_IMAGE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?\s*\)").expect("image pattern is valid")
+});
+
 /// A `[[file: path | optional caption]]` line from a reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRef {
@@ -58,7 +63,29 @@ pub fn extract(text: &str) -> (String, Vec<FileRef>) {
         });
     }
     rest.push_str(&text[last..]);
-    (rest.trim().to_string(), files)
+
+    // Markdown images of local files are files to send, not text.
+    let mut out = String::with_capacity(rest.len());
+    let mut last = 0;
+    for m in LOCAL_IMAGE.captures_iter(&rest) {
+        let path = &m[2];
+        let local = !path.contains("://") && !path.starts_with("data:");
+        if !local || files.len() == MAX_FILES {
+            continue;
+        }
+        let whole = m.get(0).expect("match");
+        out.push_str(&rest[last..whole.start()]);
+        last = whole.end();
+        if !files.iter().any(|f| f.path == path) {
+            let alt = m[1].trim();
+            files.push(FileRef {
+                path: path.to_string(),
+                caption: (!alt.is_empty()).then(|| alt.chars().take(1000).collect()),
+            });
+        }
+    }
+    out.push_str(&rest[last..]);
+    (out.trim().to_string(), files)
 }
 
 /// Why a file couldn't be sent, in words for the chat.
@@ -253,5 +280,11 @@ mod tests {
             ]
         );
         assert!(looks_secret("auth.json") && looks_secret(".env.local") && !looks_secret("env.md"));
+
+        let (text, files) = extract(
+            "Done.\n\n![](</Users/a/.codex/generated_images/x/fox.png>) ![logo](https://x.ai/l.png)",
+        );
+        assert_eq!(text, "Done.\n\n ![logo](https://x.ai/l.png)");
+        assert_eq!(files[0].path, "/Users/a/.codex/generated_images/x/fox.png");
     }
 }
