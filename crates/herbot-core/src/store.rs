@@ -59,14 +59,30 @@ impl ConversationStatus {
     }
 }
 
-/// Where a conversation is in "what should I be here?" setup.
+/// Where a conversation is in "what should I be here?" setup
+/// (`conversations.setup_state`). Every transition, and what triggers it:
+///
+/// | from | to | trigger | where |
+/// |---|---|---|---|
+/// | New | Ready | General's first message (default purpose) | `poller::continue_setup` |
+/// | New | AwaitingPurpose | a topic's first message (greeting) | `poller::send_greeting` |
+/// | any | AwaitingPurpose | `/setup` | `poller::send_greeting`, [`begin_setup`] |
+/// | AwaitingPurpose | Ready | a message of 3+ words becomes the purpose | [`set_purpose`] |
+/// | AwaitingPurpose (had a purpose) | Ready | "Keep the current purpose" button | [`keep_purpose`] |
+/// | any | Ready | the admin panel saves a purpose | [`set_purpose`] |
+/// | any | New | `/forget` | [`reset_setup`] |
+///
+/// Ready always has a purpose (`conversations_ready_has_purpose`). Only
+/// Ready hands messages to the agent; while AwaitingPurpose, the next
+/// message is the purpose. See docs/STATE_MACHINES.md for every other one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupState {
     /// Nobody has asked yet.
     New,
     /// The greeting was sent; the next admin message becomes the purpose.
+    /// After `/setup`, the old purpose is still there until it's replaced.
     AwaitingPurpose,
-    /// Has a purpose.
+    /// Has a purpose; messages go to the agent.
     Ready,
 }
 
@@ -76,6 +92,15 @@ impl SetupState {
             "awaiting_purpose" => SetupState::AwaitingPurpose,
             "ready" => SetupState::Ready,
             _ => SetupState::New,
+        }
+    }
+
+    /// The stored name (`conversations.setup_state`, the admin API).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SetupState::New => "new",
+            SetupState::AwaitingPurpose => "awaiting_purpose",
+            SetupState::Ready => "ready",
         }
     }
 }
@@ -240,8 +265,8 @@ struct StatusRow {
 }
 
 /// The status query with `$rest` (a WHERE / ORDER BY literal) appended, as
-/// one static string. At most one thread per conversation is active
-/// (`agent_threads_one_active`), so the join adds no rows.
+/// one static string. A conversation has at most one thread
+/// (`agent_threads_one_per_conversation`), so the join adds no rows.
 macro_rules! status_select {
     ($rest:literal) => {
         concat!(
@@ -252,7 +277,7 @@ macro_rules! status_select {
      FROM conversations v
      JOIN chats c ON c.id = v.chat_id
      LEFT JOIN bots b ON b.id = v.bot_id
-     LEFT JOIN agent_threads t ON t.conversation_id = v.id AND t.status = 'active' ",
+     LEFT JOIN agent_threads t ON t.conversation_id = v.id ",
             $rest
         )
     };
@@ -339,23 +364,46 @@ pub async fn find_conversation(
     .await
 }
 
-/// Marks setup as started and remembers the greeting message (for removing
-/// its buttons later).
+/// Marks setup as started (→ AwaitingPurpose) and remembers the prompt
+/// message, if it has a button. Returns the previous prompt's message id, if
+/// it had one, so its button can be removed.
 pub async fn begin_setup(
     pool: &PgPool,
     conversation_id: i64,
     prompt_message_id: Option<i32>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE conversations
+) -> Result<Option<i32>, sqlx::Error> {
+    let old: Option<Option<i32>> = sqlx::query_scalar(
+        "UPDATE conversations c
          SET setup_state = 'awaiting_purpose', setup_prompt_tg_message_id = $2
-         WHERE id = $1",
+         FROM (SELECT id, setup_prompt_tg_message_id AS old FROM conversations WHERE id = $1) o
+         WHERE c.id = o.id
+         RETURNING o.old",
     )
     .bind(conversation_id)
     .bind(prompt_message_id)
-    .execute(pool)
+    .fetch_optional(pool)
+    .await?;
+    Ok(old.flatten())
+}
+
+/// "Keep the current purpose" after `/setup`: back to Ready with the purpose
+/// unchanged. Only from AwaitingPurpose with a purpose to keep; returns the
+/// prompt's message id (to remove its button), or `None` if the move isn't
+/// allowed any more (already replaced, kept, or forgotten).
+pub async fn keep_purpose(
+    pool: &PgPool,
+    conversation_id: i64,
+) -> Result<Option<Option<i32>>, sqlx::Error> {
+    sqlx::query_scalar(
+        "UPDATE conversations c
+         SET setup_state = 'ready', setup_prompt_tg_message_id = NULL
+         FROM (SELECT id, setup_prompt_tg_message_id AS old FROM conversations WHERE id = $1) o
+         WHERE c.id = o.id AND c.setup_state = 'awaiting_purpose' AND c.purpose IS NOT NULL
+         RETURNING o.old",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pool)
     .await
-    .map(|_| ())
 }
 
 /// Saves the purpose and finishes setup. Returns the greeting message ID, if
@@ -484,14 +532,15 @@ pub async fn active_thread(
 ) -> Result<Option<ActiveThread>, sqlx::Error> {
     sqlx::query_as::<_, ActiveThread>(
         "SELECT id, t3_thread_id, created_at, last_turn_at FROM agent_threads
-         WHERE conversation_id = $1 AND status = 'active'",
+         WHERE conversation_id = $1",
     )
     .bind(conversation_id)
     .fetch_optional(pool)
     .await
 }
 
-/// Records a newly started thread as the conversation's active one.
+/// Records a newly started thread as the conversation's thread (it has at
+/// most one; `/new` and `/forget` delete it).
 pub async fn insert_thread(
     pool: &PgPool,
     conversation_id: i64,
@@ -517,41 +566,6 @@ pub async fn touch_thread(pool: &PgPool, thread_row_id: i64) -> Result<(), sqlx:
         .execute(pool)
         .await
         .map(|_| ())
-}
-
-/// `/new`: archives the active thread. Returns its T3 id if there was one.
-pub async fn archive_thread(
-    pool: &PgPool,
-    conversation_id: i64,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "UPDATE agent_threads SET status = 'archived', archived_at = now()
-         WHERE conversation_id = $1 AND status = 'active'
-         RETURNING t3_thread_id",
-    )
-    .bind(conversation_id)
-    .fetch_optional(pool)
-    .await
-}
-
-/// `/forget`: deletes the conversation's stored messages and archives its
-/// thread. Returns how many messages were deleted.
-pub async fn forget_conversation(pool: &PgPool, conversation_id: i64) -> Result<u64, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let deleted = sqlx::query("DELETE FROM messages WHERE conversation_id = $1")
-        .bind(conversation_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    sqlx::query(
-        "UPDATE agent_threads SET status = 'archived', archived_at = now()
-         WHERE conversation_id = $1 AND status = 'active'",
-    )
-    .bind(conversation_id)
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(deleted)
 }
 
 pub async fn mark_project_registered(
@@ -628,8 +642,8 @@ pub async fn create_question(
     options: &[String],
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
-        "INSERT INTO pending_questions (thread_id, source, question, options)
-         VALUES ($1, 'ask_admin', $2, $3) RETURNING id",
+        "INSERT INTO pending_questions (thread_id, question, options)
+         VALUES ($1, $2, $3) RETURNING id",
     )
     .bind(thread_row_id)
     .bind(question)
@@ -765,7 +779,7 @@ pub async fn reset_setup(
     Ok(old.flatten())
 }
 
-/// Every T3 thread Herbot started for a conversation (active or archived).
+/// Every T3 thread Herbot started for a conversation (at most one).
 pub async fn all_thread_ids(
     pool: &PgPool,
     conversation_id: i64,

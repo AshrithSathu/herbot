@@ -182,11 +182,16 @@ impl TelegramApi for BotApi {
     }
 
     async fn remove_buttons(&self, chat_id: i64, message_id: i32) -> Result<(), ApiError> {
-        self.0
+        match self
+            .0
             .edit_message_reply_markup(ChatId(chat_id), MessageId(message_id))
             .await
-            .map(|_| ())
-            .map_err(api_err)
+        {
+            Ok(_) => Ok(()),
+            // Already without buttons (a double tap, a second cleanup): done.
+            Err(teloxide::RequestError::Api(teloxide::ApiError::MessageNotModified)) => Ok(()),
+            Err(err) => Err(api_err(err)),
+        }
     }
 
     async fn answer_button(&self, callback_id: &str, toast: Option<&str>) -> Result<(), ApiError> {
@@ -588,13 +593,35 @@ async fn save_purpose<A: TelegramApi, T: Transcriber>(
     Ok(old_prompt)
 }
 
+/// Asks what the conversation should be (→ AwaitingPurpose). With a purpose
+/// already set (`/setup`), it says the next message replaces it and offers a
+/// "Keep the current purpose" button back to Ready.
 async fn send_greeting<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     status: &ConversationStatus,
 ) -> Result<(), HandleError> {
-    reply(ctx, msg, &setup::greeting(&status.place())).await?;
-    store::begin_setup(ctx.pool, status.conversation_id, None).await?;
+    let prompt = match status.purpose {
+        None => {
+            reply(ctx, msg, &setup::greeting(&status.place())).await?;
+            None
+        }
+        Some(_) => Some(
+            ctx.api
+                .send_buttons(
+                    msg.chat.tg_chat_id,
+                    msg.topic_id,
+                    Some(msg.message_id),
+                    &setup::new_purpose_prompt(&status.place()),
+                    &setup::keep_button(status.conversation_id),
+                )
+                .await?,
+        ),
+    };
+    if let Some(older) = store::begin_setup(ctx.pool, status.conversation_id, prompt).await? {
+        // A second /setup: only the newest prompt keeps its button.
+        ctx.api.remove_buttons(msg.chat.tg_chat_id, older).await?;
+    }
     tracing::info!(
         conversation_id = status.conversation_id,
         "asked what this conversation is for"
@@ -613,6 +640,9 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     let chat = press.chat.tg_chat_id;
     if let Some(tap) = wipe::parse(&press.data) {
         return handle_wipe_tap(ctx, press, tap).await;
+    }
+    if let Some(conversation_id) = setup::parse_keep(&press.data) {
+        return handle_keep_tap(ctx, press, conversation_id).await;
     }
     let Some((question_id, index)) = turns::parse_answer_button(&press.data) else {
         ctx.api
@@ -655,6 +685,39 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
         sent_at: Utc::now(),
         reply: None,
     });
+    Ok(())
+}
+
+/// "Keep the current purpose": AwaitingPurpose → Ready, only in its own topic
+/// and only while there's still a purpose waiting to be replaced.
+async fn handle_keep_tap<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    press: &ButtonPress,
+    conversation_id: i64,
+) -> Result<(), HandleError> {
+    let chat = press.chat.tg_chat_id;
+    let here = store::find_conversation(ctx.pool, chat, press.topic_id).await?;
+    if here != Some(conversation_id) {
+        ctx.api
+            .answer_button(&press.callback_id, Some(setup::OTHER_TOPIC_TOAST))
+            .await?;
+        return Ok(());
+    }
+    match store::keep_purpose(ctx.pool, conversation_id).await? {
+        Some(_) => {
+            ctx.api
+                .edit_text(chat, press.message_id, setup::KEPT)
+                .await?;
+            ctx.api.answer_button(&press.callback_id, None).await?;
+            tracing::info!(conversation_id, "kept the current purpose");
+        }
+        None => {
+            ctx.api
+                .answer_button(&press.callback_id, Some(setup::NOTHING_TO_KEEP_TOAST))
+                .await?;
+            ctx.api.remove_buttons(chat, press.message_id).await?;
+        }
+    }
     Ok(())
 }
 

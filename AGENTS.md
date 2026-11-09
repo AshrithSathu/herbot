@@ -18,6 +18,8 @@ Telegram Bot API ⇄ crates/herbot-core (Rust, teloxide) ⇄ bots-T3 (Codex, ful
 | `apps/admin` | Admin panel: TanStack Query for data, shadcn/ui on Tailwind v4, `server.mjs` for production | TanStack Start on Bun (runtime and package manager) |
 | `bots/<slug>/` | One T3 project per bot persona. `AGENTS.md` there is the persona. | Markdown |
 
+**State machines:** [docs/STATE_MACHINES.md](docs/STATE_MACHINES.md) lists every one (topic setup, threads, choice buttons, wipe confirmations, turns, incoming updates, the panel's), with each transition and where it's enforced. Read it before changing how a conversation moves between states, and update it in the same commit. The schema allows only reachable states.
+
 A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no topic. In a forum supergroup, each topic is its own conversation, and "General" has no topic ID.
 
 ## Models and voice

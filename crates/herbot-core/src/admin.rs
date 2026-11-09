@@ -116,7 +116,7 @@ async fn overview(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> R
         "SELECT (SELECT count(*) FROM conversations),
                 (SELECT count(*) FROM conversations WHERE enabled),
                 (SELECT coalesce(sum(message_count), 0)::bigint FROM conversations),
-                (SELECT count(*) FROM agent_threads WHERE status = 'active'),
+                (SELECT count(*) FROM agent_threads),
                 (SELECT count(*) FROM errors WHERE created_at > now() - interval '24 hours')",
     )
     .fetch_one(&state.pool)
@@ -154,14 +154,6 @@ struct ConversationSummary {
     thread_link: Option<String>,
 }
 
-fn state_name(state: store::SetupState) -> &'static str {
-    match state {
-        store::SetupState::New => "new",
-        store::SetupState::AwaitingPurpose => "awaiting_purpose",
-        store::SetupState::Ready => "ready",
-    }
-}
-
 impl ConversationSummary {
     /// With the full purpose (detail and edits), or a short one (the list,
     /// which shows two lines and is polled).
@@ -174,7 +166,7 @@ impl ConversationSummary {
                 Some(n) => shorten(p, n),
                 None => p.to_string(),
             }),
-            setup_state: state_name(status.setup_state),
+            setup_state: status.setup_state.as_str(),
             enabled: status.enabled,
             messages: status.message_count,
             last_activity: status.last_message_at,

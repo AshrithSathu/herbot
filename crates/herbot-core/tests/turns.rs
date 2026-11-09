@@ -321,12 +321,12 @@ async fn first_message_starts_a_thread_in_the_topic_folder_and_replies(pool: PgP
         )]
     );
 
-    let (thread, link, status): (String, Option<String>, String) =
-        sqlx::query_as("SELECT t3_thread_id, t3_link, status FROM agent_threads")
+    let (thread, link): (String, Option<String>) =
+        sqlx::query_as("SELECT t3_thread_id, t3_link FROM agent_threads")
             .fetch_one(&h.deps.pool)
             .await
             .unwrap();
-    assert_eq!((thread.as_str(), status.as_str()), ("t3-1", "active"));
+    assert_eq!(thread, "t3-1");
     assert_eq!(
         link.as_deref(),
         Some("https://app.t3.codes/threads/env/t3-1")
@@ -521,7 +521,8 @@ async fn replies_are_scrubbed_and_split(pool: PgPool) {
 async fn after_new_the_next_message_starts_a_fresh_thread(pool: PgPool) {
     let h = H::new(pool).await;
     run_turn(&h.deps, job(1, Some(7), 30, "one")).await;
-    herbot_core::store::archive_thread(&h.deps.pool, 1)
+    // What /new does to the database once T3 has deleted the thread.
+    herbot_core::store::wipe_conversation(&h.deps.pool, 1)
         .await
         .unwrap();
     run_turn(&h.deps, job(1, Some(7), 31, "two")).await;
@@ -533,11 +534,7 @@ async fn after_new_the_next_message_starts_a_fresh_thread(pool: PgPool) {
         .filter(|c| matches!(c, RunnerCall::Start { .. }))
         .count();
     assert_eq!(starts, 2);
-    assert_eq!(
-        h.count("SELECT count(*) FROM agent_threads WHERE status = 'active'")
-            .await,
-        1
-    );
+    assert_eq!(h.count("SELECT count(*) FROM agent_threads").await, 1);
 }
 
 // ---- caller token and reply slots (Step 7) ----

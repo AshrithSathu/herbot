@@ -30,6 +30,34 @@ pub fn greeting(place: &str) -> String {
     )
 }
 
+/// `/setup` on a conversation that already has a purpose: says plainly that
+/// the next message replaces it, and offers a way out ([`keep_button`]).
+pub fn new_purpose_prompt(place: &str) -> String {
+    format!(
+        "✏️ What should {place} be now?\n\n\
+         Your next message (typed or a voice note) replaces the current purpose. \
+         Changed your mind? Tap Keep the current purpose."
+    )
+}
+
+pub const KEEP_LABEL: &str = "Keep the current purpose";
+pub const KEPT: &str = "👍 Kept the current purpose. Messages go to the agent again.";
+pub const OTHER_TOPIC_TOAST: &str = "That button belongs to another topic.";
+pub const NOTHING_TO_KEEP_TOAST: &str = "Nothing to keep: the purpose was already set or cleared.";
+
+/// The "Keep the current purpose" button under [`new_purpose_prompt`].
+pub fn keep_button(conversation_id: i64) -> Vec<Vec<(String, String)>> {
+    vec![vec![(
+        KEEP_LABEL.to_string(),
+        format!("setup:keep:{conversation_id}"),
+    )]]
+}
+
+/// The conversation a "Keep the current purpose" tap is for.
+pub fn parse_keep(data: &str) -> Option<i64> {
+    data.strip_prefix("setup:keep:")?.parse().ok()
+}
+
 /// Telegram caps messages at 4096 characters; echoes stay well under it.
 const ECHO_LIMIT: usize = 1500;
 
@@ -107,6 +135,15 @@ pub fn validate_purpose(text: &str) -> Result<String, PurposeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keep_buttons_round_trip() {
+        let data = &keep_button(42)[0][0].1;
+        assert_eq!(parse_keep(data), Some(42));
+        assert_eq!(parse_keep("setup:keep:x"), None);
+        assert_eq!(parse_keep("ans:1:0"), None);
+        assert!(data.len() <= 64, "Telegram's callback data limit");
+    }
 
     #[test]
     fn purposes_are_trimmed_and_bounded() {

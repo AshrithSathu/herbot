@@ -26,7 +26,7 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 
 | Command | Does |
 |---|---|
-| `/setup` | Tell it (again) what this topic is for, typed or by voice |
+| `/setup` | Tell it (again) what this topic is for, typed or by voice. Your next message replaces the purpose; **Keep the current purpose** backs out |
 | `/status` | Shows this conversation's place, purpose, AGENTS.md path, model and message count |
 | `/help` | Lists commands |
 | `/new` | Clean slate: deletes this topic's T3 threads and its stored history, and keeps its purpose. Confirm with the **🧹 Yes** button (expires after 10 minutes) or **Cancel** |

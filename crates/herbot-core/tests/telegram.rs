@@ -804,7 +804,15 @@ async fn setup_command_rewrites_the_agents_md(pool: PgPool) {
     h.api.clear();
 
     h.run(&["admin_setup_in_topic"]).await;
-    assert_eq!(h.api.sent_texts(), [setup::greeting("Herbot HQ › topic 7")]);
+    // It already has a purpose: say the next message replaces it, with a way out.
+    assert_eq!(
+        h.api.calls(),
+        [Call::SendButtons {
+            chat: HQ,
+            text: setup::new_purpose_prompt("Herbot HQ › topic 7"),
+            rows: setup::keep_button(topic7_id(&h).await),
+        }]
+    );
     let (_, state, _, _) = h.setup_row(Some(7)).await;
     assert_eq!(state, "awaiting_purpose");
 
@@ -818,6 +826,119 @@ async fn setup_command_rewrites_the_agents_md(pool: PgPool) {
     assert!(
         md.contains("what about rmcp?") && !md.contains("and compare them"),
         "{md}"
+    );
+}
+
+async fn topic7_id(h: &H) -> i64 {
+    h.count("SELECT id FROM conversations WHERE tg_topic_id = 7")
+        .await
+}
+
+/// A tap on "Keep the current purpose" (on bot message 500).
+fn keep_tap(conversation_id: i64) -> Update {
+    let mut update = fixture("button_research_topic7");
+    if let teloxide::types::UpdateKind::CallbackQuery(q) = &mut update.kind {
+        q.data = Some(setup::keep_button(conversation_id)[0][0].1.clone());
+    }
+    update
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn after_setup_the_current_purpose_can_be_kept(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    let (before, ..) = h.setup_row(Some(7)).await;
+    h.run(&["admin_setup_in_topic"]).await;
+    let (_, state, prompt, _) = h.setup_row(Some(7)).await;
+    assert_eq!((state.as_str(), prompt), ("awaiting_purpose", Some(900)));
+    h.api.clear();
+
+    let id = topic7_id(&h).await;
+    assert!(
+        poller::process(&h.ctx(LOCKED), &keep_tap(id))
+            .await
+            .is_none()
+    );
+    assert_eq!(
+        h.api.calls()[0],
+        Call::Edit {
+            chat: HQ,
+            message_id: 500,
+            text: setup::KEPT.to_string(),
+        }
+    );
+    let (after, state, prompt, _) = h.setup_row(Some(7)).await;
+    assert_eq!((state.as_str(), prompt), ("ready", None));
+    assert_eq!(after, before, "the purpose is unchanged");
+
+    // Messages go to the agent again instead of becoming the purpose.
+    let turns = h.jobs.all().len();
+    h.run(&["admin_topic_third"]).await;
+    assert_eq!(h.jobs.all().len(), turns + 1);
+    assert_eq!(h.setup_row(Some(7)).await.0, before);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn keep_does_nothing_once_the_purpose_was_replaced(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&[
+        "admin_topic_text",
+        "admin_topic_reply",
+        "admin_setup_in_topic",
+        "admin_topic_third",
+    ])
+    .await;
+    let (replaced, state, _, _) = h.setup_row(Some(7)).await;
+    assert_eq!(
+        (replaced.as_deref(), state.as_str()),
+        (Some("what about rmcp?"), "ready")
+    );
+    h.api.clear();
+
+    let id = topic7_id(&h).await;
+    assert!(
+        poller::process(&h.ctx(LOCKED), &keep_tap(id))
+            .await
+            .is_none()
+    );
+    let calls = h.api.calls();
+    assert!(
+        matches!(&calls[0], Call::Answer { toast: Some(t), .. } if t == setup::NOTHING_TO_KEEP_TOAST),
+        "{calls:?}"
+    );
+    assert_eq!(
+        calls[1],
+        Call::RemoveButtons {
+            chat: HQ,
+            message_id: 500
+        }
+    );
+    assert_eq!(
+        h.setup_row(Some(7)).await.0.as_deref(),
+        Some("what about rmcp?")
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_second_setup_leaves_one_keep_button(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&[
+        "admin_topic_text",
+        "admin_topic_reply",
+        "admin_setup_in_topic",
+    ])
+    .await;
+    h.api.clear();
+    h.run(&["admin_setup_in_topic"]).await;
+    let calls = h.api.calls();
+    assert!(matches!(calls[0], Call::SendButtons { .. }), "{calls:?}");
+    // The first prompt (the fake numbers every sent message 900) loses its button.
+    assert_eq!(
+        calls[1],
+        Call::RemoveButtons {
+            chat: HQ,
+            message_id: 900
+        }
     );
 }
 
@@ -1305,8 +1426,8 @@ async fn open_question(h: &H) -> i64 {
     .await
     .unwrap();
     let id: i64 = sqlx::query_scalar(
-        r#"INSERT INTO pending_questions (thread_id, source, question, options, tg_message_id)
-           SELECT id, 'ask_admin', 'There are 42 old logs.',
+        r#"INSERT INTO pending_questions (thread_id, question, options, tg_message_id)
+           SELECT id, 'There are 42 old logs.',
                   '["Delete all", "Only older than 30 days", "Keep them"]', 500
            FROM agent_threads WHERE t3_thread_id = 't3-q' RETURNING id"#,
     )
