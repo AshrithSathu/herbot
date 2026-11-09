@@ -114,6 +114,34 @@ pub fn split(text: &str, max_chars: usize) -> Vec<String> {
     parts
 }
 
+/// Like [`split`], but a code block cut in two is closed at the end of one
+/// part and reopened (same language) at the start of the next, so each part
+/// renders on its own.
+pub fn split_markdown(text: &str, max_chars: usize) -> Vec<String> {
+    let mut parts = split(text, max_chars);
+    let mut carry: Option<String> = None; // a fence left open by the last part
+    for part in parts.iter_mut() {
+        if let Some(fence) = carry.take() {
+            *part = format!("{fence}\n{part}");
+        }
+        let mut open: Option<String> = None;
+        for line in part.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") {
+                open = match open {
+                    Some(_) => None,
+                    None => Some(trimmed.to_string()),
+                };
+            }
+        }
+        if let Some(fence) = open {
+            part.push_str("\n```");
+            carry = Some(fence);
+        }
+    }
+    parts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

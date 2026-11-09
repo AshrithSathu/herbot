@@ -18,7 +18,10 @@ use tokio::sync::{mpsc, oneshot};
 use crate::agent::{AgentError, AgentRunner, TurnOutcome, TurnResult};
 use crate::agents_md;
 use crate::errors;
+use crate::format;
+use crate::media::{Activity, FileKind};
 use crate::meta::{self, Meta};
+use crate::outbound_files;
 use crate::outgoing;
 use crate::poller::{ApiError, TelegramApi};
 use crate::store;
@@ -330,15 +333,28 @@ async fn deliver<A: TelegramApi, R: AgentRunner>(
         );
     }
     let (body, choices) = outgoing::extract_choices(&clean);
-    let parts = outgoing::split(&body, outgoing::MAX_MESSAGE_CHARS);
+    let (body, file_refs) = outbound_files::extract(&body);
+    let mut parts = outgoing::split_markdown(&body, outgoing::MAX_MESSAGE_CHARS);
+    if parts.is_empty() && choices.is_some() {
+        parts.push("Pick one:".to_string());
+    }
     let last = parts.len().saturating_sub(1);
     for (i, part) in parts.iter().enumerate() {
         let reply_to = (i == 0).then_some(job.reply_to);
+        // Markdown rendered for Telegram; plain text if it would run long.
+        let html = format::to_html(part);
+        let html = if format::visible_len(&html) <= format::TELEGRAM_MAX_CHARS {
+            html
+        } else {
+            format::escape(part)
+        };
         let sent_id = match (&choices, i == last) {
-            (Some(options), true) => send_with_choices(deps, job, reply_to, part, options).await?,
+            (Some(options), true) => {
+                send_with_choices(deps, job, reply_to, part, &html, options).await?
+            }
             _ => {
                 deps.api
-                    .send_text(job.tg_chat_id, job.topic_id, reply_to, part)
+                    .send_rich(job.tg_chat_id, job.topic_id, reply_to, &html, part)
                     .await?
             }
         };
@@ -351,12 +367,102 @@ async fn deliver<A: TelegramApi, R: AgentRunner>(
         )
         .await?;
     }
+
+    let sent_files = send_files(deps, job, &file_refs, parts.is_empty()).await?;
     // What the caller of `ask_topic` gets back: the reply as sent, with the
-    // options listed (they were buttons in Telegram).
-    Ok(match choices {
+    // options listed (they were buttons in Telegram) and the files named.
+    let mut said = match choices {
         Some(options) => format!("{body}\n\n(Options offered: {})", options.join(" | ")),
         None => body,
-    })
+    };
+    if !sent_files.is_empty() {
+        said.push_str(&format!("\n\n(Files sent: {})", sent_files.join(", ")));
+    }
+    Ok(said)
+}
+
+/// Sends the files a reply named with `[[file: …]]`, after its text. A file
+/// that can't be sent is reported in the chat with an error id; the others
+/// still go. Returns the names of the files sent.
+async fn send_files<A: TelegramApi, R: AgentRunner>(
+    deps: &TurnDeps<A, R>,
+    job: &TurnJob,
+    file_refs: &[outbound_files::FileRef],
+    reply_to_first: bool,
+) -> Result<Vec<String>, TurnError> {
+    let folder = agents_md::relative_dir(job.tg_chat_id, job.topic_id);
+    let mut sent = Vec::new();
+    for (i, wanted) in file_refs.iter().enumerate() {
+        let reply_to = (reply_to_first && i == 0).then_some(job.reply_to);
+        let resolved = match outbound_files::resolve(&deps.agents_dir, &folder, wanted).await {
+            Ok(resolved) => resolved,
+            Err(why) => {
+                let context = json!({
+                    "conversation_id": job.conversation_id,
+                    "path": wanted.path,
+                    "error": why.to_string(),
+                });
+                let id =
+                    errors::record(&deps.pool, "agent.file", &why.to_string(), context).await?;
+                tracing::warn!(error_id = %id, path = %wanted.path, "agent named a file that can't be sent");
+                deps.api
+                    .send_text(
+                        job.tg_chat_id,
+                        job.topic_id,
+                        reply_to,
+                        &format!("⚠️ Couldn't send a file ({id}): {why}."),
+                    )
+                    .await?;
+                continue;
+            }
+        };
+        let _ = deps
+            .api
+            .activity(
+                job.tg_chat_id,
+                job.topic_id,
+                Activity::sending(resolved.file.kind),
+            )
+            .await;
+        let mut file = resolved.file.clone();
+        let sent_id = match deps
+            .api
+            .send_file(job.tg_chat_id, job.topic_id, reply_to, &file)
+            .await
+        {
+            Ok(id) => id,
+            // Telegram refuses some images as photos (odd sizes, ratios);
+            // they still arrive, as a file.
+            Err(_) if file.kind == FileKind::Photo => {
+                file.kind = FileKind::Document;
+                deps.api
+                    .send_file(job.tg_chat_id, job.topic_id, reply_to, &file)
+                    .await?
+            }
+            Err(err) => return Err(err.into()),
+        };
+        let body = wanted
+            .caption
+            .clone()
+            .unwrap_or_else(|| format!("[{}: {}]", resolved.saved.kind, resolved.saved.name));
+        store::store_bot_file(
+            &deps.pool,
+            job.conversation_id,
+            sent_id,
+            deps.bot_user_id,
+            &body,
+            &resolved.saved,
+        )
+        .await?;
+        tracing::info!(
+            conversation_id = job.conversation_id,
+            kind = resolved.saved.kind,
+            name = %resolved.saved.name,
+            "sent a file"
+        );
+        sent.push(resolved.saved.name);
+    }
+    Ok(sent)
 }
 
 /// Sends the last part of a reply with one button per option, and opens a
@@ -366,6 +472,7 @@ async fn send_with_choices<A: TelegramApi, R: AgentRunner>(
     job: &TurnJob,
     reply_to: Option<i32>,
     text: &str,
+    html: &str,
     options: &[String],
 ) -> Result<i32, TurnError> {
     let thread = store::active_thread(&deps.pool, job.conversation_id)
@@ -381,7 +488,7 @@ async fn send_with_choices<A: TelegramApi, R: AgentRunner>(
         .collect();
     let sent_id = deps
         .api
-        .send_buttons(job.tg_chat_id, job.topic_id, reply_to, text, &rows)
+        .send_rich_buttons(job.tg_chat_id, job.topic_id, reply_to, html, text, &rows)
         .await?;
     store::set_question_message(&deps.pool, question_id, sent_id).await?;
     tracing::info!(

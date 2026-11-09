@@ -125,6 +125,20 @@ pub trait TelegramApi: Send + Sync {
         self.send_text(chat_id, topic_id, reply_to, plain)
     }
 
+    /// Formatted text with inline buttons (plain if it won't parse).
+    fn send_rich_buttons(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        html: &str,
+        plain: &str,
+        rows: &[Vec<(String, String)>],
+    ) -> impl Future<Output = Result<i32, ApiError>> + Send {
+        let _ = html;
+        self.send_buttons(chat_id, topic_id, reply_to, plain, rows)
+    }
+
     /// Replaces a bot message with formatted text (plain if it won't parse).
     fn edit_rich(
         &self,
@@ -311,6 +325,44 @@ impl TelegramApi for BotApi {
             Err(teloxide::RequestError::Api(teloxide::ApiError::CantParseEntities(why))) => {
                 tracing::warn!(%why, "Telegram couldn't parse the formatting; sending plain text");
                 self.send_text(chat_id, topic_id, reply_to, plain).await
+            }
+            Err(err) => Err(api_err(err)),
+        }
+    }
+
+    async fn send_rich_buttons(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        html: &str,
+        plain: &str,
+        rows: &[Vec<(String, String)>],
+    ) -> Result<i32, ApiError> {
+        let keyboard = InlineKeyboardMarkup::new(rows.iter().map(|row| {
+            row.iter()
+                .map(|(label, data)| InlineKeyboardButton::callback(label.clone(), data.clone()))
+                .collect::<Vec<_>>()
+        }));
+        let mut req = self
+            .0
+            .send_message(ChatId(chat_id), html)
+            .parse_mode(ParseMode::Html)
+            .link_preview_options(no_previews())
+            .reply_markup(keyboard);
+        if let Some(topic) = topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(topic)));
+        }
+        if let Some(reply) = reply_to {
+            req = req.reply_parameters(
+                ReplyParameters::new(MessageId(reply)).allow_sending_without_reply(),
+            );
+        }
+        match req.await {
+            Ok(m) => Ok(m.id.0),
+            Err(teloxide::RequestError::Api(teloxide::ApiError::CantParseEntities(_))) => {
+                self.send_buttons(chat_id, topic_id, reply_to, plain, rows)
+                    .await
             }
             Err(err) => Err(api_err(err)),
         }
