@@ -47,6 +47,8 @@ pub fn router(state: Arc<AdminState>) -> Router {
         .route("/admin/api/conversations", get(conversations))
         .route("/admin/api/conversations/{id}", get(conversation))
         .route("/admin/api/conversations/{id}/messages", get(messages))
+        .route("/admin/api/conversations/{id}/export", get(export))
+        .route("/admin/api/conversations/{id}/feedback", get(feedback))
         .route("/admin/api/conversations/{id}/purpose", put(set_purpose))
         .route("/admin/api/conversations/{id}/enabled", put(set_enabled))
         .route(
@@ -577,4 +579,59 @@ async fn error(
         },
         Err(e) => db_fail(e),
     }
+}
+
+#[derive(Deserialize)]
+struct ExportQuery {
+    format: Option<String>,
+}
+async fn export(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Query(query): Query<ExportQuery>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !authorized(&headers, &state.token) {
+        return fail(StatusCode::UNAUTHORIZED, "bad admin token").into_response();
+    }
+    let html = match query.format.as_deref().unwrap_or("md") {
+        "md" => false,
+        "html" => true,
+        _ => return fail(StatusCode::BAD_REQUEST, "format must be md or html").into_response(),
+    };
+    match crate::actions::export(&state.pool, id, html).await {
+        Ok(body) => {
+            let (mime, file) = if html {
+                (
+                    "text/html; charset=utf-8",
+                    "attachment; filename=conversation.html",
+                )
+            } else {
+                (
+                    "text/markdown; charset=utf-8",
+                    "attachment; filename=conversation.md",
+                )
+            };
+            (
+                [("content-type", mime), ("content-disposition", file)],
+                body,
+            )
+                .into_response()
+        }
+        Err(sqlx::Error::RowNotFound) => {
+            fail(StatusCode::NOT_FOUND, "no such conversation").into_response()
+        }
+        Err(e) => db_fail(e).into_response(),
+    }
+}
+async fn feedback(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Reply {
+    guard!(headers, state);
+    type FeedbackRow = (i64, i32, Value, DateTime<Utc>);
+    let rows: Result<Vec<FeedbackRow>, _> = sqlx::query_as("SELECT m.id,m.tg_message_id,f.reactions,f.updated_at FROM feedback f JOIN messages m ON m.id=f.message_id WHERE m.conversation_id=$1 ORDER BY f.updated_at DESC").bind(id).fetch_all(&state.pool).await;
+    match rows {Ok(rows)=>ok(rows.into_iter().map(|(id,tg,reactions,updated)|json!({"message_id":id,"tg_message_id":tg,"reactions":reactions,"updated_at":updated})).collect::<Vec<_>>()),Err(e)=>db_fail(e)}
 }

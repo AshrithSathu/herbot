@@ -13,6 +13,8 @@ pub enum StoreOutcome {
         conversation_id: i64,
         message_row_id: i64,
     },
+    /// Forwarded without retaining history.
+    Private { conversation_id: i64 },
     /// Telegram re-delivered an update we already have.
     Duplicate { conversation_id: i64 },
     /// The admin turned this chat or conversation off in the admin panel.
@@ -204,6 +206,9 @@ pub async fn store_message(
         return Ok(StoreOutcome::Disabled);
     }
 
+    if is_private(pool, conversation_id).await? {
+        return Ok(StoreOutcome::Private { conversation_id });
+    }
     let inserted: Option<i64> = sqlx::query_scalar(
         "INSERT INTO messages
              (conversation_id, tg_message_id, from_tg_user_id, body, reply_to_tg_message_id, sent_at, is_voice, attachments)
@@ -802,6 +807,12 @@ pub async fn wipe_conversation(pool: &PgPool, conversation_id: i64) -> Result<Wi
         .execute(&mut *tx)
         .await?
         .rows_affected();
+    sqlx::query(
+        "UPDATE conversations SET retry_message_id=NULL,negative_feedback=false WHERE id=$1",
+    )
+    .bind(conversation_id)
+    .execute(&mut *tx)
+    .await?;
     // pending_questions go with their threads (ON DELETE CASCADE).
     let threads = sqlx::query("DELETE FROM agent_threads WHERE conversation_id = $1")
         .bind(conversation_id)
@@ -847,4 +858,12 @@ pub async fn all_thread_ids(
     .bind(conversation_id)
     .fetch_all(pool)
     .await
+}
+
+/// Shared privacy gate for memory/history tools. Database failures must propagate.
+pub async fn is_private(pool: &PgPool, conversation_id: i64) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT private_mode FROM conversations WHERE id=$1")
+        .bind(conversation_id)
+        .fetch_one(pool)
+        .await
 }

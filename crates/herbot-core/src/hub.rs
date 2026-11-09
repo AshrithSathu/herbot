@@ -54,6 +54,7 @@ pub async fn resolve_caller(pool: &PgPool, token: &str) -> Result<Caller, HubErr
     .fetch_optional(pool)
     .await?;
     let (conversation_id, chat_row_id, topic) = row.ok_or(HubError::UnknownCaller)?;
+    require_public(pool, conversation_id).await?;
     let place = store::conversation_status_by_id(pool, conversation_id)
         .await?
         .place();
@@ -80,6 +81,7 @@ pub struct TopicSummary {
 /// Every conversation in the caller's group: General first, then the most
 /// recently active topics.
 pub async fn list_topics(pool: &PgPool, caller: &Caller) -> Result<Vec<TopicSummary>, HubError> {
+    require_public(pool, caller.conversation_id).await?;
     let topics = store::group_conversations(pool, caller.chat_row_id)
         .await?
         .into_iter()
@@ -136,6 +138,7 @@ async fn allowed_target(
     caller: &Caller,
     topic: Option<&str>,
 ) -> Result<Option<i64>, HubError> {
+    require_public(pool, caller.conversation_id).await?;
     match (caller.is_general, topic) {
         (true, None) => Ok(None), // General: everything
         (true, Some(reference)) => Ok(Some(resolve_topic(pool, caller, reference).await?)),
@@ -189,6 +192,7 @@ pub async fn search(
         "SELECT m.conversation_id, m.sent_at, m.from_bot, m.body
          FROM messages m JOIN conversations v ON v.id = m.conversation_id
          WHERE v.chat_id = $1
+           AND NOT v.private_mode
            AND ($2::bigint IS NULL OR m.conversation_id = $2)
            AND (m.search @@ websearch_to_tsquery('simple', $3) OR m.body ILIKE '%' || $3 || '%')
          ORDER BY m.sent_at DESC, m.id DESC
@@ -215,6 +219,7 @@ pub async fn read(
     let target = allowed_target(pool, caller, topic)
         .await?
         .unwrap_or(caller.conversation_id);
+    require_public(pool, target).await?;
     let limit = limit.unwrap_or(30).clamp(1, MAX_READ_MESSAGES);
     let mut rows: Vec<(i64, DateTime<Utc>, bool, String)> = sqlx::query_as(
         "SELECT conversation_id, sent_at, from_bot, body FROM messages
@@ -270,4 +275,13 @@ pub async fn action_target(pool: &PgPool, caller: &Caller, topic: &str) -> Resul
         ));
     }
     Ok(target)
+}
+
+async fn require_public(pool: &PgPool, id: i64) -> Result<(), HubError> {
+    if store::is_private(pool, id).await? {
+        return Err(HubError::Forbidden(
+            "history and memory tools are unavailable in private mode".into(),
+        ));
+    }
+    Ok(())
 }

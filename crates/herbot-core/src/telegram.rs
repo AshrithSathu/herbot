@@ -43,6 +43,10 @@ pub enum Command {
     Start,
     Help,
     Status,
+    Retry,
+    Export,
+    Search(String),
+    Private(String),
     Setup,
     /// `/new` asks first; `/new yes` wipes this topic's chat.
     New {
@@ -65,6 +69,10 @@ pub enum Command {
 
 /// All commands shown in Telegram's `/` menu, with descriptions.
 pub const COMMAND_MENU: &[(&str, &str)] = &[
+    ("retry", "Answer your last message again"),
+    ("export", "Download this conversation as Markdown and HTML"),
+    ("search", "Search history: /search words"),
+    ("private", "Stop or resume history storage: /private on|off"),
     ("setup", "Set what this conversation is for"),
     ("status", "Show this conversation's details"),
     (
@@ -236,6 +244,13 @@ pub struct VoiceNote {
 #[allow(clippy::large_enum_variant)] // one per update, never stored in bulk
 pub enum Inbound {
     Message(InboundMessage),
+    Edited(InboundMessage),
+    Reaction {
+        chat: ChatRef,
+        message_id: i32,
+        user_id: u64,
+        reactions: serde_json::Value,
+    },
     /// The bot was added to a group (or unblocked in a private chat).
     AddedToChat {
         chat: ChatRef,
@@ -280,7 +295,8 @@ impl Inbound {
     /// The chat this event happened in.
     pub fn chat(&self) -> &ChatRef {
         match self {
-            Inbound::Message(m) => &m.chat,
+            Inbound::Message(m) | Inbound::Edited(m) => &m.chat,
+            Inbound::Reaction { chat, .. } => chat,
             Inbound::AddedToChat { chat, .. }
             | Inbound::RemovedFromChat { chat, .. }
             | Inbound::TopicCreated { chat, .. }
@@ -295,6 +311,18 @@ impl Inbound {
 pub fn normalize(update: &Update, bot_username: &str) -> Option<Inbound> {
     match &update.kind {
         UpdateKind::Message(msg) => normalize_message(msg, bot_username),
+        UpdateKind::EditedMessage(msg) => match normalize_message(msg, bot_username)? {
+            Inbound::Message(m) if m.command.is_none() && !m.text.starts_with('/') => {
+                Some(Inbound::Edited(m))
+            }
+            _ => None,
+        },
+        UpdateKind::MessageReaction(r) => Some(Inbound::Reaction {
+            chat: chat_ref(&r.chat)?,
+            message_id: r.message_id.0,
+            user_id: r.user()?.id.0,
+            reactions: serde_json::to_value(&r.new_reaction).ok()?,
+        }),
         UpdateKind::MyChatMember(change) => normalize_membership(change),
         UpdateKind::CallbackQuery(query) => normalize_callback(query),
         _ => None,
@@ -482,6 +510,10 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
         "start" => Command::Start,
         "help" => Command::Help,
         "status" => Command::Status,
+        "retry" => Command::Retry,
+        "export" => Command::Export,
+        "search" => Command::Search(args(rest, word)),
+        "private" => Command::Private(args(rest, word)),
         "setup" => Command::Setup,
         "new" => Command::New {
             confirmed: confirmed_with_yes(rest),
