@@ -35,7 +35,10 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 | `/fast`, `/think`, `/heavy` + question | One message in that mode |
 | `/deepsearch` + question | Researches it across the live web and replies with a cited report, plus the report as a file |
 | `/imagine` + prompt | An image (Codex's built-in image generation); reply to a photo to edit it |
-| `/video` + prompt | A short video (xAI's Grok Imagine; needs `XAI_API_KEY`) |
+| `/video` + prompt | A short video: xAI's Grok Imagine with `XAI_API_KEY`, otherwise a storyboard video from OpenAI images |
+| `/x` + topic | What people on X are saying (real-time with `X_BEARER_TOKEN`, otherwise from the live web) |
+| `/wiki` + topic | An encyclopedia article from Grokipedia, Wikipedia and sources |
+| `/language` + name | The language this topic answers in (English by default); voice notes and spoken replies follow it |
 | `/sticker` | A Telegram sticker from a photo you reply to, or from a prompt |
 | `/voice` | Spoken replies on or off and the voice (13 OpenAI voices); `/voice on`, `/voice off`, `/voice marin` |
 | `/speak` | Reply to a bot message to hear it once |

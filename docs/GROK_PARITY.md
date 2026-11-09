@@ -2,7 +2,7 @@
 
 Everything Grok does (grok.com, the apps, Grok in Telegram), and how Herbot does it. Herbot's surfaces are the Telegram group (every topic an agent) and the admin panel (the web app). The agent is Codex in T3 on the Codex subscription. Codex has its own image generation, image viewing, web search, multi-agent and memories.
 
-Status: ✅ built and run once for real (simulated messages through the live bot, 2026-11-10) · 🔑 built, needs a key to run · ⛔ not applicable (and why)
+Status: ✅ built and run once for real (simulated messages through the live bot, 2026-11-10) · 🔨 being built
 
 | # | Grok feature | Herbot | Owner | Status |
 |---|---|---|---|---|
@@ -14,7 +14,7 @@ Status: ✅ built and run once for real (simulated messages through the live bot
 | 6 | File uploads (PDFs, docs, code, spreadsheets) | Documents are saved in the topic's `files/` folder and the agent reads them | W0 | ✅ |
 | 7 | Video understanding (Grok 4.3) | Videos and video notes: frames, plus the soundtrack transcribed, go to the agent | W0 | ✅ |
 | 8 | Imagine: image generation and editing | Codex's built-in image generation and editing; the agent sends the result as a photo (`[[file: …]]`) | W0 | ✅ |
-| 9 | Imagine: video generation | `/video <prompt>` and the agents' `generate_video` tool, on xAI's Grok Imagine video API (`XAI_API_KEY`); OpenAI's video API is the fallback but returns 404 for this account (Sora is retired). Sent as a video | W6 | 🔑 |
+| 9 | Imagine: video generation | `/video <prompt>` and the agents' `generate_video` tool: xAI's Grok Imagine when `XAI_API_KEY` is set; otherwise storyboard videos from the OpenAI key (keyframes from OpenAI image models, each an edit of the last so the subject holds, animated with ffmpeg camera moves and crossfades). Ran live: an 8 s MP4 sent as a Telegram video | W6/lead | ✅ |
 | 10 | Rich answers (Markdown, code, tables, links) | Markdown rendered as Telegram formatting; long answers split safely | W0 | ✅ |
 | 11 | Files and documents from the assistant (Studio, document generation) | The agent writes files (PDF, DOCX, MD, HTML, CSV, charts) and sends them with `[[file: …]]` | W0 | ✅ |
 | 12 | Voice mode (talk, hear it answer) | Voice notes in (✅) and spoken replies out (OpenAI speech): `/voice on|off`, a choice of voices, 🔊 Read aloud | W1 | ✅ |
@@ -33,14 +33,14 @@ Status: ✅ built and run once for real (simulated messages through the live bot
 | 25 | Connectors (MCP, apps) | Codex MCP servers; Herbot-wide ones in `agents/.codex/config.toml`; panel Connectors page | W4 | ✅ |
 | 26 | Web app (grok.com) | Admin panel becomes a chat app: chat with any topic, attachments, new topics, settings | W4 | ✅ |
 | 27 | Telegram extras (summaries, stickers) | Summarise a topic or reply thread; `/sticker` makes a sticker from an image or prompt | W6 | ✅ |
-| 28 | Real-time X (Twitter) analysis | Web search covers public posts; the X API needs a paid key | – | ⛔ no X API key |
-| 29 | Grokipedia | xAI's encyclopedia, not a chat feature; web search covers lookups | – | ⛔ |
-| 30 | Many languages | Herbot is English by your rule (`AGENTS.md`) | – | ⛔ by choice |
-| 31 | Animated 3D companions | Telegram can't host them; personas with voices instead (#13) | – | ⛔ |
+| 28 | Real-time X (Twitter) analysis | `/x <topic>` and the agents' `search_x` tool (X API v2 recent search: posts, authors, dates, engagement, links) with `X_BEARER_TOKEN`; without it, live web search of x.com plus X's public post endpoint (verified) for reading posts | lead | ✅ (full real-time search with `X_BEARER_TOKEN`) |
+| 29 | Grokipedia | `/wiki <topic>`: an encyclopedia article from Grokipedia (grokipedia.com), Wikipedia and primary sources, noting where they disagree; agents use Grokipedia for lookups | lead | ✅ |
+| 30 | Many languages | English by default (your rule); `/language <name>` makes a topic answer in any language, with its voice notes and video soundtracks transcribed in it and spoken replies following it. Ran live in Spanish | lead | ✅ |
+| 31 | Animated companions and live voice chat | Panel **Companions** page: original animated characters (idle, listening, thinking, talking with lip movement from the audio) you talk to by voice, each backed by its own agent with memory | W7 | 🔨 |
 
 ## How it was checked
 
-Each ✅ row ran once through the live bot with `/internal/simulate` (Ashrith was offline): real Telegram, real T3/Codex, real OpenAI. Highlights: a live-web answer with cited Rust release posts; a photo read back exactly; a generated fox and a teal hummingbird logo sent as photos; a PDF summarised and returned as DOCX; a DeepSearch report plus its Markdown file; remember → PERSONAL.md → metric answers with the custom TL;DR; a spoken reply; a 2-minute reminder that fired on time; /retry, /search, /export, /persona, /summary; a sticker; private mode storing nothing; audio and video understood (transcript plus stills); Heavy mode with parallel sub-agents; a message sent from the panel's chat answered in Telegram. Video generation is wired to Grok Imagine but needs `XAI_API_KEY` to run.
+Each ✅ row ran once through the live bot with `/internal/simulate` (Ashrith was offline): real Telegram, real T3/Codex, real OpenAI. Highlights: a live-web answer with cited Rust release posts; a photo read back exactly; a generated fox and a teal hummingbird logo sent as photos; a PDF summarised and returned as DOCX; a DeepSearch report plus its Markdown file; remember → PERSONAL.md → metric answers with the custom TL;DR; a spoken reply; a 2-minute reminder that fired on time; /retry, /search, /export, /persona, /summary; a sticker; private mode storing nothing; audio and video understood (transcript plus stills); Heavy mode with parallel sub-agents; a message sent from the panel's chat answered in Telegram. Also live: `/video` (a storyboard MP4 sent as a video), `/wiki`, `/language Spanish` with a Spanish voice note, and the panel's New agent up to Telegram's permission check (the bot needs the "Manage topics" right; it reports that clearly with an error id).
 
 ## Workstreams
 
