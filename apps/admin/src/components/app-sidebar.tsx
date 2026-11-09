@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils'
 const PAGES = [
   { to: '/', label: 'Overview', icon: LayoutGridIcon, exact: true },
   { to: '/topics', label: 'Topics', icon: MessagesSquareIcon, exact: true },
+  { to: '/tasks', label: 'Tasks', icon: ScrollTextIcon, exact: true },
   { to: '/logs', label: 'Logs', icon: ScrollTextIcon, exact: false },
 ] as const
 

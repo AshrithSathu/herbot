@@ -178,3 +178,27 @@ export const getError = createServerFn({ method: 'GET' })
     const core = await serverSide()
     return core<ErrorRow>(`/errors/${encodeURIComponent(id)}`)
   })
+
+export interface Task {
+  id: number; conversation_id: number; title: string | null; prompt: string;
+  once_at: string | null; cron: string | null; timezone: string;
+  next_run_at: string | null; last_run_at: string | null; run_count: number;
+  status: 'active' | 'paused' | 'done' | 'cancelled'; last_error: string | null;
+}
+export interface TaskInput {
+  conversation_id: number; prompt: string; title?: string;
+  when?: string; cron?: string; timezone?: string;
+}
+export const listTasks = createServerFn({ method: 'GET' }).handler(async () => {
+  const core = await serverSide(); return core<Task[]>('/tasks')
+})
+export const createTask = createServerFn({ method: 'POST' })
+  .validator((data: TaskInput) => data)
+  .handler(async ({ data }) => {
+    const core = await serverSide(); return core<Task>('/tasks', { method: 'POST', body: data })
+  })
+export const changeTask = createServerFn({ method: 'POST' })
+  .validator((data: { id: number; action: 'pause' | 'resume' | 'cancel' | 'run' }) => data)
+  .handler(async ({ data }) => {
+    const core = await serverSide(); return core<Task>(`/tasks/${data.id}/${data.action}`, { method: 'POST' })
+  })
