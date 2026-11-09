@@ -671,7 +671,9 @@ Send text, voice notes, photos, documents, video or audio.\n\n\
 Thinking\n\
 /mode: Fast, Auto, Expert or Heavy for this topic\n\
 /fast, /think, /heavy <question>: one answer in that mode\n\
-/deepsearch <question>: research across the web, with sources\n\n\
+/deepsearch <question>: research across the web, with sources\n\
+/x <topic>: what people on X are saying\n\
+/wiki <topic>: an encyclopedia article (Grokipedia, Wikipedia, sources)\n\n\
 Making things\n\
 /imagine <prompt>: an image (or edit a photo you reply to)\n\
 /video <prompt>: a video\n\
@@ -690,7 +692,8 @@ Conversation\n\
 About you\n\
 /memory: what Herbot remembers (and forget it)\n\
 /customize [text|clear]: how you want every answer\n\
-/aboutme <text|clear>: what Herbot should know about you\n\n\
+/aboutme <text|clear>: what Herbot should know about you\n\
+/language <name>: the language this topic answers in (English by default)\n\n\
 This topic\n\
 /setup: set what it's for\n\
 /status: its details\n\
@@ -826,7 +829,11 @@ async fn take_message<A: TelegramApi, T: Transcriber>(
             return Ok(());
         }
         let audio = ctx.api.download_file(&voice.file_id).await?;
-        let transcript = ctx.transcriber.transcribe(audio).await?;
+        let language = store::language_at(ctx.pool, msg.chat.tg_chat_id, msg.topic_id).await?;
+        let transcript = ctx
+            .transcriber
+            .transcribe_in(audio, crate::voice::iso_code(&language))
+            .await?;
         if transcript.trim().is_empty() {
             reply(ctx, &msg, setup::NOTHING_HEARD).await?;
             return Ok(());
@@ -853,6 +860,9 @@ async fn take_message<A: TelegramApi, T: Transcriber>(
             &folder,
             msg.message_id,
             &attachment,
+            crate::voice::iso_code(
+                &store::language_at(ctx.pool, msg.chat.tg_chat_id, msg.topic_id).await?,
+            ),
         )
         .await;
         match received {
@@ -1558,6 +1568,52 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
         Command::Forget { confirmed: true } => {
             let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
             perform_wipe(ctx, &s, wipe::WipeKind::Forget).await?
+        }
+        Command::Language(arg) => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            let wanted = arg.trim();
+            if wanted.is_empty() {
+                format!(
+                    "{} answers in {}. Send /language Spanish (or any language) to change it, /language english to go back.",
+                    s.place(),
+                    s.language
+                )
+            } else if wanted.chars().count() > 40
+                || !wanted
+                    .chars()
+                    .all(|c| c.is_alphabetic() || c == ' ' || c == '-')
+            {
+                "Name a language, like /language Spanish or /language Telugu.".into()
+            } else {
+                let mut name: String = wanted.to_lowercase();
+                if name == "default" {
+                    name = "english".into();
+                }
+                let name: String = name
+                    .split_whitespace()
+                    .map(|w| {
+                        let mut c = w.chars();
+                        c.next()
+                            .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                            .unwrap_or_default()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                store::set_language(ctx.pool, s.conversation_id, &name).await?;
+                if name == "English" {
+                    format!("{} answers in English again.", s.place())
+                } else {
+                    format!(
+                        "{} now answers in {name}. Voice notes are transcribed in {name}{}, and spoken replies follow it. /language english to go back.",
+                        s.place(),
+                        if crate::voice::iso_code(&name).is_some() {
+                            ""
+                        } else {
+                            " (detected automatically)"
+                        }
+                    )
+                }
+            }
         }
         Command::Mode(arg) => {
             let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;

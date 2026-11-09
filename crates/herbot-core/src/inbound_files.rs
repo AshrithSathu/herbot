@@ -48,6 +48,7 @@ pub async fn receive<A: TelegramApi, T: Transcriber>(
     folder: &Path,
     message_id: i32,
     attachment: &Attachment,
+    language: Option<&str>,
 ) -> Result<Received, FileError> {
     let name = file_name(attachment, message_id);
     if let Some(size) = attachment.size
@@ -72,7 +73,15 @@ pub async fn receive<A: TelegramApi, T: Transcriber>(
         size: bytes.len() as u64,
     };
 
-    let note = describe_saved(transcriber, &absolute, &shown, message_id, attachment).await?;
+    let note = describe_saved(
+        transcriber,
+        &absolute,
+        &shown,
+        message_id,
+        attachment,
+        language,
+    )
+    .await?;
     Ok(Received { note, file })
 }
 
@@ -83,6 +92,7 @@ pub async fn describe_saved<T: Transcriber>(
     shown: &str,
     message_id: i32,
     attachment: &Attachment,
+    language: Option<&str>,
 ) -> Result<String, FileError> {
     let is_image_document = attachment.kind == AttachmentKind::Document
         && attachment
@@ -106,9 +116,19 @@ pub async fn describe_saved<T: Transcriber>(
             }
         }
         AttachmentKind::Video | AttachmentKind::VideoNote | AttachmentKind::Animation => {
-            describe_video(transcriber, absolute, shown, message_id, attachment).await?
+            describe_video(
+                transcriber,
+                absolute,
+                shown,
+                message_id,
+                attachment,
+                language,
+            )
+            .await?
         }
-        AttachmentKind::Audio => describe_audio(transcriber, absolute, shown, attachment).await?,
+        AttachmentKind::Audio => {
+            describe_audio(transcriber, absolute, shown, attachment, language).await?
+        }
     };
     Ok(note)
 }
@@ -121,6 +141,7 @@ async fn describe_video<T: Transcriber>(
     shown: &str,
     message_id: i32,
     attachment: &Attachment,
+    language: Option<&str>,
 ) -> Result<String, FileError> {
     let seconds = match attachment.duration_secs.filter(|&d| d > 0) {
         Some(d) => d as f64,
@@ -163,7 +184,7 @@ async fn describe_video<T: Transcriber>(
         frames_shown.display()
     );
     if attachment.kind != AttachmentKind::Animation && has_audio(video).await {
-        note.push_str(&soundtrack(transcriber, video, seconds as u32).await?);
+        note.push_str(&soundtrack(transcriber, video, seconds as u32, language).await?);
     }
     note.push(']');
     Ok(note)
@@ -174,13 +195,14 @@ async fn describe_audio<T: Transcriber>(
     audio: &Path,
     shown: &str,
     attachment: &Attachment,
+    language: Option<&str>,
 ) -> Result<String, FileError> {
     let seconds = match attachment.duration_secs.filter(|&d| d > 0) {
         Some(d) => d,
         None => probe_duration(audio).await.unwrap_or(0.0).round() as u32,
     };
     let mut note = format!("[Audio: {shown}, {}.", human_duration(seconds));
-    note.push_str(&soundtrack(transcriber, audio, seconds).await?);
+    note.push_str(&soundtrack(transcriber, audio, seconds, language).await?);
     note.push(']');
     Ok(note)
 }
@@ -190,6 +212,7 @@ async fn soundtrack<T: Transcriber>(
     transcriber: &T,
     media: &Path,
     seconds: u32,
+    language: Option<&str>,
 ) -> Result<String, FileError> {
     if seconds > MAX_VOICE_SECONDS {
         return Ok(format!(
@@ -219,7 +242,7 @@ async fn soundtrack<T: Transcriber>(
     .await?;
     let audio = tokio::fs::read(&ogg).await?;
     let _ = tokio::fs::remove_file(&ogg).await;
-    match transcriber.transcribe(audio).await {
+    match transcriber.transcribe_in(audio, language).await {
         Ok(text) if text.trim().is_empty() => Ok(" No speech in it.".to_string()),
         Ok(text) => Ok(format!(" Transcript: \"{}\"", text.trim())),
         Err(VoiceError::NotConfigured) => {

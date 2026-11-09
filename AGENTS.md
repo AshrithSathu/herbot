@@ -31,7 +31,7 @@ A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no 
 - **Builds:** use `CARGO_TARGET_DIR=target-agents` for everyday builds (sub-agents share it). Run the live bot only from a `--release` build copied to `target/live/` (delete the old binary before copying: overwriting a running binary in place gets the new one killed by macOS code signing).
 - Voice notes longer than 10 minutes are refused before download, to cap cost.
 - The admin's messages, commands and button taps go through the `inbox` table and an inbound lane per conversation (`poller::InboundLanes`): in order within a topic, side by side across topics, so a long voice note holds up only its own topic. An update is saved in the same transaction that moves the Telegram offset past it, deleted once handled, and handled at the next start if a crash interrupted it. Nothing from anyone else is stored there.
-- Everything is English.
+- Everything is English by default. `/language <name>` makes one topic answer (and transcribe voice, and speak) in another language; Herbot's own messages stay English.
 - Agents offer choices by ending a reply with `[[ask: A | B | C]]` (2–6 options, ≤ 60 chars). Herbot turns it into buttons. A tap or a typed reply answers it. `agents_md::TEMPLATE_VERSION` versions the ground rules, and older AGENTS.md files are regenerated at startup.
 
 ## Security invariants (never weaken these)

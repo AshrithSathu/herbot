@@ -65,6 +65,8 @@ pub enum Command {
     },
     /// `/mode` shows the topic's mode with buttons; `/mode fast` sets it.
     Mode(String),
+    /// `/language` shows this topic's language; `/language Spanish` sets it.
+    Language(String),
     /// `/fast`, `/think`, `/heavy`, `/deepsearch` + a question: one message
     /// in that mode.
     Styled {
@@ -82,6 +84,11 @@ pub const COMMAND_MENU: &[(&str, &str)] = &[
         "Research a question across the web, with sources",
     ),
     ("think", "Answer one question thinking carefully"),
+    ("x", "What people on X are saying about something"),
+    (
+        "wiki",
+        "An encyclopedia article (Grokipedia, Wikipedia, sources)",
+    ),
     ("imagine", "Generate or edit an image"),
     ("video", "Generate a video"),
     ("voice", "Spoken replies and voice picker"),
@@ -92,6 +99,7 @@ pub const COMMAND_MENU: &[(&str, &str)] = &[
     ("tasks", "Scheduled and recurring prompts in this topic"),
     ("memory", "View and forget shared memories"),
     ("customize", "How you want every answer"),
+    ("language", "The language this topic answers in"),
     ("aboutme", "What Herbot should know about you"),
     ("persona", "Pick a persona: purpose and voice"),
     ("sticker", "Make a sticker from a replied photo or prompt"),
@@ -599,6 +607,15 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
             confirmed: confirmed_with_yes(rest),
         },
         "mode" => Command::Mode(args(rest, word)),
+        "language" | "lang" => Command::Language(args(rest, word)),
+        "x" | "twitter" => Command::Styled {
+            style: crate::modes::Style::X,
+            question: args(rest, word),
+        },
+        "wiki" | "grokipedia" => Command::Styled {
+            style: crate::modes::Style::Wiki,
+            question: args(rest, word),
+        },
         "fast" | "think" | "heavy" | "deepsearch" | "deepersearch" | "research" | "video"
         | "imagine" | "sticker" | "summary" => {
             let style = match name.to_ascii_lowercase().as_str() {

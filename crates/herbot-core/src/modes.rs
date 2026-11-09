@@ -102,6 +102,10 @@ pub enum Style {
     Imagine,
     Sticker,
     Summary,
+    /// What people on X (Twitter) are saying about something (Grok's X search).
+    X,
+    /// An encyclopedia article, Grokipedia included.
+    Wiki,
 }
 
 impl Style {
@@ -111,6 +115,8 @@ impl Style {
             Style::Imagine => "imagine",
             Style::Sticker => "sticker",
             Style::Summary => "summary",
+            Style::X => "x",
+            Style::Wiki => "wiki",
             Style::Auto => "auto",
             Style::Fast => "fast",
             Style::Think => "think",
@@ -125,7 +131,7 @@ impl Style {
             Style::Fast => Mode::Fast.effort(auto),
             Style::Think => Mode::Expert.effort(auto),
             Style::Heavy => Mode::Heavy.effort(auto),
-            Style::DeepSearch => "high",
+            Style::DeepSearch | Style::X | Style::Wiki => "high",
             Style::Video | Style::Imagine | Style::Sticker | Style::Summary => auto,
         }
     }
@@ -141,6 +147,8 @@ impl Style {
             Style::Imagine => crate::imagine::IMAGE_INSTRUCTION,
             Style::Sticker => crate::imagine::STICKER_INSTRUCTION,
             Style::Summary => crate::imagine::SUMMARY_INSTRUCTION,
+            Style::X => X_SEARCH,
+            Style::Wiki => WIKI,
         }
     }
 
@@ -151,6 +159,8 @@ impl Style {
             Style::Imagine => "🎨 Generating your image",
             Style::Sticker => "🎨 Making your sticker",
             Style::Summary => "📝 Summarising",
+            Style::X => "𝕏 Reading what people are posting",
+            Style::Wiki => "📚 Writing it up from Grokipedia, Wikipedia and sources",
             Style::Auto => "Thinking",
             Style::Fast => "⚡ Fast answer coming",
             Style::Think => "🧠 Thinking it through",
@@ -161,6 +171,19 @@ impl Style {
         }
     }
 }
+
+const X_SEARCH: &str = "x: Ashrith wants what people on X (Twitter) are saying. Search the live \
+web for recent posts (site:x.com and site:twitter.com, plus news that quotes posts). Read a \
+specific post through X's public endpoints, without logging in: \
+https://cdn.syndication.twimg.com/tweet-result?id=<post id>&token=a (JSON with the text, author, \
+date and counts; the id is the number at the end of a post's URL). Summarise the main voices, \
+the overall sentiment and any split, and the most notable posts, each linked; say how recent your \
+sample is and that it's a sample, not all of X";
+
+const WIKI: &str = "wiki: write an encyclopedia-style article. Check Grokipedia (grokipedia.com, \
+xAI's encyclopedia) and Wikipedia, then primary sources, on the live web. Give a lead summary, \
+key facts, short sections, and a Sources list of links; point out where Grokipedia and \
+Wikipedia disagree and which sources back each side";
 
 const DEEPSEARCH: &str = "deepsearch: research this thoroughly on the live web. Plan the \
 questions, run many searches across independent, reputable sources (sub-agents in parallel \

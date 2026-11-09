@@ -28,10 +28,70 @@ pub enum VoiceError {
     Api { status: u16, body: String },
 }
 
-/// Turns audio into English text.
+/// Turns audio into text: English by default, or a topic's `/language`.
 pub trait Transcriber: Sync {
     fn transcribe(&self, audio: Vec<u8>)
     -> impl Future<Output = Result<String, VoiceError>> + Send;
+
+    /// In a given language (ISO 639-1, e.g. `es`); `None` lets the model
+    /// detect it. Transcribers without language support use `transcribe`.
+    fn transcribe_in(
+        &self,
+        audio: Vec<u8>,
+        language: Option<&str>,
+    ) -> impl Future<Output = Result<String, VoiceError>> + Send {
+        let _ = language;
+        self.transcribe(audio)
+    }
+}
+
+/// ISO 639-1 code for a language name (`/language`), for transcription.
+/// `None` for names it doesn't know: the model then detects the language.
+pub fn iso_code(language: &str) -> Option<&'static str> {
+    let name = language.trim().to_ascii_lowercase();
+    Some(match name.as_str() {
+        "english" => "en",
+        "spanish" | "español" | "espanol" => "es",
+        "french" | "français" | "francais" => "fr",
+        "german" | "deutsch" => "de",
+        "italian" | "italiano" => "it",
+        "portuguese" | "português" | "portugues" => "pt",
+        "dutch" | "nederlands" => "nl",
+        "russian" => "ru",
+        "ukrainian" => "uk",
+        "polish" => "pl",
+        "turkish" => "tr",
+        "arabic" => "ar",
+        "hebrew" => "he",
+        "persian" | "farsi" => "fa",
+        "hindi" => "hi",
+        "telugu" => "te",
+        "tamil" => "ta",
+        "kannada" => "kn",
+        "malayalam" => "ml",
+        "marathi" => "mr",
+        "bengali" | "bangla" => "bn",
+        "gujarati" => "gu",
+        "punjabi" => "pa",
+        "urdu" => "ur",
+        "chinese" | "mandarin" => "zh",
+        "japanese" => "ja",
+        "korean" => "ko",
+        "vietnamese" => "vi",
+        "thai" => "th",
+        "indonesian" => "id",
+        "malay" => "ms",
+        "swedish" => "sv",
+        "norwegian" => "no",
+        "danish" => "da",
+        "finnish" => "fi",
+        "greek" => "el",
+        "czech" => "cs",
+        "romanian" => "ro",
+        "hungarian" => "hu",
+        "swahili" => "sw",
+        _ => return None,
+    })
 }
 
 /// Used when no API key is configured: every voice note fails loudly.
@@ -73,6 +133,14 @@ impl OpenAiTranscriber {
 
 impl Transcriber for OpenAiTranscriber {
     async fn transcribe(&self, audio: Vec<u8>) -> Result<String, VoiceError> {
+        self.transcribe_in(audio, Some("en")).await
+    }
+
+    async fn transcribe_in(
+        &self,
+        audio: Vec<u8>,
+        language: Option<&str>,
+    ) -> Result<String, VoiceError> {
         if audio.len() > MAX_AUDIO_BYTES {
             return Err(VoiceError::TooLarge(audio.len()));
         }
@@ -80,11 +148,13 @@ impl Transcriber for OpenAiTranscriber {
             .file_name(VOICE_FILENAME)
             .mime_str(VOICE_MIME)
             .map_err(|e| VoiceError::Request(e.to_string()))?;
-        let form = reqwest::multipart::Form::new()
+        let mut form = reqwest::multipart::Form::new()
             .part("file", file)
             .text("model", self.model.clone())
-            .text("language", "en")
             .text("response_format", "text");
+        if let Some(language) = language {
+            form = form.text("language", language.to_string());
+        }
 
         let response = self
             .client
@@ -125,11 +195,30 @@ impl Transcriber for AnyTranscriber {
             AnyTranscriber::Off(t) => t.transcribe(audio).await,
         }
     }
+
+    async fn transcribe_in(
+        &self,
+        audio: Vec<u8>,
+        language: Option<&str>,
+    ) -> Result<String, VoiceError> {
+        match self {
+            AnyTranscriber::OpenAi(t) => t.transcribe_in(audio, language).await,
+            AnyTranscriber::Off(t) => t.transcribe_in(audio, language).await,
+        }
+    }
 }
 
 impl<T: Transcriber + Send> Transcriber for std::sync::Arc<T> {
     async fn transcribe(&self, audio: Vec<u8>) -> Result<String, VoiceError> {
         (**self).transcribe(audio).await
+    }
+
+    async fn transcribe_in(
+        &self,
+        audio: Vec<u8>,
+        language: Option<&str>,
+    ) -> Result<String, VoiceError> {
+        (**self).transcribe_in(audio, language).await
     }
 }
 

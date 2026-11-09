@@ -321,6 +321,7 @@ async fn send(
             &shown,
             file_message_id,
             &attachment,
+            crate::voice::iso_code(&st.language),
         )
         .await
         .map_err(io)?;

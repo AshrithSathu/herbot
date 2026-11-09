@@ -324,6 +324,15 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
         (None, None) => {}
     }
 
+    if status.language != "English" {
+        extra.push((
+            "language",
+            format!(
+                "reply in {} (Ashrith set this topic's language)",
+                status.language
+            ),
+        ));
+    }
     let active = store::active_thread(&deps.pool, job.conversation_id).await?;
     // Custom instructions or memories changed since this thread last ran.
     if let (Some(thread), Some(changed)) = (&active, crate::personal::updated_at(&deps.pool).await?)

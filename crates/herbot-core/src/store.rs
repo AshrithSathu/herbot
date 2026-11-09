@@ -50,6 +50,8 @@ pub struct ConversationStatus {
     pub thread_link: Option<String>,
     /// Fast, Auto, Expert or Heavy (`/mode`).
     pub mode: crate::modes::Mode,
+    /// The language it answers in (`/language`; English by default).
+    pub language: String,
 }
 
 impl ConversationStatus {
@@ -275,6 +277,7 @@ struct StatusRow {
     agents_md_updated_at: Option<DateTime<Utc>>,
     t3_project_registered: bool,
     mode: String,
+    language: String,
 }
 
 /// The status query with `$rest` (a WHERE / ORDER BY literal) appended, as
@@ -286,7 +289,7 @@ macro_rules! status_select {
             "SELECT v.id, c.tg_chat_id, c.title, c.kind, c.is_forum, v.tg_topic_id,
             v.name, v.enabled, v.voice_replies, v.voice, v.message_count, v.last_message_at, b.name AS bot_name,
             t.t3_thread_id, t.t3_link, v.purpose, v.setup_state, v.agents_md_path,
-            v.agents_md_updated_at, v.t3_project_registered, v.mode
+            v.agents_md_updated_at, v.t3_project_registered, v.mode, v.language
      FROM conversations v
      JOIN chats c ON c.id = v.chat_id
      LEFT JOIN bots b ON b.id = v.bot_id
@@ -320,6 +323,7 @@ impl From<StatusRow> for ConversationStatus {
             t3_project_registered: row.t3_project_registered,
             thread_link: row.t3_link,
             mode: crate::modes::Mode::parse(&row.mode).unwrap_or(crate::modes::Mode::Auto),
+            language: row.language,
         }
     }
 }
@@ -400,6 +404,38 @@ pub async fn begin_setup(
     .fetch_optional(pool)
     .await?;
     Ok(old.flatten())
+}
+
+/// Sets the language a conversation answers in (`/language`).
+pub async fn set_language(
+    pool: &PgPool,
+    conversation_id: i64,
+    language: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE conversations SET language = $2 WHERE id = $1")
+        .bind(conversation_id)
+        .bind(language)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+/// The language of the conversation at (chat, topic), English if it doesn't
+/// exist yet: voice notes are transcribed in it.
+pub async fn language_at(
+    pool: &PgPool,
+    tg_chat_id: i64,
+    topic_id: Option<i32>,
+) -> Result<String, sqlx::Error> {
+    let found: Option<String> = sqlx::query_scalar(
+        "SELECT v.language FROM conversations v JOIN chats c ON c.id = v.chat_id
+         WHERE c.tg_chat_id = $1 AND v.tg_topic_id IS NOT DISTINCT FROM $2",
+    )
+    .bind(tg_chat_id)
+    .bind(topic_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(found.unwrap_or_else(|| "English".into()))
 }
 
 /// Sets a conversation's mode (`/mode`, the admin panel).
