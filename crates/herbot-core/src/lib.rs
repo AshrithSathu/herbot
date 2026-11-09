@@ -26,6 +26,7 @@ pub mod internal;
 pub mod media;
 pub mod meta;
 pub mod outgoing;
+pub mod personal;
 pub mod policy;
 pub mod poller;
 pub mod setup;

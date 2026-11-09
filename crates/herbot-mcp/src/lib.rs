@@ -82,6 +82,38 @@ pub struct PostArgs {
     pub text: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RememberArgs {
+    pub caller: String,
+    pub content: String,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ForgetArgs {
+    pub caller: String,
+    pub id: i64,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RecallArgs {
+    pub caller: String,
+    pub query: Option<String>,
+}
+
+fn personal_dir() -> Result<std::path::PathBuf, HubError> {
+    let dir = std::env::var("HERBOT_AGENTS_DIR")
+        .map(std::path::PathBuf::from)
+        .map_err(|_| {
+            HubError::BadRequest(
+                "set HERBOT_AGENTS_DIR to the shared absolute agents root for memory tools".into(),
+            )
+        })?;
+    if !dir.is_absolute() {
+        return Err(HubError::BadRequest(
+            "HERBOT_AGENTS_DIR must be absolute for memory tools".into(),
+        ));
+    }
+    Ok(dir)
+}
+
 fn ok_json<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -203,6 +235,49 @@ impl HerbotTools {
         Parameters(args): Parameters<PostArgs>,
     ) -> Result<CallToolResult, McpError> {
         self.core_action("/internal/post", &args).await
+    }
+
+    /// Remember a stable fact or preference Ashrith stated (max 500 characters).
+    /// Shared by all topics. Never store secrets. Near duplicates return the existing memory.
+    #[tool]
+    pub async fn remember(
+        &self,
+        Parameters(args): Parameters<RememberArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let dir = match personal_dir() {
+            Ok(dir) => dir,
+            Err(e) => return hub_error(e),
+        };
+        match hub::remember(&self.pool, &args.caller, &dir, &args.content).await {
+            Ok(memory) => ok_json(&memory),
+            Err(e) => hub_error(e),
+        }
+    }
+    /// Forget a global memory by its id from recall.
+    #[tool]
+    pub async fn forget(
+        &self,
+        Parameters(args): Parameters<ForgetArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let dir = match personal_dir() {
+            Ok(dir) => dir,
+            Err(e) => return hub_error(e),
+        };
+        match hub::forget(&self.pool, &args.caller, &dir, args.id).await {
+            Ok(deleted) => ok_json(&serde_json::json!({"deleted": deleted})),
+            Err(e) => hub_error(e),
+        }
+    }
+    /// List global memories, optionally filtering by a case-insensitive substring.
+    #[tool(annotations(read_only_hint = true))]
+    pub async fn recall(
+        &self,
+        Parameters(args): Parameters<RecallArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match hub::recall(&self.pool, &args.caller, args.query.as_deref()).await {
+            Ok(memories) => ok_json(&memories),
+            Err(e) => hub_error(e),
+        }
     }
 
     async fn core_action<T: Serialize>(

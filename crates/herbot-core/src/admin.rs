@@ -43,6 +43,18 @@ pub struct AdminState {
 
 pub fn router(state: Arc<AdminState>) -> Router {
     Router::new()
+        .route(
+            "/admin/api/memories",
+            get(list_memories).post(add_memory).delete(delete_memories),
+        )
+        .route(
+            "/admin/api/memories/{id}",
+            put(edit_memory).delete(delete_memory),
+        )
+        .route(
+            "/admin/api/preferences",
+            get(get_preferences).put(save_preferences),
+        )
         .route("/admin/api/overview", get(overview))
         .route("/admin/api/conversations", get(conversations))
         .route("/admin/api/conversations/{id}", get(conversation))
@@ -576,5 +588,114 @@ async fn error(
             None => fail(StatusCode::NOT_FOUND, format!("no error {error_id}")),
         },
         Err(e) => db_fail(e),
+    }
+}
+
+async fn personal_fail(state: &AdminState, err: crate::personal::PersonalError) -> Reply {
+    use crate::personal::PersonalError;
+    match err {
+        PersonalError::Invalid(message) => fail(StatusCode::BAD_REQUEST, message),
+        PersonalError::NotFound => fail(StatusCode::NOT_FOUND, "memory not found"),
+        err => {
+            let id =
+                crate::errors::record(&state.pool, "personal.admin", &err.to_string(), json!({}))
+                    .await;
+            tracing::error!(error = %err, error_id = ?id, "personalisation failed");
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Personalisation failed ({}); check logs",
+                    id.map(|id| id.to_string())
+                        .unwrap_or_else(|_| "unrecorded".into())
+                ),
+            )
+        }
+    }
+}
+#[derive(Deserialize)]
+struct MemoryBody {
+    content: String,
+}
+#[derive(Deserialize)]
+struct MemoryQuery {
+    q: Option<String>,
+}
+async fn list_memories(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Query(query): Query<MemoryQuery>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::personal::recall(&state.pool, query.q.as_deref()).await {
+        Ok(rows) => ok(rows),
+        Err(e) => personal_fail(&state, e.into()).await,
+    }
+}
+async fn add_memory(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(body): Json<MemoryBody>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::personal::remember(&state.pool, &state.agents_dir, &body.content, None, None).await
+    {
+        Ok(row) => ok(row),
+        Err(e) => personal_fail(&state, e).await,
+    }
+}
+async fn edit_memory(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<MemoryBody>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::personal::remember(
+        &state.pool,
+        &state.agents_dir,
+        &body.content,
+        None,
+        Some(id),
+    )
+    .await
+    {
+        Ok(row) => ok(row),
+        Err(e) => personal_fail(&state, e).await,
+    }
+}
+async fn delete_memory(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::personal::forget(&state.pool, &state.agents_dir, Some(id)).await {
+        Ok(count) => ok(json!({"deleted": count})),
+        Err(e) => personal_fail(&state, e).await,
+    }
+}
+async fn delete_memories(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
+    guard!(headers, state);
+    match crate::personal::forget(&state.pool, &state.agents_dir, None).await {
+        Ok(count) => ok(json!({"deleted": count})),
+        Err(e) => personal_fail(&state, e).await,
+    }
+}
+async fn get_preferences(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
+    guard!(headers, state);
+    match crate::personal::preferences(&state.pool).await {
+        Ok(prefs) => ok(prefs),
+        Err(e) => personal_fail(&state, e.into()).await,
+    }
+}
+async fn save_preferences(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(prefs): Json<crate::personal::Preferences>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::personal::set_preferences(&state.pool, &state.agents_dir, &prefs).await {
+        Ok(()) => ok(prefs),
+        Err(e) => personal_fail(&state, e).await,
     }
 }

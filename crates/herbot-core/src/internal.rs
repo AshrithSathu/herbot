@@ -69,6 +69,7 @@ fn hub_fail(err: HubError) -> Reply {
         HubError::Forbidden(_) => StatusCode::FORBIDDEN,
         HubError::NotFound(_) => StatusCode::NOT_FOUND,
         HubError::BadRequest(_) => StatusCode::BAD_REQUEST,
+        HubError::Personal(_) => StatusCode::BAD_REQUEST,
         HubError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     fail(status, err.to_string())

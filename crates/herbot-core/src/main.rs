@@ -23,6 +23,10 @@ async fn main() -> anyhow::Result<()> {
         .context("database migration failed")?;
     tracing::info!("database ready, migrations applied");
 
+    herbot_core::personal::write_file(&pool, &absolute_agents_dir(&config.agents_dir)?)
+        .await
+        .context("could not write PERSONAL.md")?;
+
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Telegram is optional for local work, but when a token is set it must

@@ -25,6 +25,8 @@ pub struct Caller {
 pub enum HubError {
     #[error("unknown caller token; pass the `caller` value from your <herbot-meta> header")]
     UnknownCaller,
+    #[error(transparent)]
+    Personal(#[from] crate::personal::PersonalError),
     #[error("{0}")]
     Forbidden(String),
     #[error("{0}")]
@@ -270,4 +272,32 @@ pub async fn action_target(pool: &PgPool, caller: &Caller, topic: &str) -> Resul
         ));
     }
     Ok(target)
+}
+
+/// Global personal data is available to every authenticated conversation.
+pub async fn remember(
+    pool: &PgPool,
+    caller_token: &str,
+    dir: &std::path::Path,
+    content: &str,
+) -> Result<crate::personal::Memory, HubError> {
+    let caller = resolve_caller(pool, caller_token).await?;
+    Ok(crate::personal::remember(pool, dir, content, Some(caller.conversation_id), None).await?)
+}
+pub async fn forget(
+    pool: &PgPool,
+    caller_token: &str,
+    dir: &std::path::Path,
+    id: i64,
+) -> Result<u64, HubError> {
+    resolve_caller(pool, caller_token).await?;
+    Ok(crate::personal::forget(pool, dir, Some(id)).await?)
+}
+pub async fn recall(
+    pool: &PgPool,
+    caller_token: &str,
+    query: Option<&str>,
+) -> Result<Vec<crate::personal::Memory>, HubError> {
+    resolve_caller(pool, caller_token).await?;
+    Ok(crate::personal::recall(pool, query).await?)
 }
