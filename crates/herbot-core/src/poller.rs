@@ -194,6 +194,73 @@ fn api_err(e: teloxide::RequestError) -> ApiError {
 /// The real Telegram API.
 pub struct BotApi(pub Bot);
 
+impl BotApi {
+    /// Sends a file with the request type its kind needs.
+    async fn send_any(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        file: &OutFile,
+    ) -> Result<Message, teloxide::RequestError> {
+        let input = InputFile::file(file.path.clone());
+        let chat = ChatId(chat_id);
+        let thread = topic_id.map(|t| ThreadId(MessageId(t)));
+        let reply =
+            reply_to.map(|r| ReplyParameters::new(MessageId(r)).allow_sending_without_reply());
+        let caption = file.caption.clone();
+        // Each kind is its own request type; set the same fields on each.
+        macro_rules! send {
+            ($req:expr) => {{
+                let mut req = $req;
+                if let Some(thread) = thread {
+                    req = req.message_thread_id(thread);
+                }
+                if let Some(reply) = reply.clone() {
+                    req = req.reply_parameters(reply);
+                }
+                if let Some(caption) = caption.clone() {
+                    req = req.caption(caption);
+                }
+                req.await
+            }};
+        }
+        match file.kind {
+            FileKind::Photo => send!(self.0.send_photo(chat, input)),
+            FileKind::Voice => send!(self.0.send_voice(chat, input)),
+            FileKind::Audio => send!(self.0.send_audio(chat, input)),
+            FileKind::Video => send!(self.0.send_video(chat, input)),
+            FileKind::Animation => send!(self.0.send_animation(chat, input)),
+            FileKind::Document => send!(self.0.send_document(chat, input)),
+        }
+    }
+
+    /// Uploads a file and returns (message id, Telegram file id, size), for
+    /// simulated messages that need a real file to download.
+    pub async fn upload(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        file: &OutFile,
+    ) -> Result<(i32, String, u32), ApiError> {
+        let msg = self
+            .send_any(chat_id, topic_id, None, file)
+            .await
+            .map_err(api_err)?;
+        let meta = msg
+            .photo()
+            .and_then(|p| p.last())
+            .map(|p| &p.file)
+            .or(msg.document().map(|d| &d.file))
+            .or(msg.video().map(|v| &v.file))
+            .or(msg.audio().map(|a| &a.file))
+            .or(msg.voice().map(|v| &v.file))
+            .or(msg.animation().map(|a| &a.file))
+            .ok_or_else(|| ApiError("Telegram returned no file".into()))?;
+        Ok((msg.id.0, meta.id.0.clone(), meta.size))
+    }
+}
+
 impl TelegramApi for BotApi {
     async fn send_text(
         &self,
@@ -398,36 +465,10 @@ impl TelegramApi for BotApi {
         reply_to: Option<i32>,
         file: &OutFile,
     ) -> Result<i32, ApiError> {
-        let input = InputFile::file(file.path.clone());
-        let chat = ChatId(chat_id);
-        let thread = topic_id.map(|t| ThreadId(MessageId(t)));
-        let reply =
-            reply_to.map(|r| ReplyParameters::new(MessageId(r)).allow_sending_without_reply());
-        let caption = file.caption.clone();
-        // Each kind is its own request type; set the same fields on each.
-        macro_rules! send {
-            ($req:expr) => {{
-                let mut req = $req;
-                if let Some(thread) = thread {
-                    req = req.message_thread_id(thread);
-                }
-                if let Some(reply) = reply.clone() {
-                    req = req.reply_parameters(reply);
-                }
-                if let Some(caption) = caption.clone() {
-                    req = req.caption(caption);
-                }
-                req.await.map(|m| m.id.0).map_err(api_err)
-            }};
-        }
-        match file.kind {
-            FileKind::Photo => send!(self.0.send_photo(chat, input)),
-            FileKind::Voice => send!(self.0.send_voice(chat, input)),
-            FileKind::Audio => send!(self.0.send_audio(chat, input)),
-            FileKind::Video => send!(self.0.send_video(chat, input)),
-            FileKind::Animation => send!(self.0.send_animation(chat, input)),
-            FileKind::Document => send!(self.0.send_document(chat, input)),
-        }
+        self.send_any(chat_id, topic_id, reply_to, file)
+            .await
+            .map(|m| m.id.0)
+            .map_err(api_err)
     }
 
     async fn activity(
@@ -1488,6 +1529,7 @@ pub async fn run<T: Transcriber + Send + 'static>(
     pool: PgPool,
     settings: RunSettings<BotApi, T>,
     mut shutdown: watch::Receiver<bool>,
+    mut inject: Option<mpsc::UnboundedReceiver<Update>>,
 ) {
     let bot_username = settings.bot_username.clone();
     let lanes = InboundLanes::new(pool.clone(), settings);
@@ -1516,8 +1558,32 @@ pub async fn run<T: Transcriber + Send + 'static>(
             request = request.offset(offset);
         }
 
+        let injected = async {
+            match inject.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
+            }
+        };
         let result = tokio::select! {
             result = request.send() => result,
+            Some(update) = injected => {
+                // A simulated admin message (`/internal/simulate`): handled
+                // exactly like a real one, but it moves no Telegram offset.
+                match lanes.route(&update) {
+                    Route::Skip => {}
+                    Route::Inline => lanes.handle_inline(&update).await,
+                    Route::Lane(key) => {
+                        let body = serde_json::to_value(&update).unwrap_or_default();
+                        match store::inbox_insert(&pool, i64::from(update.id.0), &body).await {
+                            Ok(()) => lanes.submit(key, update),
+                            Err(err) => {
+                                let _ = errors::record(&pool, "telegram.inbox_save", &err.to_string(), json!({ "simulated": true })).await;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
             _ = shutdown.changed() => break,
         };
 

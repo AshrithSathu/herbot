@@ -520,6 +520,20 @@ pub async fn inbox_save(
     tx.commit().await
 }
 
+/// Saves one update without moving the poll offset (simulated messages).
+pub async fn inbox_insert(
+    pool: &PgPool,
+    update_id: i64,
+    body: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO inbox (update_id, body) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(update_id)
+        .bind(body)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
 /// Updates saved but not yet handled, oldest first.
 pub async fn inbox_pending(pool: &PgPool) -> Result<Vec<(i64, serde_json::Value)>, sqlx::Error> {
     sqlx::query_as("SELECT update_id, body FROM inbox ORDER BY update_id")

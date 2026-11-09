@@ -29,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
     // work: a bad token stops startup instead of running half-broken.
     let mut telegram_username = None;
     let mut internal_router: Option<axum::Router> = None;
+    let mut simulate_router: Option<axum::Router> = None;
     let mut poller_task = None;
     match &config.telegram {
         None => tracing::warn!("TELEGRAM_BOT_TOKEN not set; Telegram is disabled"),
@@ -126,15 +127,58 @@ async fn main() -> anyhow::Result<()> {
                 transcriber,
                 agents_dir,
                 agent_label: format!("{} · {}", config.agent_model, config.agent_effort),
-                api,
+                api: api.clone(),
                 turns: shared_turns,
                 projects,
             };
+            // Simulated admin messages for offline runs (HERBOT_SIMULATE=1).
+            let mut inject = None;
+            if std::env::var("HERBOT_SIMULATE").is_ok_and(|v| v == "1") {
+                match (&config.internal_token, tg.home_chat_id) {
+                    (Some(token), Some(home)) => {
+                        let chat = bot
+                            .get_chat(teloxide::types::ChatId(home))
+                            .await
+                            .context("simulate: could not read the home group")?;
+                        let admin = bot
+                            .get_chat_member(
+                                teloxide::types::ChatId(home),
+                                teloxide::types::UserId(tg.admin_user_id),
+                            )
+                            .await
+                            .context("simulate: could not read the admin's name")?;
+                        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                        inject = Some(rx);
+                        simulate_router = Some(herbot_core::simulate::router(Arc::new(
+                            herbot_core::simulate::SimulateState {
+                                api: api.clone(),
+                                inject: tx,
+                                token: token.clone(),
+                                admin_user_id: tg.admin_user_id,
+                                admin_name: admin.user.first_name.clone(),
+                                home_chat_id: home,
+                                home_title: chat.title().unwrap_or_default().to_string(),
+                                next_update_id: std::sync::atomic::AtomicU32::new(
+                                    4_000_000_000
+                                        + (chrono::Utc::now().timestamp() % 100_000_000) as u32,
+                                ),
+                            },
+                        )));
+                        tracing::warn!(
+                            "HERBOT_SIMULATE=1: POST /internal/simulate injects admin messages (never turn this on in production)"
+                        );
+                    }
+                    _ => tracing::warn!(
+                        "HERBOT_SIMULATE=1 needs HERBOT_INTERNAL_TOKEN and HERBOT_HOME_CHAT_ID; simulation is off"
+                    ),
+                }
+            }
             poller_task = Some(tokio::spawn(poller::run(
                 bot,
                 pool.clone(),
                 settings,
                 shutdown_rx.clone(),
+                inject,
             )));
             telegram_username = Some(username);
         }
@@ -177,6 +221,9 @@ async fn main() -> anyhow::Result<()> {
     let mut router = app::router(state);
     if let Some(internal) = internal_router {
         router = router.merge(internal);
+    }
+    if let Some(simulate) = simulate_router {
+        router = router.merge(simulate);
     }
     if let Some(admin) = admin_router {
         router = router.merge(admin);
