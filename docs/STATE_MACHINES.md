@@ -109,6 +109,62 @@ polled ──▶ skipped (nothing Herbot handles)
 - **The admin's messages, commands and taps go to lanes.** Each conversation's inbound lane handles them in order, and conversations run side by side (`poller::InboundLanes`).
 - **The offset sits in `kv` (`telegram.offset`).** An update is acknowledged only once it's saved.
 
+### 9. Files from Ashrith (`inbound_files.rs`)
+
+```
+attachment ──too big (> 20 MB)──▶ refused with a reply
+           └─▶ downloaded to files/<message>-<name> ──▶ described (photo/document/video stills + transcript/audio transcript) ──▶ stored with the message ──▶ setup or the agent
+```
+
+An album's parts are stored one by one; the turn lane waits up to 4 s (`turns::ALBUM_WAIT`) for the rest and runs them as one turn.
+
+### 10. Files from an agent (`outbound_files.rs`)
+
+`[[file: …]]` line or local Markdown image → resolved (topic folder or Codex's generated images only; secret-looking names refused; ≤ 50 MB) → sent as photo/voice/audio/video/animation/document (a photo Telegram refuses goes again as a document) → stored with `attachments`. A refused file gets `⚠️ Couldn't send a file (E-…)` and the others still go.
+
+### 11. Mode: `conversations.mode`
+
+`fast ⇄ auto ⇄ expert ⇄ heavy`, any to any, by `/mode` (buttons or `/mode x`) or the panel. Each turn writes the effort it needs (`/fast`, `/think`, `/heavy`, `/deepsearch` override one message) to the topic's `.codex/config.toml` when it changes, and the header carries the mode's instruction.
+
+### 12. Spoken replies: `conversations.voice_replies`, `voice`
+
+`off ⇄ on` by `/voice`, its buttons or the panel; the voice changes on its own. After a reply's text and files are delivered: `synthesizing → voice note sent | failed` (a failure is recorded and reported; the text stays).
+
+### 13. Persona confirmation
+
+`picker → pending → applied | cancelled | expired (10 min)`. Picking again supersedes it; setup changes and wipes invalidate it; a confirmation works once, only for its topic and prompt. Applying writes AGENTS.md (→ setup `ready`) and sets the voice.
+
+### 14. Scheduled task: `tasks.status`
+
+| From | To | Trigger |
+|---|---|---|
+| (new) | `active` | Created (agent tool, `/tasks`, panel); at most 50 active |
+| `active` | `paused` / `paused` → `active` | Pause / resume (recurring tasks recompute the next run) |
+| `active` | `active` | A recurring run is claimed; next run moves past now |
+| `active` | `done` | A one-off run is claimed |
+| any | `cancelled` | Confirmed delete or cancel |
+
+The scheduler claims due tasks every 15 s (`FOR UPDATE SKIP LOCKED`), posts "⏰ …" in the topic and queues a turn. Missed runs during downtime run once, not once per missed slot; disabled or unready topics are skipped. Run now sets a flag the next claim clears.
+
+### 15. Memory and personalisation (`personal.rs`)
+
+Memories: added (`remember`, panel; near-duplicates and secrets refused; ≤ 200) → edited → forgotten (`forget`, `/memory` Forget, panel). "Forget all" in Telegram needs a confirmation that expires after 10 minutes, works only in its topic and keeps memories made after it was asked. Any change rewrites `agents/PERSONAL.md`; the next turn of every thread whose last turn is older gets "PERSONAL.md changed; reread it".
+
+### 16. Private topic: `conversations` private flag (`actions.rs`)
+
+`off ⇄ on` by `/private`. While on: no messages stored (admin or bot), memory and history tools refused, the header says private. Retry needs storage, so it's unavailable while private.
+
+### 17. Retry, edits, feedback, progress (`actions.rs`)
+
+- 🔄 button: only on the newest reply; a new reply moves it; a wipe clears it.
+- An edited message updates its stored text and queues "answer the edited version" (edits of commands are ignored).
+- Feedback: the latest reaction set per bot message is stored; a 👎 sets a pending note the next turn's header consumes.
+- Progress: none → shown after 8 s ("Working on it… 0:12", updated every 5 s) → deleted when the turn ends.
+
+### 18. Panel chat (`panel.rs`)
+
+Composer: `draft → sending → accepted | error → retry`. Accepted messages are posted to Telegram first, saved in `panel_inbox` (migration 0015), then go through the same setup/turn path and are deleted; anything left is replayed at startup, and a wipe clears it. The chat shows "thinking…" while the conversation's lane has turns queued.
+
 ## Admin panel (apps/admin)
 
 These states live in the browser and are kept explicit where they matter.

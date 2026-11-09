@@ -79,8 +79,13 @@ Built as part of Step 4: typing indicator, secret scrubbing, splitting, quoted r
 ## Step 9: Grok parity
 Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstreams (W0 by the lead, W1–W6 by GPT-6.1 Sol sub-agents) on `step-9/grok-parity`.
 - [x] W0 foundation: photos, documents, video and audio reach the agent (saved in the topic's `files/`, video as stills plus transcript); rich Markdown replies; agents send files with `[[file: …]]` (and local Markdown images); modes (`/mode` Fast/Auto/Expert/Heavy, per-topic Codex reasoning effort) and one-message `/fast`, `/think`, `/heavy`, `/deepsearch`; live web search, image generation, image viewing and sub-agents on for every topic (`agents/.codex/config.toml`); AGENTS.md ground rules v5; `/internal/simulate` for offline runs (`HERBOT_SIMULATE=1`)
-- [ ] W1 voice replies, voices, personas · W2 tasks · W3 memory and custom instructions · W4 panel as a chat app · W5 retry/edit/export/search/private/feedback/progress · W6 video generation, stickers, summaries
-- Done when: every row in GROK_PARITY.md is ✅ or ⛔ with a reason, and each feature ran once for real (simulated messages through the live bot).
+- [x] W1 spoken replies (OpenAI speech, 13 voices, `/voice`, `/speak`), original personas with voices (`/persona`, confirmed)
+- [x] W2 scheduled tasks: one-off and cron with IANA timezones (`HERBOT_TIMEZONE`), agent tools, `/tasks`, panel Tasks page, 15 s scheduler on the conversation lanes
+- [x] W3 shared memory (200 × 500 chars, `remember`/`recall`/`forget`, `/memory`) and custom instructions plus about-you (`/customize`, `/aboutme`, panel pages), in `agents/PERSONAL.md`
+- [x] W4 the panel as a chat app: web chat with attachments and per-message modes, rich rendering, new agents, topic mode, files, search, connectors
+- [x] W5 `/retry` and 🔄, edited messages re-asked, `/export` (Markdown + HTML), `/search`, `/private`, reaction feedback, a progress timer for long turns
+- [x] W6 `/imagine`, `/video` (Grok Imagine via `XAI_API_KEY`), `/sticker`, `/summary`
+- Done when: ✅ every row in GROK_PARITY.md is ✅, 🔑 or ⛔ with a reason; ✅ each ✅ feature ran once through the live bot with simulated messages (2026-11-10); 🔑 video generation runs once an `XAI_API_KEY` is added. ⏳ Ashrith tries it end to end in Telegram and the panel.
 
 ## Step 10: Isolated bots-T3 and VPS deploy
 - [ ] bots-T3 container: separate user, no host mounts except `bots/`, resource limits, rebuildable

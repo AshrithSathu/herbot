@@ -57,6 +57,11 @@ pub struct SimulateRequest {
     pub file: Option<PathBuf>,
     /// photo, document, video, audio or voice (default: from the extension).
     pub kind: Option<String>,
+    /// Edit an earlier (simulated) message of Ashrith's to `text`.
+    pub edit_of: Option<i32>,
+    /// React to a bot message with this emoji (e.g. 👎), on `message_id`.
+    pub reaction: Option<String>,
+    pub message_id: Option<i32>,
 }
 
 type Reply = (StatusCode, Json<Value>);
@@ -77,6 +82,19 @@ async fn simulate(
         .is_some_and(|given| given == state.token);
     if !authorized {
         return fail(StatusCode::UNAUTHORIZED, "bad internal token");
+    }
+    if let Some(update) = edit_or_reaction(&state, &req) {
+        return match update {
+            Ok(update) => {
+                let id = update.id.0;
+                if state.inject.send(update).is_err() {
+                    return fail(StatusCode::SERVICE_UNAVAILABLE, "the poller isn't running");
+                }
+                tracing::info!(update_id = id, "simulated an edit or reaction");
+                (StatusCode::OK, Json(json!({ "update_id": id })))
+            }
+            Err(e) => fail(StatusCode::BAD_REQUEST, e),
+        };
     }
     if req.text.trim().is_empty() && req.file.is_none() {
         return fail(StatusCode::BAD_REQUEST, "send text, a file, or both");
@@ -195,4 +213,40 @@ async fn simulate(
         StatusCode::OK,
         Json(json!({ "update_id": update_id, "message_id": message_id })),
     )
+}
+
+/// An `edited_message` or `message_reaction` update from Ashrith, when the
+/// request asks for one.
+fn edit_or_reaction(
+    state: &SimulateState,
+    req: &SimulateRequest,
+) -> Option<Result<Update, String>> {
+    let update_id = state.next_update_id.fetch_add(1, Ordering::Relaxed);
+    let from =
+        json!({ "id": state.admin_user_id, "is_bot": false, "first_name": state.admin_name });
+    let chat = json!({ "id": state.home_chat_id, "type": "supergroup", "title": state.home_title, "is_forum": true });
+    let now = Utc::now().timestamp();
+    let raw = if let Some(id) = req.edit_of {
+        let mut message = json!({
+            "message_id": id, "from": from, "chat": chat, "date": now - 60,
+            "edit_date": now, "text": req.text,
+        });
+        if let Some(topic) = req.topic_id {
+            message["message_thread_id"] = json!(topic);
+            message["is_topic_message"] = json!(true);
+        }
+        json!({ "update_id": update_id, "edited_message": message })
+    } else if let Some(emoji) = &req.reaction {
+        let Some(id) = req.message_id else {
+            return Some(Err("a reaction needs message_id".into()));
+        };
+        json!({ "update_id": update_id, "message_reaction": {
+            "chat": chat, "message_id": id, "user": from, "date": now,
+            "old_reaction": [], "new_reaction": [{ "type": "emoji", "emoji": emoji }],
+        }})
+    } else {
+        return None;
+    };
+    // teloxide's Update parses only from text, not from a JSON value.
+    Some(serde_json::from_str(&raw.to_string()).map_err(|e| e.to_string()))
 }
