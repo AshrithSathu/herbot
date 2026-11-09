@@ -3,7 +3,7 @@ use crate::{
     errors, outgoing,
     poller::{ApiError, TelegramApi},
     store,
-    turns::{TurnJob, TurnQueue},
+    turns::{ReplySlot, TurnJob, TurnQueue},
 };
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
@@ -30,7 +30,7 @@ fn timezone(s: &str) -> Result<Tz, TaskError> {
         .map_err(|_| TaskError::Invalid(format!("Unknown IANA timezone: {s}")))
 }
 pub fn next(cron: &str, tz: &str, after: DateTime<Utc>) -> Result<DateTime<Utc>, TaskError> {
-    if cron.split_whitespace().count() != 5 {
+    if cron.len() > 255 || cron.split_whitespace().count() != 5 {
         return Err(TaskError::Invalid(
             "Use five cron fields: minute hour day month weekday (0=Sunday)".into(),
         ));
@@ -98,6 +98,13 @@ pub async fn create(pool: &PgPool, req: CreateTask) -> Result<Task, TaskError> {
             ));
         }
     };
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM conversations WHERE id=$1)")
+        .bind(req.conversation_id)
+        .fetch_one(pool)
+        .await?;
+    if !exists {
+        return Err(TaskError::Invalid("Conversation not found".into()));
+    }
     let mut tx = pool.begin().await?;
     // Serialize creation and resume across all entry points, including MCP.
     sqlx::query("SELECT pg_advisory_xact_lock(130013)")
@@ -199,9 +206,9 @@ impl<A: TelegramApi> Scheduler<A> {
             } else {
                 &t.status
             };
-            sqlx::query("UPDATE tasks SET next_run_at=$2,status=$3,last_run_at=$4,run_count=run_count+1,last_error=NULL,run_requested=false WHERE id=$1").bind(t.id).bind(at).bind(status).bind(now).execute(&mut *tx).await?;
+            let claimed: Task = sqlx::query_as("UPDATE tasks SET next_run_at=$2,status=$3,last_run_at=$4,run_count=run_count+1,last_error=NULL,run_requested=false WHERE id=$1 RETURNING *").bind(t.id).bind(at).bind(status).bind(now).fetch_one(&mut *tx).await?;
             tx.commit().await?;
-            if let Err(err) = self.dispatch(&t).await {
+            if let Err(err) = self.dispatch(&claimed).await {
                 let error_id = errors::record(
                     &self.pool,
                     "task.dispatch",
@@ -250,7 +257,36 @@ impl<A: TelegramApi> Scheduler<A> {
             .await?;
         store::store_bot_message(&self.pool, t.conversation_id, id, self.bot_user_id, &header)
             .await?;
-        self.turns.submit(TurnJob {conversation_id:t.conversation_id,tg_chat_id:s.tg_chat_id,topic_id:s.tg_topic_id,reply_to:id,text:format!("This is scheduled task #{} running now. Execute the following saved prompt; do not schedule another copy:\n\n{}",t.id,t.prompt),is_voice:false,sender_name:"Ashrith (scheduled task)".into(),sender_id:self.admin_user_id,sent_at:Utc::now(),reply:None});
+        let (slot, outcome) = ReplySlot::new();
+        self.turns.submit(TurnJob {
+            conversation_id: t.conversation_id,
+            tg_chat_id: s.tg_chat_id,
+            topic_id: s.tg_topic_id,
+            reply_to: id,
+            text: format!("This is scheduled task #{} running now. Execute the following saved prompt; do not schedule another copy:\n\n{}", t.id, t.prompt),
+            is_voice: false,
+            sender_name: "Ashrith (scheduled task)".into(),
+            sender_id: self.admin_user_id,
+            sent_at: Utc::now(),
+            reply: Some(slot),
+        });
+        let pool = self.pool.clone();
+        let task_id = t.id;
+        let claimed_at = t.last_run_at;
+        tokio::spawn(async move {
+            // The turn runner already records and reports agent failures.
+            if let Ok(Err(error)) = outcome.await
+                && let Err(db) =
+                    sqlx::query("UPDATE tasks SET last_error=$2 WHERE id=$1 AND last_run_at=$3")
+                        .bind(task_id)
+                        .bind(error)
+                        .bind(claimed_at)
+                        .execute(&pool)
+                        .await
+            {
+                tracing::error!(task_id, error=%db, "could not save scheduled turn failure");
+            }
+        });
         Ok(())
     }
     pub async fn run(self, mut shutdown: tokio::sync::watch::Receiver<bool>) {

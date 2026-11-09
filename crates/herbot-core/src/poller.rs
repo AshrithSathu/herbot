@@ -815,9 +815,27 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
 ) -> Result<(), HandleError> {
     let chat = press.chat.tg_chat_id;
     if press.data.starts_with("task:") {
-        return crate::tasks::callback(ctx.pool, ctx.api, press)
-            .await
-            .map_err(Into::into);
+        if let Err(err) = crate::tasks::callback(ctx.pool, ctx.api, press).await {
+            let id = errors::record(
+                ctx.pool,
+                "task.callback",
+                &err.to_string(),
+                json!({"chat":chat,"topic":press.topic_id}),
+            )
+            .await?;
+            tracing::error!(error_id=%id,error=%err,"task button failed");
+            let message = format!("❌ Failed ({id}): scheduled task control failed. Check logs.");
+            ctx.api
+                .send_text(chat, press.topic_id, Some(press.message_id), &message)
+                .await?;
+            ctx.api
+                .answer_button(
+                    &press.callback_id,
+                    Some("Task control failed; see the error message"),
+                )
+                .await?;
+        }
+        return Ok(());
     }
     if let Some(tap) = wipe::parse(&press.data) {
         return handle_wipe_tap(ctx, press, tap).await;

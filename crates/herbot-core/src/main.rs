@@ -206,14 +206,13 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("telegram poller did not stop within 15s");
     }
 
-    if let Some(mut task) = scheduler_task {
-        if tokio::time::timeout(Duration::from_secs(15), &mut task)
+    if let Some(mut task) = scheduler_task
+        && tokio::time::timeout(Duration::from_secs(15), &mut task)
             .await
             .is_err()
-        {
-            task.abort();
-            tracing::warn!("scheduler stopped after shutdown timeout");
-        }
+    {
+        task.abort();
+        tracing::warn!("scheduler stopped after shutdown timeout");
     }
     tracing::info!("herbot-core stopped");
     Ok(())
