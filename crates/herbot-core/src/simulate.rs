@@ -170,7 +170,8 @@ async fn simulate(
         }
     }
     let raw = json!({ "update_id": update_id, "message": message });
-    let update: Update = match serde_json::from_value(raw.clone()) {
+    // teloxide's Update parses only from text, not from a JSON value.
+    let update: Update = match serde_json::from_str(&raw.to_string()) {
         Ok(u) => u,
         Err(e) => {
             return fail(

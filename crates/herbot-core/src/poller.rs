@@ -1492,7 +1492,8 @@ impl<A: TelegramApi + 'static, T: Transcriber + Send + 'static> InboundLanes<A, 
             );
         }
         for (update_id, body) in pending {
-            match serde_json::from_value::<Update>(body) {
+            // teloxide's Update parses only from text, not from a JSON value.
+            match serde_json::from_str::<Update>(&body.to_string()) {
                 Ok(update) => match self.route(&update) {
                     Route::Lane(key) => self.submit(key, update),
                     other => {
