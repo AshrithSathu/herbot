@@ -79,6 +79,12 @@ impl TelegramApi for FakeApi {
         text: &str,
         rows: &[Vec<(String, String)>],
     ) -> Result<i32, ApiError> {
+        if rows.len() == 1 && rows[0][0].1.starts_with("retry:") {
+            self.sent
+                .lock()
+                .unwrap()
+                .push((chat, topic, reply_to, text.to_string()));
+        }
         self.with_buttons.lock().unwrap().push((
             chat,
             topic,
@@ -92,7 +98,7 @@ impl TelegramApi for FakeApi {
         unreachable!()
     }
     async fn remove_buttons(&self, _: i64, _: i32) -> Result<(), ApiError> {
-        unreachable!()
+        Ok(())
     }
     async fn answer_button(&self, _: &str, _: Option<&str>) -> Result<(), ApiError> {
         unreachable!()
@@ -638,6 +644,7 @@ async fn an_ask_line_becomes_buttons_and_an_open_question(pool: PgPool) {
                 answer_button_data(question_id, 1)
             )],
             vec![("Keep them".to_string(), answer_button_data(question_id, 2))],
+            vec![("🔄".to_string(), "retry:1".to_string())],
         ]
     );
     let body: String = sqlx::query_scalar("SELECT body FROM messages WHERE from_bot")

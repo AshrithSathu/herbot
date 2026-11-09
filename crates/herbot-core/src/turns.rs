@@ -187,7 +187,31 @@ pub async fn run_turn<A: TelegramApi + 'static, R: AgentRunner>(
     job: TurnJob,
 ) {
     let typing = spawn_typing(deps.api.clone(), job.tg_chat_id, job.topic_id);
-    let result = turn(deps, &job).await;
+    let started = tokio::time::Instant::now();
+    let mut progress = None;
+    let work = turn(deps, &job);
+    tokio::pin!(work);
+    let mut next = tokio::time::Instant::now() + Duration::from_secs(8);
+    let result = loop {
+        tokio::select! {
+            result=&mut work=>break result,
+            _=tokio::time::sleep_until(next)=>{
+                let seconds=started.elapsed().as_secs();
+                let text=format!("Working on it… {}:{:02}",seconds/60,seconds%60);
+                let update=match progress {
+                    Some(id)=>deps.api.edit_text(job.tg_chat_id,id,&text).await,
+                    None=>match deps.api.send_text(job.tg_chat_id,job.topic_id,None,&text).await {Ok(id)=>{progress=Some(id);Ok(())},Err(e)=>Err(e)},
+                };
+                if let Err(e)=update {tracing::warn!(error=%e,"progress update failed");}
+                next=tokio::time::Instant::now()+Duration::from_secs(5);
+            }
+        }
+    };
+    if let Some(id) = progress
+        && let Err(e) = deps.api.delete_message(job.tg_chat_id, id).await
+    {
+        tracing::warn!(error=%e,"progress cleanup failed");
+    }
     typing.abort();
 
     let err = match result {
@@ -275,6 +299,22 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
     )
     .await?;
     let mut extra = Vec::new();
+    if store::is_private(&deps.pool, job.conversation_id).await? {
+        extra.push((
+            "private",
+            "on; do not store memories or use memory tools; Telegram and T3 retain this thread"
+                .into(),
+        ));
+    } else {
+        extra.push(("private", "off".into()));
+    }
+    let missed:bool=sqlx::query_scalar("WITH previous AS MATERIALIZED (SELECT negative_feedback FROM conversations WHERE id=$1 FOR UPDATE) UPDATE conversations SET negative_feedback=false FROM previous WHERE id=$1 RETURNING previous.negative_feedback").bind(job.conversation_id).fetch_one(&deps.pool).await?;
+    if missed {
+        extra.push((
+            "feedback",
+            "Ashrith gave a thumbs-down: the last answer missed; improve your next answer".into(),
+        ));
+    }
     match (job.style, status.mode.instruction()) {
         (Some(style), _) => extra.push(("mode", style.instruction().to_string())),
         (None, Some(instruction)) => extra.push(("mode", instruction.to_string())),
@@ -396,12 +436,30 @@ async fn deliver<A: TelegramApi, R: AgentRunner>(
             (Some(options), true) => {
                 send_with_choices(deps, job, reply_to, part, &html, options).await?
             }
+            (None, true) => {
+                deps.api
+                    .send_rich_buttons(
+                        job.tg_chat_id,
+                        job.topic_id,
+                        reply_to,
+                        &html,
+                        part,
+                        &[vec![(
+                            "🔄".into(),
+                            format!("retry:{}", job.conversation_id),
+                        )]],
+                    )
+                    .await?
+            }
             _ => {
                 deps.api
                     .send_rich(job.tg_chat_id, job.topic_id, reply_to, &html, part)
                     .await?
             }
         };
+        if i == last {
+            set_retry(deps, job, sent_id).await?;
+        }
         store::store_bot_message(
             &deps.pool,
             job.conversation_id,
@@ -438,6 +496,7 @@ async fn send_files<A: TelegramApi, R: AgentRunner>(
     let folder = agents_md::relative_dir(job.tg_chat_id, job.topic_id);
     let mut sent = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut last_message = None;
     for (i, wanted) in file_refs.iter().enumerate() {
         let reply_to = (reply_to_first && i == 0).then_some(job.reply_to);
         let resolved = match outbound_files::resolve(&deps.agents_dir, &folder, wanted).await {
@@ -509,7 +568,21 @@ async fn send_files<A: TelegramApi, R: AgentRunner>(
             name = %resolved.saved.name,
             "sent a file"
         );
+        last_message = Some(sent_id);
         sent.push(resolved.saved.name);
+    }
+    if let Some(id) = last_message {
+        deps.api
+            .set_buttons(
+                job.tg_chat_id,
+                id,
+                &[vec![(
+                    "🔄".into(),
+                    format!("retry:{}", job.conversation_id),
+                )]],
+            )
+            .await?;
+        set_retry(deps, job, id).await?;
     }
     Ok(sent)
 }
@@ -530,11 +603,15 @@ async fn send_with_choices<A: TelegramApi, R: AgentRunner>(
             TurnError::RunFailed("reply offered choices but the thread is gone".into())
         })?;
     let question_id = store::create_question(&deps.pool, thread.id, text, options).await?;
-    let rows: Vec<Vec<(String, String)>> = options
+    let mut rows: Vec<Vec<(String, String)>> = options
         .iter()
         .enumerate()
         .map(|(i, option)| vec![(option.clone(), answer_button_data(question_id, i))])
         .collect();
+    rows.push(vec![(
+        "🔄".into(),
+        format!("retry:{}", job.conversation_id),
+    )]);
     let sent_id = deps
         .api
         .send_rich_buttons(job.tg_chat_id, job.topic_id, reply_to, html, text, &rows)
@@ -655,4 +732,25 @@ impl<A: TelegramApi + Send + 'static, R: AgentRunner> TurnQueue for Lanes<A, R> 
             senders.insert(id, fresh);
         }
     }
+}
+
+async fn set_retry<A: TelegramApi, R: AgentRunner>(
+    deps: &TurnDeps<A, R>,
+    job: &TurnJob,
+    id: i32,
+) -> Result<(), TurnError> {
+    let previous: Option<i32> =
+        sqlx::query_scalar("SELECT retry_message_id FROM conversations WHERE id=$1")
+            .bind(job.conversation_id)
+            .fetch_one(&deps.pool)
+            .await?;
+    if let Some(old) = previous {
+        deps.api.remove_buttons(job.tg_chat_id, old).await?;
+    }
+    sqlx::query("UPDATE conversations SET retry_message_id=$2 WHERE id=$1")
+        .bind(job.conversation_id)
+        .bind(id)
+        .execute(&deps.pool)
+        .await?;
+    Ok(())
 }

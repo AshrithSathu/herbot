@@ -14,6 +14,7 @@
 //! - `admin`: the admin panel's API
 //! - `app`: `/health` and `/ready`
 
+pub mod actions;
 pub mod admin;
 pub mod agent;
 pub mod agents_md;
