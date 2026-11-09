@@ -187,6 +187,7 @@ impl Config {
             .map(|api_key| OpenAiConfig {
                 api_key,
                 tts_model: get("HERBOT_TTS_MODEL")
+                    .map(|m| m.trim().to_string())
                     .filter(|m| !m.trim().is_empty())
                     .unwrap_or_else(|| crate::speech::DEFAULT_MODEL.into()),
                 transcribe_model: get("HERBOT_TRANSCRIBE_MODEL")

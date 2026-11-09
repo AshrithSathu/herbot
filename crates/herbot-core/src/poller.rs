@@ -28,7 +28,7 @@ use crate::media::{Activity, FileKind, OutFile};
 use crate::policy::{self, Action, Rules};
 use crate::setup;
 use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
-use crate::telegram::{self, ButtonPress, ChatKind, Command, Inbound, InboundMessage};
+use crate::telegram::{self, ButtonPress, ChatKind, Command, InboundMessage};
 use crate::turns::{self, TurnJob, TurnQueue};
 use crate::voice::{MAX_VOICE_SECONDS, Transcriber, VoiceError};
 use crate::wipe;
@@ -912,9 +912,6 @@ async fn handle_keep_tap<A: TelegramApi, T: Transcriber>(
     press: &ButtonPress,
     conversation_id: i64,
 ) -> Result<(), HandleError> {
-    if press.data.starts_with("voice:") || press.data.starts_with("persona:") {
-        return crate::speech::button(ctx, press).await;
-    }
     let chat = press.chat.tg_chat_id;
     let here = store::find_conversation(ctx.pool, chat, press.topic_id).await?;
     if here != Some(conversation_id) {
@@ -976,9 +973,6 @@ async fn handle_wipe_tap<A: TelegramApi, T: Transcriber>(
     press: &ButtonPress,
     tap: wipe::WipeTap,
 ) -> Result<(), HandleError> {
-    if press.data.starts_with("voice:") || press.data.starts_with("persona:") {
-        return crate::speech::button(ctx, press).await;
-    }
     let chat = press.chat.tg_chat_id;
     let here = store::find_conversation(ctx.pool, chat, press.topic_id).await?;
     if here != Some(tap.conversation_id) {
@@ -1103,25 +1097,24 @@ pub async fn process<A: TelegramApi, T: Transcriber>(
         }
     };
 
-    // Fail loud: tell the admin where it happened, if it was their message.
-    if let Some(Inbound::Message(msg)) = telegram::normalize(update, ctx.bot_username)
-        && msg.from_user_id == ctx.rules.admin_user_id
-        && msg.chat.kind != ChatKind::Private
-    {
+    // Reapply the policy before reporting: strangers and other chats stay silent.
+    let target = telegram::normalize(update, ctx.bot_username)
+        .map(|inbound| policy::decide(inbound, &ctx.rules))
+        .and_then(|action| match action {
+            Action::Store(msg) | Action::RunCommand(msg, _) => {
+                Some((msg.chat.tg_chat_id, msg.topic_id, msg.message_id))
+            }
+            Action::Button(press) => {
+                Some((press.chat.tg_chat_id, press.topic_id, press.message_id))
+            }
+            _ => None,
+        });
+    if let Some((chat, topic, message)) = target {
         let text = format!(
             "❌ Failed ({error_id}): {}. Check logs.",
             short_reason(&err)
         );
-        if let Err(send_err) = ctx
-            .api
-            .send_text(
-                msg.chat.tg_chat_id,
-                msg.topic_id,
-                Some(msg.message_id),
-                &text,
-            )
-            .await
-        {
+        if let Err(send_err) = ctx.api.send_text(chat, topic, Some(message), &text).await {
             tracing::error!(%error_id, error = %send_err, "could not tell the admin about the failure");
         }
     }
@@ -1130,6 +1123,7 @@ pub async fn process<A: TelegramApi, T: Transcriber>(
 
 fn short_reason(err: &HandleError) -> &'static str {
     match err {
+        HandleError::Speech(_) => "speech or voice settings failed",
         HandleError::Db(_) => "database error",
         HandleError::Api(_) => "Telegram API error",
         HandleError::Voice(VoiceError::NotConfigured) => "voice notes are off (no OPENAI_API_KEY)",

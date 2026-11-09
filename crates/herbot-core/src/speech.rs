@@ -134,14 +134,14 @@ pub fn speakable(text: &str) -> String {
             fenced = !fenced;
             continue;
         }
-        if !fenced {
+        if !fenced && !line.starts_with("    ") && !line.starts_with('\t') {
             lines.push(line);
         }
     }
     let plain = lines.join(" ");
     let links = regex::Regex::new(r"!?\[([^\]]*)\]\([^)]*\)").expect("link regex");
     let plain = links.replace_all(&plain, "$1");
-    let urls = regex::Regex::new(r"https?://\S+").expect("URL regex");
+    let urls = regex::Regex::new(r"(?:https?://|www\.)\S+").expect("URL regex");
     let plain = urls.replace_all(&plain, "");
     let plain: String = plain.chars().filter(|c| !"*`#_>|".contains(*c)).collect();
     let plain = plain.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -326,21 +326,6 @@ pub const PRESETS: &[Preset] = &[
         purpose: "Help Ashrith cook enjoyable meals with ingredients, equipment and time he actually has. Offer clear quantities and ordered steps, explain useful techniques and suggest sensible substitutions. Ask about dietary needs when relevant and ground food safety advice in reliable guidance.",
     },
 ];
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn speech_text_omits_code_links_and_bounds_unicode() {
-        assert_eq!(
-            super::speakable(
-                "**Hello** [world](https://example.com)\n```rust\nsecret code\n```\nhttps://example.com"
-            ),
-            "Hello world"
-        );
-        let text = super::speakable(&"é".repeat(4000));
-        assert!(text.chars().count() < 3600 && text.ends_with("The rest is in the text reply."));
-    }
-}
 
 pub async fn command<A: TelegramApi, T: crate::voice::Transcriber>(
     ctx: &crate::poller::Ctx<'_, A, T>,
@@ -559,4 +544,70 @@ pub async fn button<A: TelegramApi, T: crate::voice::Transcriber>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn speech_request_uses_opus_and_reports_api_failures() {
+        use super::{OpenAiSpeaker, Speaker, SpeechError};
+        use axum::{
+            Json, Router,
+            http::{HeaderMap, StatusCode},
+            routing::post,
+        };
+        let app = Router::new().route(
+            "/audio/speech",
+            post(
+                |headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                    assert_eq!(headers["authorization"], "Bearer test-key");
+                    assert_eq!(body["model"], "test-model");
+                    assert_eq!(body["voice"], "marin");
+                    assert_eq!(body["response_format"], "opus");
+                    assert_eq!(body["input"], "Hello world");
+                    (StatusCode::TOO_MANY_REQUESTS, "quota")
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async { axum::serve(listener, app).await.unwrap() });
+        let client = OpenAiSpeaker::with_base_url("test-key".into(), "test-model".into(), url);
+        assert!(matches!(
+            client.speak("**Hello** world", "marin").await,
+            Err(SpeechError::Api(429))
+        ));
+        assert!(matches!(
+            client.speak("hello", "invalid").await,
+            Err(SpeechError::InvalidVoice)
+        ));
+        server.abort();
+    }
+
+    #[test]
+    fn voice_callbacks_fit_telegram_and_presets_are_valid() {
+        let (_, rows) = super::voice_menu(i64::MAX, true, super::DEFAULT_VOICE);
+        assert_eq!(rows.len(), super::VOICES.len() + 1);
+        for row in rows {
+            for (_, data) in row {
+                assert!(data.len() <= 64);
+            }
+        }
+        for preset in super::PRESETS {
+            assert!(super::valid_voice(preset.voice));
+            assert!(crate::setup::validate_purpose(preset.purpose).is_ok());
+        }
+    }
+
+    #[test]
+    fn speech_text_omits_code_links_and_bounds_unicode() {
+        assert_eq!(
+            super::speakable(
+                "**Hello** [world](https://example.com)\n```rust\nsecret code\n```\nhttps://example.com"
+            ),
+            "Hello world"
+        );
+        let text = super::speakable(&"é".repeat(4000));
+        assert!(text.chars().count() < 3600 && text.ends_with("The rest is in the text reply."));
+    }
 }
