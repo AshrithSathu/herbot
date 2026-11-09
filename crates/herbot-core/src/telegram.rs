@@ -82,10 +82,131 @@ pub struct InboundMessage {
     pub text: String,
     /// Set for voice notes.
     pub voice: Option<VoiceNote>,
+    /// A photo, document, video, audio file, GIF or sticker sent with it.
+    pub attachment: Option<Attachment>,
+    /// Where that attachment was saved, once the poller has downloaded it.
+    pub files: Vec<crate::media::SavedFile>,
     pub reply_to_message_id: Option<i32>,
     pub sent_at: DateTime<Utc>,
     /// Set when the text is a slash command addressed to this bot.
     pub command: Option<Command>,
+}
+
+/// A file that came with a message (voice notes are [`VoiceNote`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    pub kind: AttachmentKind,
+    /// Telegram file ID, used to download it.
+    pub file_id: String,
+    pub file_name: Option<String>,
+    pub mime: Option<String>,
+    /// Bytes, when Telegram says (bots can download up to 20 MB).
+    pub size: Option<u32>,
+    pub duration_secs: Option<u32>,
+    /// A sticker's emoji.
+    pub emoji: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentKind {
+    Photo,
+    Document,
+    Video,
+    /// A round video message.
+    VideoNote,
+    Audio,
+    /// A GIF (Telegram sends it as a silent MP4).
+    Animation,
+    Sticker,
+}
+
+impl AttachmentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AttachmentKind::Photo => "photo",
+            AttachmentKind::Document => "document",
+            AttachmentKind::Video => "video",
+            AttachmentKind::VideoNote => "video note",
+            AttachmentKind::Audio => "audio",
+            AttachmentKind::Animation => "GIF",
+            AttachmentKind::Sticker => "sticker",
+        }
+    }
+}
+
+fn attachment_of(msg: &Message) -> Option<Attachment> {
+    let base = |kind, file: &teloxide::types::FileMeta| Attachment {
+        kind,
+        file_id: file.id.0.clone(),
+        file_name: None,
+        mime: None,
+        size: Some(file.size),
+        duration_secs: None,
+        emoji: None,
+    };
+    if let Some(sizes) = msg.photo() {
+        // Sizes come smallest first; the last is the full photo.
+        let largest = sizes.last()?;
+        return Some(Attachment {
+            mime: Some("image/jpeg".into()),
+            ..base(AttachmentKind::Photo, &largest.file)
+        });
+    }
+    if let Some(d) = msg.document() {
+        return Some(Attachment {
+            file_name: d.file_name.clone(),
+            mime: d.mime_type.as_ref().map(|m| m.to_string()),
+            ..base(AttachmentKind::Document, &d.file)
+        });
+    }
+    if let Some(v) = msg.video() {
+        return Some(Attachment {
+            file_name: v.file_name.clone(),
+            mime: v.mime_type.as_ref().map(|m| m.to_string()),
+            duration_secs: Some(v.duration.seconds()),
+            ..base(AttachmentKind::Video, &v.file)
+        });
+    }
+    if let Some(v) = msg.video_note() {
+        return Some(Attachment {
+            mime: Some("video/mp4".into()),
+            duration_secs: Some(v.duration.seconds()),
+            ..base(AttachmentKind::VideoNote, &v.file)
+        });
+    }
+    if let Some(a) = msg.audio() {
+        return Some(Attachment {
+            file_name: a.file_name.clone(),
+            mime: a.mime_type.as_ref().map(|m| m.to_string()),
+            duration_secs: Some(a.duration.seconds()),
+            ..base(AttachmentKind::Audio, &a.file)
+        });
+    }
+    if let Some(a) = msg.animation() {
+        return Some(Attachment {
+            file_name: a.file_name.clone(),
+            mime: a.mime_type.as_ref().map(|m| m.to_string()),
+            duration_secs: Some(a.duration.seconds()),
+            ..base(AttachmentKind::Animation, &a.file)
+        });
+    }
+    if let Some(s) = msg.sticker() {
+        return Some(Attachment {
+            emoji: s.emoji.clone(),
+            mime: Some(
+                if s.is_video() {
+                    "video/webm"
+                } else if s.is_animated() {
+                    "application/x-tgsticker"
+                } else {
+                    "image/webp"
+                }
+                .into(),
+            ),
+            ..base(AttachmentKind::Sticker, &s.file)
+        });
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,7 +363,7 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         });
     }
 
-    // Anything else needs a sender and either words or a voice note.
+    // Anything else needs a sender and words, a voice note or a file.
     let from = from?;
     let voice = msg.voice().map(|v| VoiceNote {
         file_id: v.file.id.0.clone(),
@@ -253,8 +374,9 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         .or_else(|| msg.caption())
         .unwrap_or_default()
         .to_string();
-    if text.is_empty() && voice.is_none() {
-        return None; // stickers, polls, plain photos, ...
+    let attachment = attachment_of(msg);
+    if text.is_empty() && voice.is_none() && attachment.is_none() {
+        return None; // polls, contacts, locations, ...
     }
     let command = match parse_command(&text, bot_username) {
         CommandParse::NotACommand => None,
@@ -280,6 +402,8 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         from_is_bot: from.is_bot,
         text,
         voice,
+        attachment,
+        files: Vec::new(),
         reply_to_message_id,
         sent_at: msg.date,
         command,

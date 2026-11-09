@@ -70,6 +70,19 @@ impl OutFile {
     }
 }
 
+/// A file saved on this machine and recorded with its message
+/// (`messages.attachments`), for the agent and the admin panel.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SavedFile {
+    /// photo, document, video, video note, audio, GIF, sticker, voice
+    pub kind: String,
+    /// Relative to the agents root (`HERBOT_AGENTS_DIR`).
+    pub path: String,
+    pub name: String,
+    pub mime: Option<String>,
+    pub size: u64,
+}
+
 /// What the bot is doing, shown at the top of the chat ("sending a photo…").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activity {

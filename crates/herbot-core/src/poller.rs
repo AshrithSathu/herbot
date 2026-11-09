@@ -24,6 +24,7 @@ use tokio::sync::{mpsc, watch};
 use crate::agent::{AgentError, ProjectCleaner};
 use crate::agents_md;
 use crate::errors::{self, ErrorId};
+use crate::inbound_files;
 use crate::media::{Activity, FileKind, OutFile};
 use crate::policy::{self, Action, Rules};
 use crate::setup;
@@ -440,6 +441,8 @@ pub enum HandleError {
     AgentsMd(#[from] std::io::Error),
     #[error(transparent)]
     T3(#[from] AgentError),
+    #[error("could not receive the file: {0}")]
+    Media(#[from] inbound_files::FileError),
 }
 
 impl From<wipe::WipeError> for HandleError {
@@ -460,6 +463,7 @@ impl HandleError {
             HandleError::Voice(_) => "voice.transcribe",
             HandleError::AgentsMd(_) => "agents_md.write",
             HandleError::T3(_) => "t3.project_remove",
+            HandleError::Media(_) => "media.receive",
         }
     }
 }
@@ -583,6 +587,41 @@ async fn take_message<A: TelegramApi, T: Transcriber>(
         } else {
             format!("{}\n\n{}", msg.text.trim(), transcript)
         };
+    }
+    // Photos, documents, video and audio: saved in the topic's folder and
+    // described to the agent.
+    if let Some(attachment) = msg.attachment.clone() {
+        let folder = agents_md::relative_dir(msg.chat.tg_chat_id, msg.topic_id);
+        let received = inbound_files::receive(
+            ctx.api,
+            ctx.transcriber,
+            ctx.agents_dir,
+            &folder,
+            msg.message_id,
+            &attachment,
+        )
+        .await;
+        match received {
+            Ok(received) => {
+                tracing::info!(kind = attachment.kind.as_str(), path = %received.file.path, "received a file");
+                msg.text = if msg.text.trim().is_empty() {
+                    received.note
+                } else {
+                    format!("{}\n\n{}", msg.text.trim(), received.note)
+                };
+                msg.files.push(received.file);
+            }
+            Err(too_big @ inbound_files::FileError::TooBig { .. }) => {
+                reply(
+                    ctx,
+                    &msg,
+                    &format!("📎 {too_big}. Send a smaller file or a link."),
+                )
+                .await?;
+                return Ok(());
+            }
+            Err(err) => return Err(err.into()),
+        }
     }
     store_and_continue(ctx, &msg).await
 }
@@ -1083,6 +1122,7 @@ fn short_reason(err: &HandleError) -> &'static str {
         HandleError::Voice(_) => "couldn't transcribe that voice note",
         HandleError::AgentsMd(_) => "couldn't save AGENTS.md",
         HandleError::T3(_) => "couldn't delete this topic's T3 threads, so nothing was wiped",
+        HandleError::Media(_) => "couldn't receive that file",
     }
 }
 

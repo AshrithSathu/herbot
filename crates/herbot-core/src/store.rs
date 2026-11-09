@@ -204,8 +204,8 @@ pub async fn store_message(
 
     let inserted: Option<i64> = sqlx::query_scalar(
         "INSERT INTO messages
-             (conversation_id, tg_message_id, from_tg_user_id, body, reply_to_tg_message_id, sent_at, is_voice)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+             (conversation_id, tg_message_id, from_tg_user_id, body, reply_to_tg_message_id, sent_at, is_voice, attachments)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (conversation_id, tg_message_id) DO NOTHING
          RETURNING id",
     )
@@ -216,6 +216,7 @@ pub async fn store_message(
     .bind(msg.reply_to_message_id)
     .bind(msg.sent_at)
     .bind(msg.voice.is_some())
+    .bind(json!(msg.files))
     .fetch_optional(pool)
     .await?;
 
@@ -580,6 +581,30 @@ pub async fn mark_project_registered(
 }
 
 /// Stores one of the bot's own replies, so history search sees both sides.
+/// Stores a file the bot sent (an agent's image, document, voice reply…).
+pub async fn store_bot_file(
+    pool: &PgPool,
+    conversation_id: i64,
+    tg_message_id: i32,
+    bot_user_id: u64,
+    body: &str,
+    file: &crate::media::SavedFile,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO messages (conversation_id, tg_message_id, from_tg_user_id, from_bot, body, sent_at, attachments)
+         VALUES ($1, $2, $3, true, $4, now(), $5)
+         ON CONFLICT (conversation_id, tg_message_id) DO NOTHING",
+    )
+    .bind(conversation_id)
+    .bind(tg_message_id)
+    .bind(bot_user_id as i64)
+    .bind(body)
+    .bind(json!([file]))
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
 pub async fn store_bot_message(
     pool: &PgPool,
     conversation_id: i64,

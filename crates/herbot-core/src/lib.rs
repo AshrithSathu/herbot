@@ -22,6 +22,7 @@ pub mod config;
 pub mod db;
 pub mod errors;
 pub mod hub;
+pub mod inbound_files;
 pub mod internal;
 pub mod media;
 pub mod meta;

@@ -89,9 +89,14 @@ pub fn decide(inbound: Inbound, rules: &Rules) -> Action {
             }
             match msg.command.clone() {
                 Some(cmd) => Action::RunCommand(msg, cmd),
-                None if msg.text.trim().is_empty() && msg.voice.is_none() => Action::Ignore {
-                    reason: "empty message",
-                },
+                None if msg.text.trim().is_empty()
+                    && msg.voice.is_none()
+                    && msg.attachment.is_none() =>
+                {
+                    Action::Ignore {
+                        reason: "empty message",
+                    }
+                }
                 None => Action::Store(msg),
             }
         }
@@ -183,6 +188,8 @@ mod tests {
             from_is_bot: false,
             text: text.into(),
             voice: None,
+            attachment: None,
+            files: Vec::new(),
             reply_to_message_id: None,
             sent_at: Utc::now(),
             command,
