@@ -362,41 +362,51 @@ async fn apply<A: TelegramApi, T: Transcriber>(
         Action::RenameChat { chat, title } => {
             store::rename_chat(ctx.pool, chat.tg_chat_id, &title).await?;
         }
-        Action::Store(mut msg) => {
-            mark_seen(ctx, &msg).await;
-            // Voice notes become English text before anything else sees them.
-            if let Some(voice) = msg.voice.clone() {
-                if voice.duration_secs > MAX_VOICE_SECONDS {
-                    let text = setup::too_long(voice.duration_secs, MAX_VOICE_SECONDS);
-                    reply(ctx, &msg, &text).await?;
-                    return Ok(());
-                }
-                let audio = ctx.api.download_file(&voice.file_id).await?;
-                let transcript = ctx.transcriber.transcribe(audio).await?;
-                if transcript.trim().is_empty() {
-                    reply(ctx, &msg, setup::NOTHING_HEARD).await?;
-                    return Ok(());
-                }
-                tracing::info!(
-                    seconds = voice.duration_secs,
-                    chars = transcript.len(),
-                    "transcribed voice note"
-                );
-                msg.text = if msg.text.trim().is_empty() {
-                    transcript
-                } else {
-                    format!("{}\n\n{}", msg.text.trim(), transcript)
-                };
-            }
-            store_and_continue(ctx, &msg).await?;
+        // The 👀 goes out alongside the work, not one Telegram round trip
+        // before it.
+        Action::Store(msg) => {
+            let ((), handled) = tokio::join!(mark_seen(ctx, &msg), take_message(ctx, msg.clone()));
+            handled?
         }
         Action::RunCommand(msg, cmd) => {
-            mark_seen(ctx, &msg).await;
-            run_command(ctx, &msg, cmd).await?
+            let ((), ran) = tokio::join!(mark_seen(ctx, &msg), run_command(ctx, &msg, cmd));
+            ran?
         }
         Action::Button(press) => handle_button(ctx, &press).await?,
     }
     Ok(())
+}
+
+/// An admin message: voice notes become English text before anything else
+/// sees them, then it's stored and setup or the agent takes it from there.
+async fn take_message<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    mut msg: InboundMessage,
+) -> Result<(), HandleError> {
+    if let Some(voice) = msg.voice.clone() {
+        if voice.duration_secs > MAX_VOICE_SECONDS {
+            let text = setup::too_long(voice.duration_secs, MAX_VOICE_SECONDS);
+            reply(ctx, &msg, &text).await?;
+            return Ok(());
+        }
+        let audio = ctx.api.download_file(&voice.file_id).await?;
+        let transcript = ctx.transcriber.transcribe(audio).await?;
+        if transcript.trim().is_empty() {
+            reply(ctx, &msg, setup::NOTHING_HEARD).await?;
+            return Ok(());
+        }
+        tracing::info!(
+            seconds = voice.duration_secs,
+            chars = transcript.len(),
+            "transcribed voice note"
+        );
+        msg.text = if msg.text.trim().is_empty() {
+            transcript
+        } else {
+            format!("{}\n\n{}", msg.text.trim(), transcript)
+        };
+    }
+    store_and_continue(ctx, &msg).await
 }
 
 /// Reacts 👀 to an admin message as soon as it arrives. A failed reaction
