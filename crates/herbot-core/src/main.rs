@@ -91,8 +91,10 @@ async fn main() -> anyhow::Result<()> {
             );
             let projects: Arc<dyn agent::ProjectCleaner> = Arc::new(runner.clone());
             let api = Arc::new(poller::BotApi(bot.clone()));
+            let speaker = herbot_core::speech::configured(config.openai.as_ref());
             let lanes = Arc::new(turns::Lanes::new(turns::TurnDeps {
                 pool: pool.clone(),
+                speaker: speaker.clone(),
                 api: api.clone(),
                 runner: Arc::new(runner),
                 agents_dir: agents_dir.clone(),
@@ -117,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
                 ),
             }
             let settings = poller::RunSettings {
+                speaker,
                 rules,
                 bot_username: username.clone(),
                 transcriber,

@@ -87,6 +87,7 @@ pub trait TurnQueue: Send + Sync {
 /// Everything a turn needs; shared by all lanes.
 pub struct TurnDeps<A: TelegramApi, R: AgentRunner> {
     pub pool: PgPool,
+    pub speaker: Arc<dyn crate::speech::Speaker>,
     pub api: Arc<A>,
     pub runner: Arc<R>,
     /// Absolute root of the conversation folders.
@@ -351,6 +352,7 @@ async fn deliver<A: TelegramApi, R: AgentRunner>(
         )
         .await?;
     }
+    crate::speech::after_reply(&deps.pool, &*deps.api, &*deps.speaker, job, &body).await;
     // What the caller of `ask_topic` gets back: the reply as sent, with the
     // options listed (they were buttons in Telegram).
     Ok(match choices {

@@ -183,6 +183,7 @@ mod tests {
             from_is_bot: false,
             text: text.into(),
             voice: None,
+            replied_bot_text: None,
             reply_to_message_id: None,
             sent_at: Utc::now(),
             command,

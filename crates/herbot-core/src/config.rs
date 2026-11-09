@@ -12,7 +12,7 @@ pub struct Config {
     pub log_format: LogFormat,
     /// Telegram settings; `None` when `TELEGRAM_BOT_TOKEN` is unset or empty.
     pub telegram: Option<TelegramConfig>,
-    /// OpenAI, used only to transcribe voice notes; `None` without `OPENAI_API_KEY`.
+    /// OpenAI, used for voice transcription and spoken replies; `None` without `OPENAI_API_KEY`.
     pub openai: Option<OpenAiConfig>,
     /// Root folder for each conversation's AGENTS.md (`HERBOT_AGENTS_DIR`).
     pub agents_dir: PathBuf,
@@ -53,6 +53,7 @@ pub struct OpenAiConfig {
     pub api_key: String,
     /// `HERBOT_TRANSCRIBE_MODEL`, default `gpt-transcribe`.
     pub transcribe_model: String,
+    pub tts_model: String,
 }
 
 impl std::fmt::Debug for OpenAiConfig {
@@ -60,6 +61,7 @@ impl std::fmt::Debug for OpenAiConfig {
         f.debug_struct("OpenAiConfig")
             .field("api_key", &"<redacted>")
             .field("transcribe_model", &self.transcribe_model)
+            .field("tts_model", &self.tts_model)
             .finish()
     }
 }
@@ -184,6 +186,9 @@ impl Config {
             .filter(|k| !k.is_empty())
             .map(|api_key| OpenAiConfig {
                 api_key,
+                tts_model: get("HERBOT_TTS_MODEL")
+                    .filter(|m| !m.trim().is_empty())
+                    .unwrap_or_else(|| crate::speech::DEFAULT_MODEL.into()),
                 transcribe_model: get("HERBOT_TRANSCRIBE_MODEL")
                     .map(|m| m.trim().to_string())
                     .filter(|m| !m.is_empty())

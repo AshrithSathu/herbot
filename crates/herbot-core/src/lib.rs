@@ -29,6 +29,7 @@ pub mod outgoing;
 pub mod policy;
 pub mod poller;
 pub mod setup;
+pub mod speech;
 pub mod store;
 pub mod telegram;
 pub mod telemetry;

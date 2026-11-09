@@ -31,6 +31,8 @@ pub struct ConversationStatus {
     pub topic_name: Option<String>,
     /// Switched off in the admin panel: messages there are ignored.
     pub enabled: bool,
+    pub voice_replies: bool,
+    pub voice: String,
     pub message_count: i64,
     /// When the newest stored message was sent.
     pub last_message_at: Option<DateTime<Utc>>,
@@ -252,6 +254,8 @@ struct StatusRow {
     tg_topic_id: Option<i32>,
     name: String,
     enabled: bool,
+    voice_replies: bool,
+    voice: String,
     message_count: i64,
     last_message_at: Option<DateTime<Utc>>,
     bot_name: Option<String>,
@@ -271,7 +275,7 @@ macro_rules! status_select {
     ($rest:literal) => {
         concat!(
             "SELECT v.id, c.tg_chat_id, c.title, c.kind, c.is_forum, v.tg_topic_id,
-            v.name, v.enabled, v.message_count, v.last_message_at, b.name AS bot_name,
+            v.name, v.enabled, v.voice_replies, v.voice, v.message_count, v.last_message_at, b.name AS bot_name,
             t.t3_thread_id, t.t3_link, v.purpose, v.setup_state, v.agents_md_path,
             v.agents_md_updated_at, v.t3_project_registered
      FROM conversations v
@@ -294,6 +298,8 @@ impl From<StatusRow> for ConversationStatus {
             tg_topic_id: row.tg_topic_id,
             topic_name: row.tg_topic_id.map(|_| row.name).filter(|n| !n.is_empty()),
             enabled: row.enabled,
+            voice_replies: row.voice_replies,
+            voice: row.voice,
             message_count: row.message_count,
             last_message_at: row.last_message_at,
             bot_name: row.bot_name,

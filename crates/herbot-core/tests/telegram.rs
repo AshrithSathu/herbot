@@ -332,6 +332,7 @@ impl H {
 
     fn ctx(&self, rules: Rules) -> Ctx<'_, FakeApi, FakeVoice> {
         Ctx {
+            speaker: &herbot_core::speech::NoSpeaker,
             pool: &self.pool,
             api: &self.api,
             transcriber: &self.voice,
@@ -1818,6 +1819,7 @@ fn lanes(
     InboundLanes::new(
         pool.clone(),
         RunSettings {
+            speaker: std::sync::Arc::new(herbot_core::speech::NoSpeaker),
             rules: LOCKED,
             bot_username: BOT.to_string(),
             transcriber: voice,

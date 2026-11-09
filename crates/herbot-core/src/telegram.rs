@@ -41,6 +41,9 @@ pub struct ChatRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Start,
+    Voice(String),
+    Speak,
+    Persona,
     Help,
     Status,
     Setup,
@@ -57,6 +60,9 @@ pub enum Command {
 
 /// All commands shown in Telegram's `/` menu, with descriptions.
 pub const COMMAND_MENU: &[(&str, &str)] = &[
+    ("voice", "Spoken replies and voice picker"),
+    ("speak", "Read a replied-to bot message aloud"),
+    ("persona", "Choose a purpose and matching voice"),
     ("setup", "Set what this conversation is for"),
     ("status", "Show this conversation's details"),
     (
@@ -82,6 +88,7 @@ pub struct InboundMessage {
     pub text: String,
     /// Set for voice notes.
     pub voice: Option<VoiceNote>,
+    pub replied_bot_text: Option<String>,
     pub reply_to_message_id: Option<i32>,
     pub sent_at: DateTime<Utc>,
     /// Set when the text is a slash command addressed to this bot.
@@ -280,6 +287,19 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         from_is_bot: from.is_bot,
         text,
         voice,
+        replied_bot_text: msg
+            .reply_to_message()
+            .filter(|m| Some(m.id.0) != topic)
+            .filter(|m| {
+                m.from.as_ref().is_some_and(|u| {
+                    u.is_bot
+                        && u.username
+                            .as_deref()
+                            .is_some_and(|n| n.eq_ignore_ascii_case(bot_username))
+                })
+            })
+            .and_then(|m| m.text().or_else(|| m.caption()))
+            .map(str::to_owned),
         reply_to_message_id,
         sent_at: msg.date,
         command,
@@ -333,6 +353,13 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
         return CommandParse::ForAnotherBot;
     }
     let cmd = match name.to_ascii_lowercase().as_str() {
+        "voice" => Command::Voice(
+            rest.split_once(char::is_whitespace)
+                .map(|(_, args)| args.trim().to_ascii_lowercase())
+                .unwrap_or_default(),
+        ),
+        "speak" => Command::Speak,
+        "persona" => Command::Persona,
         "start" => Command::Start,
         "help" => Command::Help,
         "status" => Command::Status,
