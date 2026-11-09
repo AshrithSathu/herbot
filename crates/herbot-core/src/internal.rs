@@ -163,6 +163,7 @@ async fn ask_topic<A: TelegramApi + 'static>(
         sent_at: Utc::now(),
         reply: Some(slot),
         style: None,
+        album: None,
     });
     tracing::info!(
         conversation_id = target.conversation_id,

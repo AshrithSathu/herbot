@@ -102,6 +102,8 @@ pub struct InboundMessage {
     pub attachment: Option<Attachment>,
     /// Where that attachment was saved, once the poller has downloaded it.
     pub files: Vec<crate::media::SavedFile>,
+    /// Set for each photo or file of an album (several sent at once).
+    pub media_group_id: Option<String>,
     pub reply_to_message_id: Option<i32>,
     pub sent_at: DateTime<Utc>,
     /// Set when the text is a slash command addressed to this bot.
@@ -421,6 +423,7 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         voice,
         attachment,
         files: Vec::new(),
+        media_group_id: msg.media_group_id().map(|g| g.0.clone()),
         reply_to_message_id,
         sent_at: msg.date,
         command,

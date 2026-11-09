@@ -269,6 +269,7 @@ fn job(conversation_id: i64, topic: Option<i32>, reply_to: i32, text: &str) -> T
         sent_at: Utc::now(),
         reply: None,
         style: None,
+        album: None,
     }
 }
 

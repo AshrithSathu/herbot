@@ -779,6 +779,7 @@ fn submit_turn<A: TelegramApi, T: Transcriber>(
         sent_at: msg.sent_at,
         reply: None,
         style,
+        album: msg.media_group_id.clone(),
     });
 }
 
@@ -1005,6 +1006,7 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
         sent_at: Utc::now(),
         reply: None,
         style: None,
+        album: None,
     });
     Ok(())
 }

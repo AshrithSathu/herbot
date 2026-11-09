@@ -46,7 +46,13 @@ pub struct TurnJob {
     pub reply: Option<ReplySlot>,
     /// `/fast`, `/think`, `/heavy` or `/deepsearch`: this one message's mode.
     pub style: Option<Style>,
+    /// An album's id: its photos and files arrive as separate messages and
+    /// become one turn (see [`ALBUM_WAIT`]).
+    pub album: Option<String>,
 }
+
+/// How long a lane waits for the rest of an album before running its turn.
+pub const ALBUM_WAIT: Duration = Duration::from_secs(4);
 
 /// A one-shot channel for a turn's outcome, shareable so `TurnJob` stays
 /// `Clone`. Only the first send is delivered.
@@ -589,7 +595,36 @@ impl<A: TelegramApi + Send + 'static, R: AgentRunner> Lanes<A, R> {
         let (tx, mut rx) = mpsc::unbounded_channel::<TurnJob>();
         let deps = self.deps.clone();
         tokio::spawn(async move {
-            while let Some(job) = rx.recv().await {
+            let mut next: Option<TurnJob> = None;
+            loop {
+                let job = match next.take() {
+                    Some(job) => job,
+                    None => match rx.recv().await {
+                        Some(job) => job,
+                        None => break,
+                    },
+                };
+                // An album: gather its other parts into one turn.
+                let job = match job.album.clone() {
+                    None => job,
+                    Some(album) => {
+                        let mut merged = job;
+                        loop {
+                            match tokio::time::timeout(ALBUM_WAIT, rx.recv()).await {
+                                Ok(Some(part)) if part.album.as_deref() == Some(album.as_str()) => {
+                                    merged.text.push_str("\n\n");
+                                    merged.text.push_str(&part.text);
+                                }
+                                Ok(Some(other)) => {
+                                    next = Some(other);
+                                    break;
+                                }
+                                _ => break,
+                            }
+                        }
+                        merged
+                    }
+                };
                 run_turn(&deps, job).await;
             }
         });
