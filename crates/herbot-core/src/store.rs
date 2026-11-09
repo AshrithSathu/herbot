@@ -426,6 +426,49 @@ pub async fn save_offset(pool: &PgPool, offset: i32) -> Result<(), sqlx::Error> 
     .map(|_| ())
 }
 
+/// Saves admin updates to the inbox and moves the poll offset past the whole
+/// batch, in one transaction: an update is either acknowledged and saved, or
+/// neither (and Telegram sends it again).
+pub async fn inbox_save(
+    pool: &PgPool,
+    updates: &[(i64, serde_json::Value)],
+    next_offset: i32,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for (update_id, body) in updates {
+        sqlx::query("INSERT INTO inbox (update_id, body) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(update_id)
+            .bind(body)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query(
+        "INSERT INTO kv (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+    )
+    .bind(OFFSET_KEY)
+    .bind(json!(next_offset))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
+}
+
+/// Updates saved but not yet handled, oldest first.
+pub async fn inbox_pending(pool: &PgPool) -> Result<Vec<(i64, serde_json::Value)>, sqlx::Error> {
+    sqlx::query_as("SELECT update_id, body FROM inbox ORDER BY update_id")
+        .fetch_all(pool)
+        .await
+}
+
+/// An update has been handled (successfully or with its error recorded).
+pub async fn inbox_done(pool: &PgPool, update_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM inbox WHERE update_id = $1")
+        .bind(update_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
 /// The conversation's current T3 thread.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct ActiveThread {

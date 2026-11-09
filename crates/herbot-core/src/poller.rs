@@ -19,7 +19,7 @@ use teloxide::types::{
     FileId, InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ReactionType, ReplyParameters,
     ThreadId,
 };
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::agent::{AgentError, ProjectCleaner};
 use crate::agents_md;
@@ -875,37 +875,207 @@ pub async fn register_commands(bot: &Bot, rules: &Rules) -> Result<(), teloxide:
 
 /// Long-polls Telegram until `shutdown` flips to true.
 /// What the poller needs besides the bot and database.
-pub struct RunSettings<T: Transcriber> {
+pub struct RunSettings<A: TelegramApi, T: Transcriber> {
     pub rules: Rules,
     pub bot_username: String,
     pub transcriber: T,
     /// Absolute path of the conversation folders.
     pub agents_dir: std::path::PathBuf,
     pub agent_label: String,
-    pub api: Arc<BotApi>,
+    pub api: Arc<A>,
     /// The agent lanes (shared with the internal API).
     pub turns: Arc<dyn TurnQueue>,
     pub projects: Arc<dyn ProjectCleaner>,
 }
 
-pub async fn run<T: Transcriber>(
+/// Where an update is handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// Nothing Herbot acts on.
+    Skip,
+    /// Quick and never stored: ignored updates (strangers, DMs, other
+    /// groups), leaving chats, and chat or topic bookkeeping.
+    Inline,
+    /// The admin's message, command or button tap: saved to the inbox, then
+    /// handled in order on its conversation's lane.
+    Lane(LaneKey),
+}
+
+/// A conversation: (Telegram chat, topic). `None` is General.
+pub type LaneKey = (i64, Option<i32>);
+
+pub fn route(update: &Update, bot_username: &str, rules: &Rules) -> Route {
+    let Some(inbound) = telegram::normalize(update, bot_username) else {
+        return Route::Skip;
+    };
+    match policy::decide(inbound, rules) {
+        Action::Store(msg) | Action::RunCommand(msg, _) => {
+            Route::Lane((msg.chat.tg_chat_id, msg.topic_id))
+        }
+        Action::Button(press) => Route::Lane((press.chat.tg_chat_id, press.topic_id)),
+        _ => Route::Inline,
+    }
+}
+
+struct Shared<A: TelegramApi, T: Transcriber> {
+    pool: PgPool,
+    settings: RunSettings<A, T>,
+}
+
+impl<A: TelegramApi, T: Transcriber> Shared<A, T> {
+    fn ctx(&self) -> Ctx<'_, A, T> {
+        let s = &self.settings;
+        Ctx {
+            pool: &self.pool,
+            api: &*s.api,
+            transcriber: &s.transcriber,
+            rules: s.rules,
+            bot_username: &s.bot_username,
+            agents_dir: &s.agents_dir,
+            agent_label: &s.agent_label,
+            turns: &*s.turns,
+            projects: &*s.projects,
+        }
+    }
+}
+
+/// One worker per conversation, created on first use. Each handles its
+/// conversation's updates in order (a voice note, then the text after it);
+/// conversations run side by side, so a long voice note holds up only its
+/// own topic.
+pub struct InboundLanes<A: TelegramApi + 'static, T: Transcriber + Send + 'static> {
+    shared: Arc<Shared<A, T>>,
+    senders: std::sync::Mutex<std::collections::HashMap<LaneKey, mpsc::UnboundedSender<Update>>>,
+    workers: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+impl<A: TelegramApi + 'static, T: Transcriber + Send + 'static> InboundLanes<A, T> {
+    pub fn new(pool: PgPool, settings: RunSettings<A, T>) -> Self {
+        Self {
+            shared: Arc::new(Shared { pool, settings }),
+            senders: Default::default(),
+            workers: Default::default(),
+        }
+    }
+
+    pub fn route(&self, update: &Update) -> Route {
+        let s = &self.shared.settings;
+        route(update, &s.bot_username, &s.rules)
+    }
+
+    /// Handles an update right here (for [`Route::Inline`]).
+    pub async fn handle_inline(&self, update: &Update) {
+        process(&self.shared.ctx(), update).await;
+    }
+
+    /// Queues an update on its conversation's lane. It must already be in
+    /// the inbox; the lane deletes it from there once handled.
+    pub fn submit(&self, key: LaneKey, update: Update) {
+        let mut senders = self.senders.lock().expect("inbound lanes lock");
+        let sender = senders.entry(key).or_insert_with(|| self.spawn_lane());
+        if let Err(returned) = sender.send(update) {
+            // The worker is gone (it shouldn't be); start another.
+            let fresh = self.spawn_lane();
+            let _ = fresh.send(returned.0);
+            senders.insert(key, fresh);
+        }
+    }
+
+    fn spawn_lane(&self) -> mpsc::UnboundedSender<Update> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Update>();
+        let shared = self.shared.clone();
+        let worker = tokio::spawn(async move {
+            while let Some(update) = rx.recv().await {
+                process(&shared.ctx(), &update).await;
+                let update_id = i64::from(update.id.0);
+                if let Err(err) = store::inbox_done(&shared.pool, update_id).await {
+                    // It stays in the inbox and runs again at the next start.
+                    tracing::error!(update_id, error = %err, "could not clear a handled update from the inbox");
+                }
+            }
+        });
+        self.workers
+            .lock()
+            .expect("inbound workers lock")
+            .push(worker);
+        tx
+    }
+
+    /// Waits up to `limit` for queued updates to finish. Anything unfinished
+    /// stays in the inbox and is handled at the next start.
+    pub async fn finish(&self, limit: Duration) {
+        self.senders.lock().expect("inbound lanes lock").clear(); // workers end when their queue empties
+        let workers: Vec<_> =
+            std::mem::take(&mut *self.workers.lock().expect("inbound workers lock"));
+        if tokio::time::timeout(limit, futures_join_all(workers))
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "some updates were still being handled at shutdown; they run again at the next start"
+            );
+        }
+    }
+
+    /// Handles what a previous run saved but didn't finish, in order, before
+    /// anything new.
+    pub async fn resume(&self) {
+        let pool = &self.shared.pool;
+        let pending = match store::inbox_pending(pool).await {
+            Ok(pending) => pending,
+            Err(err) => {
+                let _ =
+                    errors::record(pool, "telegram.inbox_load", &err.to_string(), json!({})).await;
+                return;
+            }
+        };
+        if !pending.is_empty() {
+            tracing::info!(
+                count = pending.len(),
+                "handling updates left from the last run"
+            );
+        }
+        for (update_id, body) in pending {
+            match serde_json::from_value::<Update>(body) {
+                Ok(update) => match self.route(&update) {
+                    Route::Lane(key) => self.submit(key, update),
+                    other => {
+                        if other == Route::Inline {
+                            self.handle_inline(&update).await;
+                        }
+                        let _ = store::inbox_done(pool, update_id).await;
+                    }
+                },
+                Err(err) => {
+                    let context = json!({ "update_id": update_id });
+                    let _ = errors::record(
+                        pool,
+                        "telegram.inbox_unreadable",
+                        &err.to_string(),
+                        context,
+                    )
+                    .await;
+                    let _ = store::inbox_done(pool, update_id).await;
+                }
+            }
+        }
+    }
+}
+
+async fn futures_join_all(workers: Vec<tokio::task::JoinHandle<()>>) {
+    for worker in workers {
+        let _ = worker.await;
+    }
+}
+
+pub async fn run<T: Transcriber + Send + 'static>(
     bot: Bot,
     pool: PgPool,
-    settings: RunSettings<T>,
+    settings: RunSettings<BotApi, T>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let bot_username = settings.bot_username.clone();
-    let ctx = Ctx {
-        pool: &pool,
-        api: &*settings.api,
-        transcriber: &settings.transcriber,
-        rules: settings.rules,
-        bot_username: &bot_username,
-        agents_dir: &settings.agents_dir,
-        agent_label: &settings.agent_label,
-        turns: &*settings.turns,
-        projects: &*settings.projects,
-    };
+    let lanes = InboundLanes::new(pool.clone(), settings);
 
     let mut offset = match store::load_offset(&pool).await {
         Ok(offset) => offset,
@@ -915,6 +1085,7 @@ pub async fn run<T: Transcriber>(
             None
         }
     };
+    lanes.resume().await;
     tracing::info!(?offset, bot = %bot_username, "telegram polling started");
 
     loop {
@@ -935,23 +1106,8 @@ pub async fn run<T: Transcriber>(
             _ = shutdown.changed() => break,
         };
 
-        match result {
-            Ok(updates) => {
-                for update in &updates {
-                    process(&ctx, update).await;
-                    let next = update.id.0 as i32 + 1;
-                    offset = Some(next);
-                    if let Err(err) = store::save_offset(&pool, next).await {
-                        let _ = errors::record(
-                            &pool,
-                            "telegram.offset_save",
-                            &err.to_string(),
-                            json!({ "offset": next }),
-                        )
-                        .await;
-                    }
-                }
-            }
+        let updates = match result {
+            Ok(updates) => updates,
             Err(err) => {
                 let _ = errors::record(&pool, "telegram.poll_failed", &err.to_string(), json!({}))
                     .await;
@@ -959,8 +1115,44 @@ pub async fn run<T: Transcriber>(
                     _ = tokio::time::sleep(POLL_RETRY_DELAY) => {},
                     _ = shutdown.changed() => break,
                 }
+                continue;
+            }
+        };
+        let Some(last) = updates.last() else { continue };
+        let next = last.id.0 as i32 + 1;
+
+        let mut queued = Vec::new();
+        for update in &updates {
+            match lanes.route(update) {
+                Route::Skip => {}
+                Route::Inline => lanes.handle_inline(update).await,
+                Route::Lane(key) => queued.push((key, update)),
             }
         }
+        let saved: Vec<(i64, serde_json::Value)> = queued
+            .iter()
+            .filter_map(|(_, u)| Some((i64::from(u.id.0), serde_json::to_value(u).ok()?)))
+            .collect();
+        if let Err(err) = store::inbox_save(&pool, &saved, next).await {
+            // Not acknowledged: Telegram sends the batch again.
+            let _ = errors::record(
+                &pool,
+                "telegram.inbox_save",
+                &err.to_string(),
+                json!({ "offset": next }),
+            )
+            .await;
+            tokio::select! {
+                _ = tokio::time::sleep(POLL_RETRY_DELAY) => {},
+                _ = shutdown.changed() => break,
+            }
+            continue;
+        }
+        offset = Some(next);
+        for (key, update) in queued {
+            lanes.submit(key, update.clone());
+        }
     }
+    lanes.finish(Duration::from_secs(10)).await;
     tracing::info!("telegram polling stopped");
 }

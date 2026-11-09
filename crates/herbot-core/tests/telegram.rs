@@ -21,8 +21,8 @@ use herbot_core::agent::{AgentError, BoxFuture, ProjectCleaner};
 use herbot_core::errors::ErrorId;
 use herbot_core::policy::{LEFT_ADDED_BY_STRANGER, LEFT_OUTSIDE_HOME, Rules};
 use herbot_core::poller::{
-    self, ALREADY_ANSWERED_TOAST, ApiError, Ctx, HELP_TEXT, SEEN_REACTION, TelegramApi,
-    WELCOME_TEXT,
+    self, ALREADY_ANSWERED_TOAST, ApiError, Ctx, HELP_TEXT, InboundLanes, Route, RunSettings,
+    SEEN_REACTION, TelegramApi, WELCOME_TEXT,
 };
 use herbot_core::setup;
 use herbot_core::store;
@@ -1661,4 +1661,140 @@ async fn poll_offset_round_trips(pool: PgPool) {
     store::save_offset(&pool, 1020).await.unwrap();
     store::save_offset(&pool, 1021).await.unwrap();
     assert_eq!(store::load_offset(&pool).await.unwrap(), Some(1021));
+}
+
+// ---- inbound lanes: each conversation in order, conversations side by side ----
+
+#[test]
+fn only_the_admins_messages_commands_and_taps_go_to_lanes() {
+    let route = |name| poller::route(&fixture(name), BOT, &LOCKED);
+    assert_eq!(route("admin_general_text"), Route::Lane((HQ, None)));
+    assert_eq!(route("voice_in_topic7"), Route::Lane((HQ, Some(7))));
+    assert_eq!(route("button_research_topic7"), Route::Lane((HQ, Some(7))));
+    // Never stored: strangers, DMs, a stranger adding the bot, bookkeeping.
+    assert_eq!(route("stranger_in_topic"), Route::Inline);
+    assert_eq!(route("stranger_dm_text"), Route::Inline);
+    assert_eq!(route("added_by_stranger"), Route::Inline);
+    assert_eq!(route("topic_created"), Route::Inline);
+    assert_eq!(route("channel_post"), Route::Skip);
+}
+
+/// Transcribes only once the test lets it.
+struct HeldVoice(std::sync::Arc<tokio::sync::Semaphore>);
+
+impl Transcriber for HeldVoice {
+    async fn transcribe(&self, _audio: Vec<u8>) -> Result<String, VoiceError> {
+        let _go = self.0.acquire().await.expect("semaphore open");
+        Ok("the long voice note".to_string())
+    }
+}
+
+fn lanes(
+    pool: &PgPool,
+    voice: HeldVoice,
+    agents: &std::path::Path,
+) -> InboundLanes<FakeApi, HeldVoice> {
+    InboundLanes::new(
+        pool.clone(),
+        RunSettings {
+            rules: LOCKED,
+            bot_username: BOT.to_string(),
+            transcriber: voice,
+            agents_dir: agents.to_path_buf(),
+            agent_label: AGENT_LABEL.to_string(),
+            api: std::sync::Arc::new(FakeApi::default()),
+            turns: std::sync::Arc::new(Jobs::default()),
+            projects: std::sync::Arc::new(FakeCleaner::default()),
+        },
+    )
+}
+
+/// Saves updates to the inbox the way the poll loop does, then queues them.
+async fn deliver(pool: &PgPool, lanes: &InboundLanes<FakeApi, HeldVoice>, names: &[&str]) {
+    let updates: Vec<Update> = names.iter().map(|n| fixture(n)).collect();
+    let saved: Vec<(i64, Value)> = updates
+        .iter()
+        .map(|u| (i64::from(u.id.0), serde_json::to_value(u).unwrap()))
+        .collect();
+    let next = updates.last().unwrap().id.0 as i32 + 1;
+    store::inbox_save(pool, &saved, next).await.unwrap();
+    for update in updates {
+        let Route::Lane(key) = lanes.route(&update) else {
+            panic!("expected a lane")
+        };
+        lanes.submit(key, update);
+    }
+}
+
+async fn admin_messages(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM messages WHERE NOT from_bot")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_long_voice_note_holds_up_only_its_own_topic(pool: PgPool) {
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let agents = tempfile::tempdir().unwrap();
+    let lanes = lanes(&pool, HeldVoice(gate.clone()), agents.path());
+
+    // A voice note in Research, then a text in General.
+    deliver(&pool, &lanes, &["voice_in_topic7", "admin_general_text"]).await;
+
+    // General's text is handled while the voice note is still transcribing.
+    let mut waited = 0;
+    while admin_messages(&pool).await < 1 {
+        assert!(waited < 100, "General waited on Research's voice note");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        waited += 1;
+    }
+    let inbox: i64 = sqlx::query_scalar("SELECT count(*) FROM inbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(inbox, 1, "the voice note is still waiting, and still saved");
+
+    gate.add_permits(1);
+    lanes.finish(std::time::Duration::from_secs(10)).await;
+    assert_eq!(admin_messages(&pool).await, 2);
+    let body: String = sqlx::query_scalar("SELECT body FROM messages WHERE is_voice")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(body, "the long voice note");
+    let inbox: i64 = sqlx::query_scalar("SELECT count(*) FROM inbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(inbox, 0, "handled updates leave the inbox");
+    assert_eq!(store::load_offset(&pool).await.unwrap(), Some(1031));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn updates_left_from_a_crash_are_handled_at_the_next_start(pool: PgPool) {
+    let agents = tempfile::tempdir().unwrap();
+    // Saved and acknowledged, but the process died before handling them.
+    let updates = [fixture("admin_general_text"), fixture("voice_in_topic7")];
+    let saved: Vec<(i64, Value)> = updates
+        .iter()
+        .map(|u| (i64::from(u.id.0), serde_json::to_value(u).unwrap()))
+        .collect();
+    store::inbox_save(&pool, &saved, 1031).await.unwrap();
+
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let lanes = lanes(&pool, HeldVoice(gate), agents.path());
+    lanes.resume().await;
+    lanes.finish(std::time::Duration::from_secs(10)).await;
+
+    assert_eq!(
+        admin_messages(&pool).await,
+        2,
+        "both handled after the restart"
+    );
+    let inbox: i64 = sqlx::query_scalar("SELECT count(*) FROM inbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(inbox, 0);
 }
