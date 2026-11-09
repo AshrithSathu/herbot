@@ -43,6 +43,7 @@ pub enum Command {
     Start,
     Help,
     Status,
+    Tasks,
     Setup,
     /// `/new` asks first; `/new yes` wipes this topic's chat.
     New {
@@ -64,6 +65,7 @@ pub const COMMAND_MENU: &[(&str, &str)] = &[
         "Wipe this topic's chat and start fresh (keeps its purpose)",
     ),
     ("forget", "Wipe this topic completely, purpose included"),
+    ("tasks", "Manage scheduled prompts in this topic"),
     ("help", "List commands"),
 ];
 
@@ -335,6 +337,7 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
     let cmd = match name.to_ascii_lowercase().as_str() {
         "start" => Command::Start,
         "help" => Command::Help,
+        "tasks" => Command::Tasks,
         "status" => Command::Status,
         "setup" => Command::Setup,
         "new" => Command::New {

@@ -430,6 +430,8 @@ pub struct Ctx<'a, A: TelegramApi, T: Transcriber> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum HandleError {
+    #[error(transparent)]
+    Task(#[from] crate::tasks::TaskError),
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
     #[error(transparent)]
@@ -455,6 +457,7 @@ impl From<wipe::WipeError> for HandleError {
 impl HandleError {
     fn kind(&self) -> &'static str {
         match self {
+            HandleError::Task(_) => "task.telegram",
             HandleError::Db(_) => "telegram.handle_db",
             HandleError::Api(_) => "telegram.handle_api",
             HandleError::Voice(_) => "voice.transcribe",
@@ -467,7 +470,7 @@ impl HandleError {
 /// The "seen it" reaction on every admin message, so it's clear the bot is listening.
 pub const SEEN_REACTION: &str = "👀";
 
-pub const HELP_TEXT: &str = "Herbot: your private bot.\n\n\
+pub const HELP_TEXT: &str = "/tasks — manage scheduled prompts in this topic\n\nHerbot: your private bot.\n\n\
 General is the everyday chat. Every other topic is its own agent with its own memory.\n\n\
 /setup: set what this conversation is for\n\
 /status: this conversation's details\n\
@@ -811,6 +814,11 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     press: &ButtonPress,
 ) -> Result<(), HandleError> {
     let chat = press.chat.tg_chat_id;
+    if press.data.starts_with("task:") {
+        return crate::tasks::callback(ctx.pool, ctx.api, press)
+            .await
+            .map_err(Into::into);
+    }
     if let Some(tap) = wipe::parse(&press.data) {
         return handle_wipe_tap(ctx, press, tap).await;
     }
@@ -977,6 +985,20 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
     cmd: Command,
 ) -> Result<(), HandleError> {
     let text = match cmd {
+        Command::Tasks => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            if s.enabled {
+                crate::tasks::show(
+                    ctx.pool,
+                    ctx.api,
+                    s.conversation_id,
+                    msg.chat.tg_chat_id,
+                    msg.topic_id,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
         Command::Start | Command::Help => HELP_TEXT.to_string(),
         Command::Setup => {
             let status = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
@@ -1077,6 +1099,7 @@ pub async fn process<A: TelegramApi, T: Transcriber>(
 
 fn short_reason(err: &HandleError) -> &'static str {
     match err {
+        HandleError::Task(_) => "scheduled task failed",
         HandleError::Db(_) => "database error",
         HandleError::Api(_) => "Telegram API error",
         HandleError::Voice(VoiceError::NotConfigured) => "voice notes are off (no OPENAI_API_KEY)",
