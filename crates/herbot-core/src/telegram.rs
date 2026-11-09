@@ -49,6 +49,7 @@ pub enum Command {
     Memory,
     Customize(String),
     AboutMe(String),
+    Tasks,
     Setup,
     /// `/new` asks first; `/new yes` wipes this topic's chat.
     New {
@@ -92,6 +93,7 @@ pub const COMMAND_MENU: &[(&str, &str)] = &[
     ("memory", "View and forget shared memories"),
     ("customize", "View or set global answer instructions"),
     ("aboutme", "Set what Herbot should know about you"),
+    ("tasks", "Manage scheduled prompts in this topic"),
     ("help", "List commands"),
 ];
 
@@ -517,6 +519,7 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
         "persona" => Command::Persona,
         "start" => Command::Start,
         "help" => Command::Help,
+        "tasks" => Command::Tasks,
         "status" => Command::Status,
         "memory" => Command::Memory,
         "customize" => Command::Customize(rest[word.len()..].trim().to_string()),

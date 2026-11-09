@@ -16,6 +16,7 @@ import { Route as AuthedMemoryRouteImport } from './routes/_authed/memory'
 import { Route as AuthedPersonalizeRouteImport } from './routes/_authed/personalize'
 import { Route as AuthedLogsIndexRouteImport } from './routes/_authed/logs/index'
 import { Route as AuthedLogsIdRouteImport } from './routes/_authed/logs/$id'
+import { Route as AuthedTasksIndexRouteImport } from './routes/_authed/tasks/index'
 import { Route as AuthedTopicsIndexRouteImport } from './routes/_authed/topics/index'
 import { Route as AuthedTopicsIdRouteImport } from './routes/_authed/topics/$id'
 
@@ -53,6 +54,11 @@ const AuthedLogsIdRoute = AuthedLogsIdRouteImport.update({
   path: '/logs/$id',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedTasksIndexRoute = AuthedTasksIndexRouteImport.update({
+  id: '/tasks/',
+  path: '/tasks/',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedTopicsIndexRoute = AuthedTopicsIndexRouteImport.update({
   id: '/topics/',
   path: '/topics/',
@@ -72,6 +78,7 @@ export interface FileRoutesByFullPath {
   '/logs/$id': typeof AuthedLogsIdRoute
   '/topics/$id': typeof AuthedTopicsIdRoute
   '/logs/': typeof AuthedLogsIndexRoute
+  '/tasks/': typeof AuthedTasksIndexRoute
   '/topics/': typeof AuthedTopicsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -82,6 +89,7 @@ export interface FileRoutesByTo {
   '/logs/$id': typeof AuthedLogsIdRoute
   '/topics/$id': typeof AuthedTopicsIdRoute
   '/logs': typeof AuthedLogsIndexRoute
+  '/tasks': typeof AuthedTasksIndexRoute
   '/topics': typeof AuthedTopicsIndexRoute
 }
 export interface FileRoutesById {
@@ -94,6 +102,7 @@ export interface FileRoutesById {
   '/_authed/logs/$id': typeof AuthedLogsIdRoute
   '/_authed/topics/$id': typeof AuthedTopicsIdRoute
   '/_authed/logs/': typeof AuthedLogsIndexRoute
+  '/_authed/tasks/': typeof AuthedTasksIndexRoute
   '/_authed/topics/': typeof AuthedTopicsIndexRoute
 }
 export interface FileRouteTypes {
@@ -106,6 +115,7 @@ export interface FileRouteTypes {
     | '/logs/$id'
     | '/topics/$id'
     | '/logs/'
+    | '/tasks/'
     | '/topics/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -116,6 +126,7 @@ export interface FileRouteTypes {
     | '/logs/$id'
     | '/topics/$id'
     | '/logs'
+    | '/tasks'
     | '/topics'
   id:
     | '__root__'
@@ -127,6 +138,7 @@ export interface FileRouteTypes {
     | '/_authed/logs/$id'
     | '/_authed/topics/$id'
     | '/_authed/logs/'
+    | '/_authed/tasks/'
     | '/_authed/topics/'
   fileRoutesById: FileRoutesById
 }
@@ -186,6 +198,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedLogsIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/tasks/': {
+      id: '/_authed/tasks/'
+      path: '/tasks'
+      fullPath: '/tasks/'
+      preLoaderRoute: typeof AuthedTasksIndexRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/topics/': {
       id: '/_authed/topics/'
       path: '/topics'
@@ -210,6 +229,7 @@ interface AuthedRouteChildren {
   AuthedLogsIdRoute: typeof AuthedLogsIdRoute
   AuthedTopicsIdRoute: typeof AuthedTopicsIdRoute
   AuthedLogsIndexRoute: typeof AuthedLogsIndexRoute
+  AuthedTasksIndexRoute: typeof AuthedTasksIndexRoute
   AuthedTopicsIndexRoute: typeof AuthedTopicsIndexRoute
 }
 
@@ -220,6 +240,7 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedLogsIdRoute: AuthedLogsIdRoute,
   AuthedTopicsIdRoute: AuthedTopicsIdRoute,
   AuthedLogsIndexRoute: AuthedLogsIndexRoute,
+  AuthedTasksIndexRoute: AuthedTasksIndexRoute,
   AuthedTopicsIndexRoute: AuthedTopicsIndexRoute,
 }
 
@@ -233,3 +254,12 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}

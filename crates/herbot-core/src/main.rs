@@ -35,6 +35,8 @@ async fn main() -> anyhow::Result<()> {
     let mut internal_router: Option<axum::Router> = None;
     let mut simulate_router: Option<axum::Router> = None;
     let mut poller_task = None;
+    let mut scheduler_task = None;
+    herbot_core::tasks::default_timezone().context("invalid HERBOT_TIMEZONE")?;
     match &config.telegram {
         None => tracing::warn!("TELEGRAM_BOT_TOKEN not set; Telegram is disabled"),
         Some(tg) => {
@@ -110,6 +112,17 @@ async fn main() -> anyhow::Result<()> {
                 auto_effort: config.agent_effort.clone(),
             }));
             let shared_turns: Arc<dyn turns::TurnQueue> = lanes;
+            scheduler_task = Some(tokio::spawn(
+                herbot_core::tasks::Scheduler {
+                    pool: pool.clone(),
+                    api: api.clone(),
+                    turns: shared_turns.clone(),
+                    admin_user_id: tg.admin_user_id,
+                    bot_user_id: me.id.0,
+                    home_chat_id: tg.home_chat_id,
+                }
+                .run(shutdown_rx.clone()),
+            ));
             match &config.internal_token {
                 Some(token) => {
                     internal_router = Some(internal::router(Arc::new(internal::InternalState {
@@ -251,6 +264,14 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("telegram poller did not stop within 15s");
     }
 
+    if let Some(mut task) = scheduler_task
+        && tokio::time::timeout(Duration::from_secs(15), &mut task)
+            .await
+            .is_err()
+    {
+        task.abort();
+        tracing::warn!("scheduler stopped after shutdown timeout");
+    }
     tracing::info!("herbot-core stopped");
     Ok(())
 }

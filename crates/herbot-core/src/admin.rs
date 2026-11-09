@@ -55,6 +55,8 @@ pub fn router(state: Arc<AdminState>) -> Router {
             "/admin/api/preferences",
             get(get_preferences).put(save_preferences),
         )
+        .route("/admin/api/tasks", get(task_list).post(task_create))
+        .route("/admin/api/tasks/{id}/{action}", post(task_change))
         .route("/admin/api/overview", get(overview))
         .route("/admin/api/conversations", get(conversations))
         .route("/admin/api/conversations/{id}", get(conversation))
@@ -730,5 +732,44 @@ async fn set_voice(
         }
         Err(crate::speech::SpeechError::Db(e)) => db_fail(e),
         Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn task_list(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
+    guard!(headers, state);
+    match crate::tasks::list(&state.pool, None).await {
+        Ok(t) => ok(t),
+        Err(e) => task_fail(e),
+    }
+}
+async fn task_create(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(req): Json<crate::tasks::CreateTask>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::tasks::create(&state.pool, req).await {
+        Ok(t) => ok(t),
+        Err(e) => task_fail(e),
+    }
+}
+async fn task_change(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path((id, action)): Path<(i64, String)>,
+) -> Reply {
+    guard!(headers, state);
+    if action == "run" && state.bot_username.is_none() {
+        return fail(StatusCode::SERVICE_UNAVAILABLE, "Telegram scheduler is off");
+    }
+    match crate::tasks::change(&state.pool, id, &action).await {
+        Ok(t) => ok(t),
+        Err(e) => task_fail(e),
+    }
+}
+fn task_fail(e: crate::tasks::TaskError) -> Reply {
+    match e {
+        crate::tasks::TaskError::Db(e) => db_fail(e),
+        other => fail(StatusCode::BAD_REQUEST, other.to_string()),
     }
 }

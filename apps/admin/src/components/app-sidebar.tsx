@@ -27,6 +27,7 @@ const PAGES = [
   { to: '/topics', label: 'Topics', icon: MessagesSquareIcon, exact: true },
   { to: '/memory', label: 'Memory', icon: BrainIcon, exact: true },
   { to: '/personalize', label: 'Personalize', icon: SlidersHorizontalIcon, exact: true },
+  { to: '/tasks', label: 'Tasks', icon: ScrollTextIcon, exact: true },
   { to: '/logs', label: 'Logs', icon: ScrollTextIcon, exact: false },
 ] as const
 

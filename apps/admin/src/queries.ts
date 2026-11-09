@@ -3,7 +3,7 @@
 // prefetch on hover); components read the same keys with `useSuspenseQuery`,
 // so a page never fetches the same thing twice and mutations update in place.
 import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
-import { listMemories, getPreferences, ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
+import { listMemories, getPreferences, listTasks, ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
 
 export const keys = {
   session: ['session'] as const,
@@ -90,3 +90,4 @@ export const memoriesQuery = queryOptions({
 export const preferencesQuery = queryOptions({
   queryKey: ['preferences'], queryFn: () => getPreferences(), refetchInterval: 10_000,
 })
+export const tasksQuery = queryOptions({ queryKey: ['tasks'], queryFn: () => listTasks(), refetchInterval: 15_000 })

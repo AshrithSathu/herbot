@@ -562,6 +562,8 @@ pub struct Ctx<'a, A: TelegramApi, T: Transcriber> {
 pub enum HandleError {
     #[error(transparent)]
     Personal(#[from] crate::personal::PersonalError),
+    #[error(transparent)]
+    Task(#[from] crate::tasks::TaskError),
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
     #[error(transparent)]
@@ -592,6 +594,7 @@ impl HandleError {
     fn kind(&self) -> &'static str {
         match self {
             HandleError::Personal(_) => "personal.write",
+            HandleError::Task(_) => "task.telegram",
             HandleError::Db(_) => "telegram.handle_db",
             HandleError::Api(_) => "telegram.handle_api",
             HandleError::Speech(_) => "speech.command",
@@ -606,7 +609,7 @@ impl HandleError {
 /// The "seen it" reaction on every admin message, so it's clear the bot is listening.
 pub const SEEN_REACTION: &str = "👀";
 
-pub const HELP_TEXT: &str = "Herbot: your private bot.\n\n\
+pub const HELP_TEXT: &str = "/tasks — manage scheduled prompts in this topic\n\nHerbot: your private bot.\n\n\
 General is the everyday chat. Every other topic is its own agent with its own memory.\n\n\
 /setup: set what this conversation is for\n\
 /voice: spoken replies and voice picker\n\
@@ -1009,6 +1012,29 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     if press.data.starts_with("mem:") {
         return handle_memory_button(ctx, press).await;
     }
+    if press.data.starts_with("task:") {
+        if let Err(err) = crate::tasks::callback(ctx.pool, ctx.api, press).await {
+            let id = errors::record(
+                ctx.pool,
+                "task.callback",
+                &err.to_string(),
+                json!({"chat":chat,"topic":press.topic_id}),
+            )
+            .await?;
+            tracing::error!(error_id=%id,error=%err,"task button failed");
+            let message = format!("❌ Failed ({id}): scheduled task control failed. Check logs.");
+            ctx.api
+                .send_text(chat, press.topic_id, Some(press.message_id), &message)
+                .await?;
+            ctx.api
+                .answer_button(
+                    &press.callback_id,
+                    Some("Task control failed; see the error message"),
+                )
+                .await?;
+        }
+        return Ok(());
+    }
     if let Some(tap) = wipe::parse(&press.data) {
         return handle_wipe_tap(ctx, press, tap).await;
     }
@@ -1213,6 +1239,20 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
         Command::Voice(_) | Command::Speak | Command::Persona => {
             return crate::speech::command(ctx, msg, &cmd).await;
         }
+        Command::Tasks => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            if s.enabled {
+                crate::tasks::show(
+                    ctx.pool,
+                    ctx.api,
+                    s.conversation_id,
+                    msg.chat.tg_chat_id,
+                    msg.topic_id,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
         Command::Start | Command::Help => HELP_TEXT.to_string(),
         Command::Memory => {
             return memory_page(ctx, msg.chat.tg_chat_id, msg.topic_id, 0).await;
@@ -1396,6 +1436,7 @@ fn short_reason(err: &HandleError) -> String {
     let reason = match err {
         HandleError::Personal(err) => return setup::clip(&err.to_string(), 200),
         HandleError::Speech(_) => "speech or voice settings failed",
+        HandleError::Task(_) => "scheduled task failed",
         HandleError::Db(_) => "database error",
         HandleError::Api(_) => "Telegram API error",
         HandleError::Voice(VoiceError::NotConfigured) => "voice notes are off (no OPENAI_API_KEY)",

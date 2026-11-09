@@ -337,3 +337,50 @@ async fn personal_result<T>(
         }
     }
 }
+
+/// Task permissions follow the caller token: own topic, or General's group.
+pub async fn task_target(pool: &PgPool, caller: &Caller, id: i64) -> Result<(), HubError> {
+    let chat: Option<i64> = sqlx::query_scalar("SELECT chat_id FROM conversations WHERE id=$1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    if chat != Some(caller.chat_row_id) || (!caller.is_general && id != caller.conversation_id) {
+        return Err(HubError::Forbidden(
+            "Tasks are restricted to your own topic, or General's group".into(),
+        ));
+    }
+    Ok(())
+}
+pub async fn list_tasks(
+    pool: &PgPool,
+    caller: &Caller,
+) -> Result<Vec<crate::tasks::Task>, HubError> {
+    Ok(sqlx::query_as("SELECT t.* FROM tasks t JOIN conversations c ON c.id=t.conversation_id WHERE c.chat_id=$1 AND ($2 OR c.id=$3) ORDER BY t.created_at DESC,t.id DESC").bind(caller.chat_row_id).bind(caller.is_general).bind(caller.conversation_id).fetch_all(pool).await?)
+}
+pub async fn change_task(
+    pool: &PgPool,
+    caller: &Caller,
+    id: i64,
+    action: &str,
+) -> Result<crate::tasks::Task, HubError> {
+    let conversation: Option<i64> =
+        sqlx::query_scalar("SELECT conversation_id FROM tasks WHERE id=$1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    task_target(
+        pool,
+        caller,
+        conversation.ok_or_else(|| HubError::NotFound("Task not found".into()))?,
+    )
+    .await?;
+    crate::tasks::change(pool, id, action)
+        .await
+        .map_err(task_error)
+}
+pub fn task_error(err: crate::tasks::TaskError) -> HubError {
+    match err {
+        crate::tasks::TaskError::Db(e) => HubError::Db(e),
+        other => HubError::BadRequest(other.to_string()),
+    }
+}

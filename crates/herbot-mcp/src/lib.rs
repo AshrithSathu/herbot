@@ -114,6 +114,24 @@ fn personal_dir() -> Result<std::path::PathBuf, HubError> {
     Ok(dir)
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScheduleArgs {
+    pub caller: String,
+    pub prompt: String,
+    /// RFC3339 timestamp with offset, mutually exclusive with cron.
+    pub when: Option<DateTime<Utc>>,
+    /// Five fields: minute hour day month weekday (0=Sunday).
+    pub cron: Option<String>,
+    pub timezone: Option<String>,
+    pub title: Option<String>,
+    /// General can select a topic id; omitted means your own conversation.
+    pub conversation_id: Option<i64>,
+}
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TaskArgs {
+    pub caller: String,
+    pub id: i64,
+}
 fn ok_json<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -280,6 +298,86 @@ impl HerbotTools {
         }
     }
 
+    /// Save a one-off or recurring prompt. Results are posted in its topic.
+    #[tool]
+    pub async fn schedule_task(
+        &self,
+        Parameters(args): Parameters<ScheduleArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let caller = match self.caller(&args.caller).await {
+            Ok(c) => c,
+            Err(e) => return hub_error(e),
+        };
+        let id = args.conversation_id.unwrap_or(caller.conversation_id);
+        if let Err(e) = hub::task_target(&self.pool, &caller, id).await {
+            return hub_error(e);
+        }
+        match herbot_core::tasks::create(
+            &self.pool,
+            herbot_core::tasks::CreateTask {
+                conversation_id: id,
+                prompt: args.prompt,
+                title: args.title,
+                when: args.when,
+                cron: args.cron,
+                timezone: args.timezone,
+            },
+        )
+        .await
+        {
+            Ok(t) => ok_json(&t),
+            Err(e) => hub_error(hub::task_error(e)),
+        }
+    }
+    /// List your topic's tasks; General lists every task in its group.
+    #[tool(annotations(read_only_hint = true))]
+    pub async fn list_tasks(
+        &self,
+        Parameters(args): Parameters<CallerOnly>,
+    ) -> Result<CallToolResult, McpError> {
+        let caller = match self.caller(&args.caller).await {
+            Ok(c) => c,
+            Err(e) => return hub_error(e),
+        };
+        match hub::list_tasks(&self.pool, &caller).await {
+            Ok(t) => ok_json(&t),
+            Err(e) => hub_error(e),
+        }
+    }
+    /// Pause an active task.
+    #[tool]
+    pub async fn pause_task(
+        &self,
+        Parameters(args): Parameters<TaskArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.task_action(args, "pause").await
+    }
+    /// Resume a paused task; overdue one-offs run once, recurring tasks use their next future slot.
+    #[tool]
+    pub async fn resume_task(
+        &self,
+        Parameters(args): Parameters<TaskArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.task_action(args, "resume").await
+    }
+    /// Cancel a task permanently.
+    #[tool]
+    pub async fn cancel_task(
+        &self,
+        Parameters(args): Parameters<TaskArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.task_action(args, "cancel").await
+    }
+    async fn task_action(&self, args: TaskArgs, action: &str) -> Result<CallToolResult, McpError> {
+        let caller = match self.caller(&args.caller).await {
+            Ok(c) => c,
+            Err(e) => return hub_error(e),
+        };
+        match hub::change_task(&self.pool, &caller, args.id, action).await {
+            Ok(t) => ok_json(&t),
+            Err(e) => hub_error(e),
+        }
+    }
     async fn core_action<T: Serialize>(
         &self,
         path: &str,
