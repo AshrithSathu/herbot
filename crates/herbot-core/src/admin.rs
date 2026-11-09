@@ -2,12 +2,13 @@
 //! `HERBOT_ADMIN_TOKEN` (the panel's server holds it; browsers never see it).
 //!
 //! - `GET    /admin/api/overview`
-//! - `GET    /admin/api/conversations`
-//! - `GET    /admin/api/conversations/{id}`           (detail, AGENTS.md, recent messages)
+//! - `GET    /admin/api/conversations`                (purposes cut to 300 chars)
+//! - `GET    /admin/api/conversations/{id}`           (detail, AGENTS.md)
+//! - `GET    /admin/api/conversations/{id}/messages?before=&after=&limit=`
 //! - `PUT    /admin/api/conversations/{id}/purpose`   `{purpose}`
 //! - `PUT    /admin/api/conversations/{id}/enabled`   `{enabled}`
 //! - `POST   /admin/api/conversations/{id}/wipe`      `{kind: "new" | "forget"}`
-//! - `GET    /admin/api/errors?q=&limit=`             (`q` can be an `E-1042` id)
+//! - `GET    /admin/api/errors?q=&before=&limit=`           (`q` can be an `E-1042` id)
 //! - `GET    /admin/api/errors/{id}`
 
 use std::path::PathBuf;
@@ -105,7 +106,8 @@ struct Overview {
     messages: i64,
     active_threads: i64,
     errors_last_24h: i64,
-    last_error: Option<ErrorRow>,
+    /// Like a list row: no context, message capped.
+    last_error: Option<ErrorSummary>,
 }
 
 async fn overview(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
@@ -113,7 +115,7 @@ async fn overview(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> R
     let counts: Result<(i64, i64, i64, i64, i64), _> = sqlx::query_as(
         "SELECT (SELECT count(*) FROM conversations),
                 (SELECT count(*) FROM conversations WHERE enabled),
-                (SELECT count(*) FROM messages),
+                (SELECT coalesce(sum(message_count), 0)::bigint FROM conversations),
                 (SELECT count(*) FROM agent_threads WHERE status = 'active'),
                 (SELECT count(*) FROM errors WHERE created_at > now() - interval '24 hours')",
     )
@@ -123,7 +125,7 @@ async fn overview(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> R
         Ok(c) => c,
         Err(e) => return db_fail(e),
     };
-    let last_error = match error_rows(&state.pool, None, 1).await {
+    let last_error = match error_summaries(&state.pool, None, None, 1).await {
         Ok(mut rows) => rows.pop(),
         Err(e) => return db_fail(e),
     };
@@ -160,55 +162,55 @@ fn state_name(state: store::SetupState) -> &'static str {
     }
 }
 
+impl ConversationSummary {
+    /// With the full purpose (detail and edits), or a short one (the list,
+    /// which shows two lines and is polled).
+    fn of(status: &store::ConversationStatus, purpose_chars: Option<usize>) -> Self {
+        ConversationSummary {
+            id: status.conversation_id,
+            place: status.place(),
+            is_general: status.tg_topic_id.is_none(),
+            purpose: status.purpose.as_deref().map(|p| match purpose_chars {
+                Some(n) => shorten(p, n),
+                None => p.to_string(),
+            }),
+            setup_state: state_name(status.setup_state),
+            enabled: status.enabled,
+            messages: status.message_count,
+            last_activity: status.last_message_at,
+            thread_link: status.thread_link.clone(),
+        }
+    }
+}
+
+/// How much of each purpose the list carries.
+const LIST_PURPOSE_CHARS: usize = 300;
+
+/// The first `limit` characters, with "…" if anything was cut.
+fn shorten(text: &str, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
+        None => text.to_string(),
+        Some((cut, _)) => format!("{}…", text[..cut].trim_end()),
+    }
+}
+
 async fn summary(
     pool: &PgPool,
     id: i64,
 ) -> Result<(ConversationSummary, store::ConversationStatus), sqlx::Error> {
     let status = store::conversation_status_by_id(pool, id).await?;
-    let (enabled, last_activity): (bool, Option<DateTime<Utc>>) = sqlx::query_as(
-        "SELECT v.enabled, (SELECT max(sent_at) FROM messages m WHERE m.conversation_id = v.id)
-         FROM conversations v WHERE v.id = $1",
-    )
-    .bind(id)
-    .fetch_one(pool)
-    .await?;
-    Ok((
-        ConversationSummary {
-            id,
-            place: status.place(),
-            is_general: status.tg_topic_id.is_none(),
-            purpose: status.purpose.clone(),
-            setup_state: state_name(status.setup_state),
-            enabled,
-            messages: status.message_count,
-            last_activity,
-            thread_link: status.thread_link.clone(),
-        },
-        status,
-    ))
+    Ok((ConversationSummary::of(&status, None), status))
 }
 
 async fn conversations(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
     guard!(headers, state);
-    let ids: Vec<i64> = match sqlx::query_scalar(
-        "SELECT v.id FROM conversations v JOIN chats c ON c.id = v.chat_id
-         WHERE c.status <> 'left'
-         ORDER BY c.id, (v.tg_topic_id IS NOT NULL), v.tg_topic_id",
-    )
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(ids) => ids,
-        Err(e) => return db_fail(e),
-    };
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        match summary(&state.pool, id).await {
-            Ok((s, _)) => out.push(s),
-            Err(e) => return db_fail(e),
-        }
+    match store::listed_conversations(&state.pool).await {
+        Ok(all) => ok(all
+            .iter()
+            .map(|s| ConversationSummary::of(s, Some(LIST_PURPOSE_CHARS)))
+            .collect::<Vec<_>>()),
+        Err(e) => db_fail(e),
     }
-    ok(out)
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]

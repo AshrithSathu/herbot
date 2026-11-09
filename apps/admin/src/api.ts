@@ -22,13 +22,15 @@ export interface Overview {
   messages: number
   active_threads: number
   errors_last_24h: number
-  last_error: ErrorRow | null
+  /** A list row: no context, message capped at 300 characters. */
+  last_error: ErrorSummary | null
 }
 
 export interface Topic {
   id: number
   place: string
   is_general: boolean
+  /** In the list, cut to 300 characters; whole in a topic's detail. */
   purpose: string | null
   setup_state: 'new' | 'awaiting_purpose' | 'ready'
   enabled: boolean

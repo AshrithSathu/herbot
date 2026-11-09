@@ -572,3 +572,112 @@ async fn the_error_list_pages_and_stays_small(pool: PgPool) {
     assert_eq!(one["message"].as_str().unwrap().chars().count(), 5002);
     assert_eq!(one["context"]["big"].as_str().unwrap().len(), 5000);
 }
+
+type Counted = (i64, Option<chrono::DateTime<chrono::Utc>>);
+
+/// (message count, last activity) as kept on the conversation, and as worked
+/// out from its messages. They must always agree.
+async fn counted_and_actual(pool: &PgPool, id: i64) -> (Counted, Counted) {
+    let kept: Counted =
+        sqlx::query_as("SELECT message_count, last_message_at FROM conversations WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let actual: Counted =
+        sqlx::query_as("SELECT count(*), max(sent_at) FROM messages WHERE conversation_id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    (kept, actual)
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn message_counts_stay_exact_without_counting(pool: PgPool) {
+    let h = harness(pool, FakeT3::default()).await;
+    let (kept, actual) = counted_and_actual(&h.pool, 2).await;
+    assert_eq!(kept, actual);
+    assert_eq!(kept.0, 2);
+
+    // A bulk insert, then a redelivered update that inserts nothing.
+    add_messages(&h.pool, 70).await;
+    sqlx::query(
+        "INSERT INTO messages (conversation_id, tg_message_id, from_tg_user_id, body, sent_at)
+         VALUES (2, 1, 111, 'again', now()) ON CONFLICT DO NOTHING",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    let (kept, actual) = counted_and_actual(&h.pool, 2).await;
+    assert_eq!(kept, actual);
+    assert_eq!(kept.0, 72);
+
+    // Deleting the newest moves last activity back to the one before it.
+    sqlx::query(
+        "DELETE FROM messages WHERE id = (SELECT max(id) FROM messages WHERE conversation_id = 2)",
+    )
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    let (kept, actual) = counted_and_actual(&h.pool, 2).await;
+    assert_eq!(kept, actual);
+    assert_eq!(kept.0, 71);
+
+    // What the panel shows comes from the same numbers.
+    let (_, list) = call(&h, Method::GET, "/admin/api/conversations", None).await;
+    assert_eq!(list[1]["messages"], 71);
+    let (_, overview) = call(&h, Method::GET, "/admin/api/overview", None).await;
+    assert_eq!(overview["messages"], 71);
+
+    // A wipe empties it; deleting a conversation outright cascades cleanly.
+    let (status, _) = call(
+        &h,
+        Method::POST,
+        "/admin/api/conversations/2/wipe",
+        Some(json!({ "kind": "forget" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(counted_and_actual(&h.pool, 2).await, ((0, None), (0, None)));
+    add_messages(&h.pool, 3).await;
+    sqlx::query("DELETE FROM conversations WHERE id = 2")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let (_, overview) = call(&h, Method::GET, "/admin/api/overview", None).await;
+    assert_eq!(overview["messages"], 0);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_list_carries_short_purposes_and_the_detail_the_full_one(pool: PgPool) {
+    let h = harness(pool, FakeT3::default()).await;
+    let long = "word ".repeat(1000); // 5,000 characters
+    sqlx::query("UPDATE conversations SET purpose = $1 WHERE id = 2")
+        .bind(long.trim_end())
+        .execute(&h.pool)
+        .await
+        .unwrap();
+
+    let (_, list) = call(&h, Method::GET, "/admin/api/conversations", None).await;
+    let short = list[1]["purpose"].as_str().unwrap();
+    assert!(short.ends_with('…'), "{short}");
+    assert!(short.chars().count() <= 301, "{}", short.chars().count());
+    assert_eq!(list[0]["purpose"], "Everyday chat", "short ones are whole");
+
+    let (_, detail) = call(&h, Method::GET, "/admin/api/conversations/2", None).await;
+    assert_eq!(detail["conversation"]["purpose"], long.trim_end());
+
+    // The overview's last error is a list row too: no context.
+    errors::record(
+        &h.pool,
+        "x.big",
+        "boom",
+        json!({ "blob": "z".repeat(20_000) }),
+    )
+    .await
+    .unwrap();
+    let (_, overview) = call(&h, Method::GET, "/admin/api/overview", None).await;
+    assert_eq!(overview["last_error"]["message"], "boom");
+    assert!(overview["last_error"].get("context").is_none());
+}

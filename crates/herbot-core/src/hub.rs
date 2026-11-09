@@ -80,34 +80,19 @@ pub struct TopicSummary {
 /// Every conversation in the caller's group: General first, then the most
 /// recently active topics.
 pub async fn list_topics(pool: &PgPool, caller: &Caller) -> Result<Vec<TopicSummary>, HubError> {
-    let ids: Vec<i64> = sqlx::query_scalar(
-        "SELECT v.id FROM conversations v
-         WHERE v.chat_id = $1 AND v.enabled
-         ORDER BY (v.tg_topic_id IS NOT NULL),
-                  (SELECT max(m.sent_at) FROM messages m WHERE m.conversation_id = v.id) DESC NULLS LAST,
-                  v.id",
-    )
-    .bind(caller.chat_row_id)
-    .fetch_all(pool)
-    .await?;
-    let mut topics = Vec::with_capacity(ids.len());
-    for id in ids {
-        let s = store::conversation_status_by_id(pool, id).await?;
-        let last_activity: Option<DateTime<Utc>> =
-            sqlx::query_scalar("SELECT max(sent_at) FROM messages WHERE conversation_id = $1")
-                .bind(id)
-                .fetch_one(pool)
-                .await?;
-        topics.push(TopicSummary {
-            id,
+    let topics = store::group_conversations(pool, caller.chat_row_id)
+        .await?
+        .into_iter()
+        .map(|s| TopicSummary {
+            id: s.conversation_id,
             name: s.place(),
             is_general: s.tg_topic_id.is_none(),
             purpose: s.purpose.as_deref().map(|p| crate::setup::clip(p, 300)),
             messages: s.message_count,
-            last_activity,
-            is_you: id == caller.conversation_id,
-        });
-    }
+            last_activity: s.last_message_at,
+            is_you: s.conversation_id == caller.conversation_id,
+        })
+        .collect();
     Ok(topics)
 }
 

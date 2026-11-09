@@ -29,7 +29,11 @@ pub struct ConversationStatus {
     pub is_forum: bool,
     pub tg_topic_id: Option<i32>,
     pub topic_name: Option<String>,
+    /// Switched off in the admin panel: messages there are ignored.
+    pub enabled: bool,
     pub message_count: i64,
+    /// When the newest stored message was sent.
+    pub last_message_at: Option<DateTime<Utc>>,
     pub bot_name: Option<String>,
     pub thread_id: Option<String>,
     pub purpose: Option<String>,
@@ -211,64 +215,111 @@ pub async fn conversation_status(
     conversation_status_by_id(pool, conversation_id).await
 }
 
+/// One row of `status_select!`; the count and last activity are kept on the
+/// conversation by triggers (migration 0008), so this never scans messages.
+#[derive(sqlx::FromRow)]
+struct StatusRow {
+    id: i64,
+    tg_chat_id: i64,
+    title: String,
+    kind: String,
+    is_forum: bool,
+    tg_topic_id: Option<i32>,
+    name: String,
+    enabled: bool,
+    message_count: i64,
+    last_message_at: Option<DateTime<Utc>>,
+    bot_name: Option<String>,
+    t3_thread_id: Option<String>,
+    t3_link: Option<String>,
+    purpose: Option<String>,
+    setup_state: String,
+    agents_md_path: Option<String>,
+    agents_md_updated_at: Option<DateTime<Utc>>,
+    t3_project_registered: bool,
+}
+
+/// The status query with `$rest` (a WHERE / ORDER BY literal) appended, as
+/// one static string. At most one thread per conversation is active
+/// (`agent_threads_one_active`), so the join adds no rows.
+macro_rules! status_select {
+    ($rest:literal) => {
+        concat!(
+            "SELECT v.id, c.tg_chat_id, c.title, c.kind, c.is_forum, v.tg_topic_id,
+            v.name, v.enabled, v.message_count, v.last_message_at, b.name AS bot_name,
+            t.t3_thread_id, t.t3_link, v.purpose, v.setup_state, v.agents_md_path,
+            v.agents_md_updated_at, v.t3_project_registered
+     FROM conversations v
+     JOIN chats c ON c.id = v.chat_id
+     LEFT JOIN bots b ON b.id = v.bot_id
+     LEFT JOIN agent_threads t ON t.conversation_id = v.id AND t.status = 'active' ",
+            $rest
+        )
+    };
+}
+
+impl From<StatusRow> for ConversationStatus {
+    fn from(row: StatusRow) -> Self {
+        ConversationStatus {
+            conversation_id: row.id,
+            tg_chat_id: row.tg_chat_id,
+            chat_title: row.title,
+            chat_kind: row.kind,
+            is_forum: row.is_forum,
+            tg_topic_id: row.tg_topic_id,
+            topic_name: row.tg_topic_id.map(|_| row.name).filter(|n| !n.is_empty()),
+            enabled: row.enabled,
+            message_count: row.message_count,
+            last_message_at: row.last_message_at,
+            bot_name: row.bot_name,
+            thread_id: row.t3_thread_id,
+            purpose: row.purpose,
+            setup_state: SetupState::parse(&row.setup_state),
+            agents_md_path: row.agents_md_path,
+            agents_md_updated_at: row.agents_md_updated_at,
+            t3_project_registered: row.t3_project_registered,
+            thread_link: row.t3_link,
+        }
+    }
+}
+
 pub async fn conversation_status_by_id(
     pool: &PgPool,
     conversation_id: i64,
 ) -> Result<ConversationStatus, sqlx::Error> {
-    #[allow(clippy::type_complexity)]
-    let row: (
-        String,
-        String,
-        bool,
-        Option<i32>,
-        String,
-        i64,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<DateTime<Utc>>,
-        bool,
-        Option<String>,
-        i64,
-    ) = sqlx::query_as(
-        "SELECT c.title, c.kind, c.is_forum, v.tg_topic_id, v.name,
-                (SELECT count(*) FROM messages m WHERE m.conversation_id = v.id),
-                b.name,
-                (SELECT t.t3_thread_id FROM agent_threads t
-                  WHERE t.conversation_id = v.id AND t.status = 'active'),
-                v.purpose, v.setup_state, v.agents_md_path,
-                v.agents_md_updated_at, v.t3_project_registered,
-                (SELECT t.t3_link FROM agent_threads t
-                  WHERE t.conversation_id = v.id AND t.status = 'active'),
-                c.tg_chat_id
-         FROM conversations v
-         JOIN chats c ON c.id = v.chat_id
-         LEFT JOIN bots b ON b.id = v.bot_id
-         WHERE v.id = $1",
-    )
-    .bind(conversation_id)
-    .fetch_one(pool)
+    let row: StatusRow = sqlx::query_as(status_select!("WHERE v.id = $1"))
+        .bind(conversation_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(row.into())
+}
+
+/// Every conversation the admin panel lists (chats the bot hasn't left), in
+/// one query: each chat's General first, then its topics in order.
+pub async fn listed_conversations(pool: &PgPool) -> Result<Vec<ConversationStatus>, sqlx::Error> {
+    let rows: Vec<StatusRow> = sqlx::query_as(status_select!(
+        "WHERE c.status <> 'left'
+         ORDER BY c.id, (v.tg_topic_id IS NOT NULL), v.tg_topic_id"
+    ))
+    .fetch_all(pool)
     .await?;
-    Ok(ConversationStatus {
-        conversation_id,
-        tg_chat_id: row.14,
-        chat_title: row.0,
-        chat_kind: row.1,
-        is_forum: row.2,
-        tg_topic_id: row.3,
-        topic_name: row.3.map(|_| row.4).filter(|n| !n.is_empty()),
-        message_count: row.5,
-        bot_name: row.6,
-        thread_id: row.7,
-        purpose: row.8,
-        setup_state: SetupState::parse(&row.9),
-        agents_md_path: row.10,
-        agents_md_updated_at: row.11,
-        t3_project_registered: row.12,
-        thread_link: row.13,
-    })
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+/// A group's enabled conversations in one query: General first, then the
+/// most recently active topics.
+pub async fn group_conversations(
+    pool: &PgPool,
+    chat_row_id: i64,
+) -> Result<Vec<ConversationStatus>, sqlx::Error> {
+    let rows: Vec<StatusRow> = sqlx::query_as(status_select!(
+        "WHERE v.chat_id = $1 AND v.enabled
+         ORDER BY (v.tg_topic_id IS NOT NULL), v.last_message_at DESC NULLS LAST, v.id"
+    ))
+    .bind(chat_row_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// The conversation for (chat, topic), if it exists. Used for button taps,
