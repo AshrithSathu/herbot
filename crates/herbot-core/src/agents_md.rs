@@ -54,6 +54,7 @@ fn feature_sections() -> Vec<&'static str> {
         crate::speech::AGENTS_MD_SECTION,
         crate::tasks::AGENTS_MD_SECTION,
         crate::actions::AGENTS_MD_SECTION,
+        crate::imagine::AGENTS_MD_SECTION,
     ]
 }
 

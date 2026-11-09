@@ -97,11 +97,19 @@ pub enum Style {
     Think,
     Heavy,
     DeepSearch,
+    Video,
+    Imagine,
+    Sticker,
+    Summary,
 }
 
 impl Style {
     pub fn as_str(self) -> &'static str {
         match self {
+            Style::Video => "video",
+            Style::Imagine => "imagine",
+            Style::Sticker => "sticker",
+            Style::Summary => "summary",
             Style::Fast => "fast",
             Style::Think => "think",
             Style::Heavy => "heavy",
@@ -115,6 +123,7 @@ impl Style {
             Style::Think => Mode::Expert.effort(auto),
             Style::Heavy => Mode::Heavy.effort(auto),
             Style::DeepSearch => "high",
+            Style::Video | Style::Imagine | Style::Sticker | Style::Summary => auto,
         }
     }
 
@@ -124,12 +133,20 @@ impl Style {
             Style::Think => Mode::Expert.instruction().expect("expert has one"),
             Style::Heavy => HEAVY,
             Style::DeepSearch => DEEPSEARCH,
+            Style::Video => crate::imagine::VIDEO_INSTRUCTION,
+            Style::Imagine => crate::imagine::IMAGE_INSTRUCTION,
+            Style::Sticker => crate::imagine::STICKER_INSTRUCTION,
+            Style::Summary => crate::imagine::SUMMARY_INSTRUCTION,
         }
     }
 
     /// What's shown in the chat while it works.
     pub fn working(self) -> &'static str {
         match self {
+            Style::Video => "🎬 Generating your video",
+            Style::Imagine => "🎨 Generating your image",
+            Style::Sticker => "🎨 Making your sticker",
+            Style::Summary => "📝 Summarising",
             Style::Fast => "⚡ Fast answer coming",
             Style::Think => "🧠 Thinking it through",
             Style::Heavy => "🏋️ Heavy mode: sub-agents are on it",

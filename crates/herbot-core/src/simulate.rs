@@ -148,6 +148,11 @@ async fn simulate(
                 v
             };
             match kind {
+                FileKind::Sticker => {
+                    message["sticker"] = with(
+                        json!({ "width": 512, "height": 512, "type": "regular", "is_animated": false, "is_video": false }),
+                    );
+                }
                 FileKind::Photo => {
                     message["photo"] = json!([with(json!({ "width": 1280, "height": 1280 }))])
                 }

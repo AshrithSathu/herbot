@@ -255,6 +255,16 @@ impl BotApi {
             }};
         }
         match file.kind {
+            FileKind::Sticker => {
+                let mut req = self.0.send_sticker(chat, input);
+                if let Some(thread) = thread {
+                    req = req.message_thread_id(thread);
+                }
+                if let Some(reply) = reply {
+                    req = req.reply_parameters(reply);
+                }
+                req.await
+            }
             FileKind::Photo => send!(self.0.send_photo(chat, input)),
             FileKind::Voice => send!(self.0.send_voice(chat, input)),
             FileKind::Audio => send!(self.0.send_audio(chat, input)),
@@ -667,6 +677,15 @@ General is the everyday chat. Every other topic is its own agent with its own me
 /memory: view and forget shared memories\n\
 /customize [text|clear]: global answer instructions\n\
 /aboutme <text|clear>: what Herbot should know about you\n\
+/mode: choose Fast, Auto, Expert or Heavy\n\
+/fast <question>: a quick answer\n\
+/think <question>: think carefully\n\
+/heavy <question>: use several agents\n\
+/deepsearch <question>: research with sources\n\
+/video <prompt>: generate a video\n\
+/imagine <prompt>: generate an image\n\
+/sticker: reply to a photo, or add a prompt\n\
+/summary [count|today]: summarise history or a replied message/document\n\
 /help: this list";
 
 pub const WELCOME_TEXT: &str = "👋 Herbot is here. General is our everyday chat. Every other topic is its own agent: say anything in a new topic and I'll ask what it should be.";
@@ -881,7 +900,17 @@ async fn hand_to_agent<A: TelegramApi, T: Transcriber>(
             .remove_buttons(msg.chat.tg_chat_id, message_id)
             .await?;
     }
-    if let Some(style) = style.filter(|s| matches!(s, Style::DeepSearch | Style::Heavy)) {
+    if let Some(style) = style.filter(|s| {
+        matches!(
+            s,
+            Style::DeepSearch
+                | Style::Heavy
+                | Style::Video
+                | Style::Imagine
+                | Style::Sticker
+                | Style::Summary
+        )
+    }) {
         // Long runs: say what's happening (typing alone looks stuck).
         reply(ctx, msg, &format!("{}…", style.working())).await?;
     }
@@ -1545,7 +1574,10 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
             }
         }
         Command::Styled { style, question } => {
-            if question.trim().is_empty() {
+            if question.trim().is_empty()
+                && !matches!(style, Style::Summary)
+                && !(style == Style::Sticker && msg.attachment.is_some())
+            {
                 format!(
                     "Put your question after the command, like /{} what changed in Rust this year?",
                     style.as_str()
@@ -1553,7 +1585,28 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
             } else {
                 // The question goes to the agent like any message, in that mode.
                 let mut asked = msg.clone();
-                asked.text = question;
+                asked.text = if style == Style::Summary {
+                    let source = msg
+                        .text
+                        .split_once("[Quoted source to summarise]")
+                        .map(|(_, source)| source);
+                    match source {
+                        Some(source) => {
+                            format!("{question}\n\n[Quoted source to summarise]\n{source}")
+                        }
+                        None => {
+                            if question.is_empty() {
+                                "Summarise recent history.".into()
+                            } else {
+                                question
+                            }
+                        }
+                    }
+                } else if question.is_empty() {
+                    "Make a sticker from the attached image.".into()
+                } else {
+                    question
+                };
                 asked.command = None;
                 return take_message(ctx, asked, Some(style)).await;
             }

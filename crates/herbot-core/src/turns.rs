@@ -499,7 +499,7 @@ async fn send_files<A: TelegramApi, R: AgentRunner>(
     let mut last_message = None;
     for (i, wanted) in file_refs.iter().enumerate() {
         let reply_to = (reply_to_first && i == 0).then_some(job.reply_to);
-        let resolved = match outbound_files::resolve(&deps.agents_dir, &folder, wanted).await {
+        let mut resolved = match outbound_files::resolve(&deps.agents_dir, &folder, wanted).await {
             Ok(resolved) => resolved,
             Err(why) => {
                 let context = json!({
@@ -523,6 +523,37 @@ async fn send_files<A: TelegramApi, R: AgentRunner>(
         };
         if !seen.insert(resolved.file.path.clone()) {
             continue; // the same file named twice ([[file]] and an image link)
+        }
+        if job.style == Some(Style::Sticker) {
+            if resolved.file.kind != FileKind::Photo {
+                return Err(TurnError::RunFailed(
+                    "sticker source must be a JPG, PNG or WebP image".into(),
+                ));
+            }
+            let destination = deps
+                .agents_dir
+                .join(&folder)
+                .join("files/out")
+                .join(format!("sticker-{}-{i}.webp", job.reply_to));
+            crate::imagine::sticker(&resolved.file.path, &destination)
+                .await
+                .map_err(|e| TurnError::RunFailed(e.to_string()))?;
+            resolved.file.path = destination.clone();
+            resolved.file.kind = FileKind::Sticker;
+            resolved.file.caption = None;
+            resolved.saved.kind = "sticker".into();
+            resolved.saved.name = destination
+                .file_name()
+                .expect("sticker filename")
+                .to_string_lossy()
+                .into_owned();
+            resolved.saved.path = destination
+                .strip_prefix(&deps.agents_dir)
+                .expect("inside agents")
+                .display()
+                .to_string();
+            resolved.saved.mime = Some("image/webp".into());
+            resolved.saved.size = tokio::fs::metadata(&destination).await?.len();
         }
         let _ = deps
             .api
