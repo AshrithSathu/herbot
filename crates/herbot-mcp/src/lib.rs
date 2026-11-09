@@ -315,7 +315,7 @@ impl HerbotTools {
 
 pub const INSTRUCTIONS: &str = "Herbot tools for Ashrith's Telegram agents. Always pass `caller` from your \
 <herbot-meta> header. General can list, search and read every topic and ask or post to them; a topic can \
-search and read only its own history.";
+search and read only its own history. Every authenticated topic may remember, recall and forget shared personal memories. Never store secrets.";
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for HerbotTools {

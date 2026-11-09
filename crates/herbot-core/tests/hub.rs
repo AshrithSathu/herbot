@@ -224,3 +224,73 @@ async fn empty_searches_are_rejected(pool: PgPool) {
         Err(HubError::BadRequest(_))
     ));
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn personal_memories_are_global_but_require_a_caller(pool: PgPool) {
+    use herbot_core::personal;
+    seed(&pool).await;
+    let root = tempfile::tempdir().unwrap();
+    let general = hub::caller_token(&pool, 1).await.unwrap();
+    let research = hub::caller_token(&pool, 2).await.unwrap();
+    assert!(matches!(
+        hub::remember(&pool, "forged", root.path(), "A stable fact").await,
+        Err(HubError::UnknownCaller)
+    ));
+    let m = hub::remember(
+        &pool,
+        &research,
+        root.path(),
+        "Ashrith prefers concise English replies.",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        hub::remember(
+            &pool,
+            &general,
+            root.path(),
+            "ashrith prefers concise English replies!"
+        )
+        .await
+        .unwrap()
+        .id,
+        m.id
+    );
+    assert_eq!(
+        hub::recall(&pool, &general, Some("ENGLISH"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        hub::remember(
+            &pool,
+            &research,
+            root.path(),
+            &format!("sk-{}", "a".repeat(32))
+        )
+        .await
+        .is_err()
+    );
+    let at = personal::updated_at(&pool).await.unwrap().unwrap();
+    personal::write_file(&pool, root.path()).await.unwrap();
+    assert_eq!(personal::updated_at(&pool).await.unwrap(), Some(at));
+    assert!(
+        std::fs::read_to_string(root.path().join("PERSONAL.md"))
+            .unwrap()
+            .contains(&format!("[id: {}]", m.id))
+    );
+    assert_eq!(
+        hub::forget(&pool, &general, root.path(), m.id)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(
+        hub::recall(&pool, &research, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

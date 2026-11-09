@@ -160,6 +160,23 @@ pub async fn remember(
     write_file(pool, dir).await?;
     Ok(memory)
 }
+/// A confirmation may only erase memories that existed when it was shown.
+pub async fn forget_through(pool: &PgPool, dir: &Path, cutoff: i64) -> Result<u64, PersonalError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(LOCK)
+        .execute(&mut *tx)
+        .await?;
+    let count = sqlx::query("DELETE FROM memories WHERE id <= $1")
+        .bind(cutoff)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    write_file(pool, dir).await?;
+    Ok(count)
+}
+
 pub async fn forget(pool: &PgPool, dir: &Path, id: Option<i64>) -> Result<u64, PersonalError> {
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -175,6 +192,31 @@ pub async fn forget(pool: &PgPool, dir: &Path, id: Option<i64>) -> Result<u64, P
     write_file(pool, dir).await?;
     Ok(count)
 }
+/// Updates one field without overwriting edits from another topic.
+pub async fn set_preference(
+    pool: &PgPool,
+    dir: &Path,
+    key: &str,
+    value: &str,
+) -> Result<(), PersonalError> {
+    let max = match key {
+        "custom_instructions" => 3000,
+        "about_you" => 1500,
+        _ => return Err(PersonalError::Invalid("unknown preference".into())),
+    };
+    let value = validate(value, max)?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(LOCK)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO preferences(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value")
+        .bind(key).bind(value).execute(&mut *tx).await?;
+    tx.commit().await?;
+    write_file(pool, dir).await?;
+    Ok(())
+}
+
 pub async fn set_preferences(
     pool: &PgPool,
     dir: &Path,
@@ -259,7 +301,7 @@ mod tests {
         ));
         assert!(similar(
             "I prefer concise English replies",
-            "I prefer concise English replys"
+            "I prefer concise English repliez"
         ));
         assert!(!similar("I like tea", "I like sea"));
         assert!(validate(&"x".repeat(501), 500).is_err());

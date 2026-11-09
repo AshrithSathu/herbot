@@ -282,7 +282,11 @@ pub async fn remember(
     content: &str,
 ) -> Result<crate::personal::Memory, HubError> {
     let caller = resolve_caller(pool, caller_token).await?;
-    Ok(crate::personal::remember(pool, dir, content, Some(caller.conversation_id), None).await?)
+    personal_result(
+        pool,
+        crate::personal::remember(pool, dir, content, Some(caller.conversation_id), None).await,
+    )
+    .await
 }
 pub async fn forget(
     pool: &PgPool,
@@ -291,7 +295,7 @@ pub async fn forget(
     id: i64,
 ) -> Result<u64, HubError> {
     resolve_caller(pool, caller_token).await?;
-    Ok(crate::personal::forget(pool, dir, Some(id)).await?)
+    personal_result(pool, crate::personal::forget(pool, dir, Some(id)).await).await
 }
 pub async fn recall(
     pool: &PgPool,
@@ -299,5 +303,37 @@ pub async fn recall(
     query: Option<&str>,
 ) -> Result<Vec<crate::personal::Memory>, HubError> {
     resolve_caller(pool, caller_token).await?;
-    Ok(crate::personal::recall(pool, query).await?)
+    personal_result(
+        pool,
+        crate::personal::recall(pool, query)
+            .await
+            .map_err(Into::into),
+    )
+    .await
+}
+
+async fn personal_result<T>(
+    pool: &PgPool,
+    result: Result<T, crate::personal::PersonalError>,
+) -> Result<T, HubError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(
+            err @ (crate::personal::PersonalError::Invalid(_)
+            | crate::personal::PersonalError::NotFound),
+        ) => Err(err.into()),
+        Err(err) => {
+            let id = crate::errors::record(
+                pool,
+                "personal.tool",
+                &err.to_string(),
+                serde_json::json!({}),
+            )
+            .await?;
+            tracing::error!(error_id = %id, error = %err, "personalisation tool failed");
+            Err(HubError::BadRequest(format!(
+                "❌ Failed ({id}): personalisation could not be updated. Check logs."
+            )))
+        }
+    }
 }

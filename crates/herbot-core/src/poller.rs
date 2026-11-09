@@ -992,7 +992,7 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
         }
         Command::Customize(text) | Command::AboutMe(text) => {
             let about = matches!(msg.command, Some(Command::AboutMe(_)));
-            let mut prefs = crate::personal::preferences(ctx.pool).await?;
+            let prefs = crate::personal::preferences(ctx.pool).await?;
             if text.is_empty() {
                 // The two fields together can exceed Telegram's message limit.
                 for text in [
@@ -1015,12 +1015,17 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
             } else {
                 text
             };
-            if about {
-                prefs.about_you = value;
-            } else {
-                prefs.custom_instructions = value;
-            }
-            crate::personal::set_preferences(ctx.pool, ctx.agents_dir, &prefs).await?;
+            crate::personal::set_preference(
+                ctx.pool,
+                ctx.agents_dir,
+                if about {
+                    "about_you"
+                } else {
+                    "custom_instructions"
+                },
+                &value,
+            )
+            .await?;
             "Personalisation saved for every topic.".to_string()
         }
         Command::Setup => {
@@ -1120,15 +1125,17 @@ pub async fn process<A: TelegramApi, T: Transcriber>(
     Some(error_id)
 }
 
-fn short_reason(err: &HandleError) -> &'static str {
-    match err {
+fn short_reason(err: &HandleError) -> String {
+    let reason = match err {
+        HandleError::Personal(err) => return setup::clip(&err.to_string(), 200),
         HandleError::Db(_) => "database error",
         HandleError::Api(_) => "Telegram API error",
         HandleError::Voice(VoiceError::NotConfigured) => "voice notes are off (no OPENAI_API_KEY)",
         HandleError::Voice(_) => "couldn't transcribe that voice note",
         HandleError::AgentsMd(_) => "couldn't save AGENTS.md",
         HandleError::T3(_) => "couldn't delete this topic's T3 threads, so nothing was wiped",
-    }
+    };
+    reason.to_string()
 }
 
 /// Registers the `/` command menu, only where Herbot works: the home group
@@ -1461,7 +1468,7 @@ async fn memory_page<A: TelegramApi, T: Transcriber>(
                 topic,
                 None,
                 &format!("#{}: {}", memory.id, memory.content),
-                &vec![vec![(
+                &[vec![(
                     format!("Forget #{}", memory.id),
                     format!("mem:del:{}", memory.id),
                 )]],
@@ -1510,6 +1517,11 @@ async fn handle_memory_button<A: TelegramApi, T: Transcriber>(
         }
         ["mem", "all"] => {
             let stamp = Utc::now().timestamp();
+            let cutoff = crate::personal::recall(ctx.pool, None)
+                .await?
+                .last()
+                .map(|m| m.id)
+                .unwrap_or(0);
             let id = status.conversation_id;
             ctx.api
                 .send_buttons(
@@ -1517,22 +1529,30 @@ async fn handle_memory_button<A: TelegramApi, T: Transcriber>(
                     press.topic_id,
                     None,
                     "Forget every shared memory? Custom instructions and about-you will stay.",
-                    &vec![vec![
-                        ("Yes, forget all".into(), format!("mem:yes:{id}:{stamp}")),
-                        ("Cancel".into(), format!("mem:cancel:{id}:{stamp}")),
+                    &[vec![
+                        (
+                            "Yes, forget all".into(),
+                            format!("mem:yes:{id}:{stamp}:{cutoff}"),
+                        ),
+                        ("Cancel".into(), format!("mem:cancel:{id}:{stamp}:{cutoff}")),
                     ]],
                 )
                 .await?;
         }
-        ["mem", action @ ("yes" | "cancel"), id, stamp] => {
+        ["mem", action @ ("yes" | "cancel"), id, stamp, cutoff] => {
             let valid = id.parse::<i64>().ok() == Some(status.conversation_id)
                 && stamp
                     .parse::<i64>()
                     .ok()
                     .is_some_and(|stamp| (0..600).contains(&(Utc::now().timestamp() - stamp)));
-            if valid {
+            if valid && cutoff.parse::<i64>().is_ok() {
                 if *action == "yes" {
-                    crate::personal::forget(ctx.pool, ctx.agents_dir, None).await?;
+                    crate::personal::forget_through(
+                        ctx.pool,
+                        ctx.agents_dir,
+                        cutoff.parse().expect("validated cutoff"),
+                    )
+                    .await?;
                 }
                 ctx.api.remove_buttons(chat, press.message_id).await?;
                 ctx.api
