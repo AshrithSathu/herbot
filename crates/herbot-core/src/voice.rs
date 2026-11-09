@@ -131,22 +131,22 @@ impl OpenAiTranscriber {
     }
 }
 
-impl Transcriber for OpenAiTranscriber {
-    async fn transcribe(&self, audio: Vec<u8>) -> Result<String, VoiceError> {
-        self.transcribe_in(audio, Some("en")).await
-    }
-
-    async fn transcribe_in(
+impl OpenAiTranscriber {
+    /// Transcribes a recording of any type OpenAI accepts (voice notes are
+    /// OGG/Opus; the panel's companions send WebM or MP4 from the browser).
+    pub async fn transcribe_file(
         &self,
         audio: Vec<u8>,
+        filename: &str,
+        mime: &str,
         language: Option<&str>,
     ) -> Result<String, VoiceError> {
         if audio.len() > MAX_AUDIO_BYTES {
             return Err(VoiceError::TooLarge(audio.len()));
         }
         let file = reqwest::multipart::Part::bytes(audio)
-            .file_name(VOICE_FILENAME)
-            .mime_str(VOICE_MIME)
+            .file_name(filename.to_owned())
+            .mime_str(mime)
             .map_err(|e| VoiceError::Request(e.to_string()))?;
         let mut form = reqwest::multipart::Form::new()
             .part("file", file)
@@ -179,6 +179,21 @@ impl Transcriber for OpenAiTranscriber {
             });
         }
         Ok(body.trim().to_string())
+    }
+}
+
+impl Transcriber for OpenAiTranscriber {
+    async fn transcribe(&self, audio: Vec<u8>) -> Result<String, VoiceError> {
+        self.transcribe_in(audio, Some("en")).await
+    }
+
+    async fn transcribe_in(
+        &self,
+        audio: Vec<u8>,
+        language: Option<&str>,
+    ) -> Result<String, VoiceError> {
+        self.transcribe_file(audio, VOICE_FILENAME, VOICE_MIME, language)
+            .await
     }
 }
 
@@ -260,6 +275,22 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         (format!("http://{addr}/v1"), seen)
+    }
+
+    #[tokio::test]
+    async fn browser_recordings_keep_their_container_type() {
+        let (base, seen) = fake_openai(StatusCode::OK, "Hello").await;
+        let t = OpenAiTranscriber::with_base_url("test".into(), DEFAULT_MODEL.into(), base);
+        assert_eq!(
+            t.transcribe_file(b"webm".to_vec(), "recording.webm", "audio/webm", Some("en"))
+                .await
+                .unwrap(),
+            "Hello"
+        );
+        let seen = seen.lock().unwrap();
+        let body = String::from_utf8_lossy(&seen.body);
+        assert!(body.contains("filename=\"recording.webm\""));
+        assert!(body.contains("Content-Type: audio/webm"));
     }
 
     #[tokio::test]

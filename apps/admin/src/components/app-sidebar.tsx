@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils'
 const PAGES = [
   { to: '/', label: 'Overview', icon: LayoutGridIcon, exact: true },
   { to: '/topics', label: 'Topics', icon: MessagesSquareIcon, exact: true },
+  { to: '/companions', label: 'Companions', icon: MessageCircleIcon, exact: true },
   { to: '/memory', label: 'Memory', icon: BrainIcon, exact: true },
   { to: '/personalize', label: 'Personalize', icon: SlidersHorizontalIcon, exact: true },
   { to: '/tasks', label: 'Tasks', icon: ScrollTextIcon, exact: true },

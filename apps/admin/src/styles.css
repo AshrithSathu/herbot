@@ -266,3 +266,20 @@
 .hljs-string, .hljs-number, .hljs-literal { color: var(--success); }
 .hljs-comment { color: var(--muted-foreground); font-style: italic; }
 [data-highlight='true'] { outline: 2px solid var(--ring); outline-offset: 3px; }
+
+/* Original companion illustrations share the panel's perceptual palette. */
+.companion-avatar { width: 100%; height: 100%; overflow: visible; }
+.companion-face { fill: oklch(82% .09 var(--companion-hue)); stroke: oklch(40% .06 var(--companion-hue)); stroke-width: 2; }
+.companion-wings { fill: oklch(76% .13 var(--companion-hue)); stroke: oklch(50% .09 var(--companion-hue)); stroke-width: 2; }
+.companion-shadow { fill: var(--foreground); opacity: .07; }
+.companion-eyes, .companion-mouth { fill: oklch(26% .03 var(--companion-hue)); }
+.companion-cheeks { stroke: oklch(60% .14 var(--companion-hue)); stroke-width: 5; stroke-linecap: round; }
+.companion-lines { fill: none; stroke: oklch(40% .06 var(--companion-hue)); stroke-width: 2; stroke-linecap: round; }
+.companion-body { transform-origin: 120px 180px; animation: companion-breathe 4s ease-in-out infinite; }
+.companion-eyes { transform-origin: 120px 122px; animation: companion-blink 6s infinite; }
+.is-listening .companion-body { transform: rotate(-5deg); animation-duration: 2s; }
+.is-thinking .companion-body, .is-transcribing .companion-body { animation: companion-think 2s ease-in-out infinite; }
+@keyframes companion-breathe { 50% { transform: translateY(-4px) scale(1.015); } }
+@keyframes companion-blink { 0%, 43%, 47%, 100% { transform: scaleY(1); } 45% { transform: scaleY(.08); } }
+@keyframes companion-think { 50% { transform: rotate(5deg) translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .companion-body, .companion-eyes { animation: none !important; transform: none !important; } }

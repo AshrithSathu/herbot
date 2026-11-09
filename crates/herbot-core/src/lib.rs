@@ -48,3 +48,5 @@ pub mod xsearch;
 
 pub mod panel;
 pub mod tasks;
+
+pub mod panel_voice;
