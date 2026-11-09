@@ -4,8 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
-    "start": "srvx --prod --host 127.0.0.1 --port ${HERBOT_ADMIN_PORT:-3300} -s ../client dist/server/server.js",
+    "build": "vite build && node scripts/precompress.mjs",
+    "start": "NODE_ENV=production node server.mjs",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test"
   },
