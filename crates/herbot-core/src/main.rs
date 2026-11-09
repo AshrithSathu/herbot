@@ -31,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
     let mut internal_router: Option<axum::Router> = None;
     let mut simulate_router: Option<axum::Router> = None;
     let mut poller_task = None;
+    let mut panel_live = None;
     match &config.telegram {
         None => tracing::warn!("TELEGRAM_BOT_TOKEN not set; Telegram is disabled"),
         Some(tg) => {
@@ -53,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
                 home_chat = ?tg.home_chat_id,
                 "telegram connected"
             );
-            let transcriber = match &config.openai {
+            let transcriber = Arc::new(match &config.openai {
                 Some(openai) => {
                     tracing::info!(model = %openai.transcribe_model, "voice notes on (OpenAI, English)");
                     voice::AnyTranscriber::OpenAi(voice::OpenAiTranscriber::new(
@@ -65,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
                     tracing::warn!("OPENAI_API_KEY not set; voice notes will fail with an error");
                     voice::AnyTranscriber::Off(voice::NoTranscriber)
                 }
-            };
+            });
             let agents_dir = absolute_agents_dir(&config.agents_dir)?;
             check_t3_cli(&config.t3_bin).await?;
             let refreshed = agents_md::refresh_outdated(&pool, &agents_dir)
@@ -121,6 +122,13 @@ async fn main() -> anyhow::Result<()> {
                     "HERBOT_INTERNAL_TOKEN not set; General can't post to or ask topics"
                 ),
             }
+            panel_live = Some(herbot_core::panel::Live {
+                api: api.clone(),
+                turns: shared_turns.clone(),
+                rules,
+                username: username.clone(),
+                transcriber: transcriber.clone(),
+            });
             let settings = poller::RunSettings {
                 rules,
                 bot_username: username.clone(),
@@ -206,7 +214,8 @@ async fn main() -> anyhow::Result<()> {
                 bot_username: telegram_username.clone(),
             };
             tracing::info!("admin API on");
-            Some(admin::router(Arc::new(state)))
+            let state = Arc::new(state);
+            Some(admin::router(state.clone()).merge(herbot_core::panel::router(state, panel_live)))
         }
         None => {
             tracing::warn!("HERBOT_ADMIN_TOKEN not set; the admin panel can't connect");

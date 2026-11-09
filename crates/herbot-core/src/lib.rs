@@ -40,3 +40,5 @@ pub mod telemetry;
 pub mod turns;
 pub mod voice;
 pub mod wipe;
+
+pub mod panel;

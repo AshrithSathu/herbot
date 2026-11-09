@@ -72,6 +72,18 @@ pub async fn receive<A: TelegramApi, T: Transcriber>(
         size: bytes.len() as u64,
     };
 
+    let note = describe_saved(transcriber, &absolute, &shown, message_id, attachment).await?;
+    Ok(Received { note, file })
+}
+
+/// Shared media preparation for Telegram downloads and panel uploads.
+pub async fn describe_saved<T: Transcriber>(
+    transcriber: &T,
+    absolute: &Path,
+    shown: &str,
+    message_id: i32,
+    attachment: &Attachment,
+) -> Result<String, FileError> {
     let is_image_document = attachment.kind == AttachmentKind::Document
         && attachment
             .mime
@@ -83,7 +95,7 @@ pub async fn receive<A: TelegramApi, T: Transcriber>(
         AttachmentKind::Document => format!(
             "[Document: {shown} ({}, {}). Read it from that path.]",
             attachment.mime.as_deref().unwrap_or("unknown type"),
-            human_size(bytes.len() as u64)
+            human_size(tokio::fs::metadata(absolute).await?.len())
         ),
         AttachmentKind::Sticker => {
             let emoji = attachment.emoji.as_deref().unwrap_or("");
@@ -98,7 +110,7 @@ pub async fn receive<A: TelegramApi, T: Transcriber>(
         }
         AttachmentKind::Audio => describe_audio(transcriber, &absolute, &shown, attachment).await?,
     };
-    Ok(Received { note, file })
+    Ok(note)
 }
 
 /// Stills from across the video (for view_image) and, for videos with sound,

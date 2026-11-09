@@ -88,6 +88,9 @@ impl Eq for ReplySlot {}
 /// recorder in tests.
 pub trait TurnQueue: Send + Sync {
     fn submit(&self, job: TurnJob);
+    fn in_progress(&self, _id: i64) -> bool {
+        false
+    }
 }
 
 /// Everything a turn needs; shared by all lanes.
@@ -570,6 +573,7 @@ async fn recover_thread<A: TelegramApi, R: AgentRunner>(
 /// One worker per conversation, created on first use.
 pub struct Lanes<A: TelegramApi + 'static, R: AgentRunner> {
     deps: Arc<TurnDeps<A, R>>,
+    pending: Arc<Mutex<HashMap<i64, usize>>>,
     senders: Mutex<HashMap<i64, mpsc::UnboundedSender<TurnJob>>>,
 }
 
@@ -577,6 +581,7 @@ impl<A: TelegramApi + Send + 'static, R: AgentRunner> Lanes<A, R> {
     pub fn new(deps: TurnDeps<A, R>) -> Self {
         Self {
             deps: Arc::new(deps),
+            pending: Arc::default(),
             senders: Mutex::new(HashMap::new()),
         }
     }
@@ -584,9 +589,15 @@ impl<A: TelegramApi + Send + 'static, R: AgentRunner> Lanes<A, R> {
     fn spawn_lane(&self) -> mpsc::UnboundedSender<TurnJob> {
         let (tx, mut rx) = mpsc::unbounded_channel::<TurnJob>();
         let deps = self.deps.clone();
+        let pending = self.pending.clone();
         tokio::spawn(async move {
             while let Some(job) = rx.recv().await {
+                let id = job.conversation_id;
                 run_turn(&deps, job).await;
+                let mut counts = pending.lock().expect("pending lock");
+                if let Some(count) = counts.get_mut(&id) {
+                    *count = count.saturating_sub(1);
+                }
             }
         });
         tx
@@ -594,7 +605,22 @@ impl<A: TelegramApi + Send + 'static, R: AgentRunner> Lanes<A, R> {
 }
 
 impl<A: TelegramApi + Send + 'static, R: AgentRunner> TurnQueue for Lanes<A, R> {
+    fn in_progress(&self, id: i64) -> bool {
+        self.pending
+            .lock()
+            .expect("pending lock")
+            .get(&id)
+            .copied()
+            .unwrap_or(0)
+            > 0
+    }
     fn submit(&self, job: TurnJob) {
+        *self
+            .pending
+            .lock()
+            .expect("pending lock")
+            .entry(job.conversation_id)
+            .or_default() += 1;
         let mut senders = self.senders.lock().expect("lanes lock");
         let id = job.conversation_id;
         let sender = senders.entry(id).or_insert_with(|| self.spawn_lane());

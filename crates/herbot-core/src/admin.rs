@@ -73,7 +73,7 @@ fn db_fail(err: impl std::fmt::Display) -> Reply {
     fail(StatusCode::INTERNAL_SERVER_ERROR, "database error")
 }
 
-fn authorized(headers: &HeaderMap, token: &str) -> bool {
+pub(crate) fn authorized(headers: &HeaderMap, token: &str) -> bool {
     let Some(given) = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -152,6 +152,7 @@ struct ConversationSummary {
     messages: i64,
     last_activity: Option<DateTime<Utc>>,
     thread_link: Option<String>,
+    mode: String,
 }
 
 impl ConversationSummary {
@@ -171,6 +172,7 @@ impl ConversationSummary {
             messages: status.message_count,
             last_activity: status.last_message_at,
             thread_link: status.thread_link.clone(),
+            mode: status.mode.as_str().into(),
         }
     }
 }
@@ -212,6 +214,7 @@ struct MessageRow {
     from_bot: bool,
     is_voice: bool,
     body: String,
+    attachments: Value,
 }
 
 async fn conversation(
@@ -273,7 +276,7 @@ async fn messages(
     let rows: Result<Vec<MessageRow>, _> = match query.after {
         Some(after) => {
             sqlx::query_as(
-                "SELECT id, sent_at, from_bot, is_voice, body FROM messages
+                "SELECT id, sent_at, from_bot, is_voice, body, attachments FROM messages
                  WHERE conversation_id = $1 AND id > $2 ORDER BY id ASC LIMIT $3",
             )
             .bind(id)
@@ -284,7 +287,7 @@ async fn messages(
         }
         None => {
             sqlx::query_as(
-                "SELECT id, sent_at, from_bot, is_voice, body FROM messages
+                "SELECT id, sent_at, from_bot, is_voice, body, attachments FROM messages
                  WHERE conversation_id = $1 AND ($2::bigint IS NULL OR id < $2)
                  ORDER BY id DESC LIMIT $3",
             )

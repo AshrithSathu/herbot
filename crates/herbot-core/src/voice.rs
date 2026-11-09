@@ -269,3 +269,9 @@ mod tests {
         );
     }
 }
+
+impl<T: Transcriber + Send> Transcriber for std::sync::Arc<T> {
+    async fn transcribe(&self, audio: Vec<u8>) -> Result<String, VoiceError> {
+        (**self).transcribe(audio).await
+    }
+}
