@@ -410,12 +410,10 @@ impl HerbotTools {
                 Ok(s) => s,
                 Err(e) => return tool_error(e.to_string()),
             };
-        let key = match std::env::var("OPENAI_API_KEY")
-            .ok()
-            .filter(|k| !k.trim().is_empty())
-        {
-            Some(k) => k,
-            None => return tool_error("OPENAI_API_KEY is not set for herbot-mcp"),
+        let Some(provider) = herbot_core::imagine::VideoProvider::from_env() else {
+            return tool_error(
+                "No video provider: set XAI_API_KEY (Grok Imagine) or OPENAI_API_KEY for herbot-mcp",
+            );
         };
         let root = match std::env::var("HERBOT_AGENTS_DIR")
             .ok()
@@ -432,10 +430,8 @@ impl HerbotTools {
             status.tg_chat_id,
             status.tg_topic_id,
         ));
-        let model = std::env::var("HERBOT_VIDEO_MODEL").unwrap_or_else(|_| "sora-2".into());
-        match herbot_core::imagine::generate_video(
-            &key,
-            &model,
+        match herbot_core::imagine::generate(
+            &provider,
             &topic,
             &args.prompt,
             args.seconds.unwrap_or(4),

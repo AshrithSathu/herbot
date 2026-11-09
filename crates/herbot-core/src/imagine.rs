@@ -22,7 +22,7 @@ pub enum ImagineError {
     Io(#[from] std::io::Error),
     #[error("video request: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("OpenAI video API HTTP {status}: {message}")]
+    #[error("video API HTTP {status}: {message}")]
     Api { status: u16, message: String },
     #[error("{0}")]
     Job(String),
@@ -51,6 +51,186 @@ async fn checked(response: reqwest::Response) -> Result<reqwest::Response, Imagi
     Err(ImagineError::Api {
         status,
         message: crate::outgoing::scrub(&body),
+    })
+}
+
+/// Who makes the video. xAI's Grok Imagine (`XAI_API_KEY`) when it's set,
+/// since that is Grok's own video model; otherwise OpenAI (`OPENAI_API_KEY`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VideoProvider {
+    Xai { key: String, model: String },
+    OpenAi { key: String, model: String },
+}
+
+impl VideoProvider {
+    /// From the environment; `HERBOT_VIDEO_MODEL` overrides the model.
+    pub fn from_env() -> Option<VideoProvider> {
+        let var = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+        let model = var("HERBOT_VIDEO_MODEL");
+        if let Some(key) = var("XAI_API_KEY") {
+            return Some(VideoProvider::Xai {
+                key,
+                model: model
+                    .filter(|m| m.starts_with("grok"))
+                    .unwrap_or_else(|| "grok-imagine-video-1.5".into()),
+            });
+        }
+        var("OPENAI_API_KEY").map(|key| VideoProvider::OpenAi {
+            key,
+            model: model.unwrap_or_else(|| "sora-2".into()),
+        })
+    }
+}
+
+/// Makes a video with whichever provider is configured.
+pub async fn generate(
+    provider: &VideoProvider,
+    topic: &Path,
+    prompt: &str,
+    seconds: u32,
+    size: &str,
+    image_path: Option<&Path>,
+) -> Result<GeneratedVideo, ImagineError> {
+    match provider {
+        VideoProvider::OpenAi { key, model } => {
+            generate_video(key, model, topic, prompt, seconds, size, image_path).await
+        }
+        VideoProvider::Xai { key, model } => {
+            if prompt.trim().is_empty() || !(1..=15).contains(&seconds) {
+                return Err(ImagineError::Invalid(
+                    "prompt required; seconds: 1 to 15".into(),
+                ));
+            }
+            tokio::time::timeout(
+                Duration::from_secs(540),
+                xai_video(key, model, topic, prompt, seconds, size, image_path),
+            )
+            .await
+            .map_err(|_| {
+                ImagineError::Job(
+                    "video generation exceeded 540 seconds; the remote job may still finish; no automatic retry"
+                        .into(),
+                )
+            })?
+        }
+    }
+}
+
+/// xAI Grok Imagine video: POST /v1/videos/generations, poll
+/// GET /v1/videos/{request_id} until `done`, then download `video.url`.
+async fn xai_video(
+    key: &str,
+    model: &str,
+    topic: &Path,
+    prompt: &str,
+    seconds: u32,
+    size: &str,
+    image_path: Option<&Path>,
+) -> Result<GeneratedVideo, ImagineError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(90))
+        .build()?;
+    let aspect = match size {
+        "1280x720" | "1792x1024" => "16:9",
+        "1024x1024" => "1:1",
+        _ => "9:16",
+    };
+    let mut body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "duration": seconds,
+        "aspect_ratio": aspect,
+    });
+    if let Some(path) = image_path {
+        let root = tokio::fs::canonicalize(topic).await?;
+        let path = tokio::fs::canonicalize(if path.is_absolute() {
+            path.to_owned()
+        } else {
+            topic.join(path)
+        })
+        .await?;
+        let mime = crate::outbound_files::mime_of(&path)
+            .filter(|m| ["image/png", "image/jpeg", "image/webp"].contains(m))
+            .ok_or_else(|| ImagineError::Invalid("reference must be a PNG, JPEG or WebP".into()))?;
+        if !path.starts_with(&root) || tokio::fs::metadata(&path).await?.len() > 20 * 1024 * 1024 {
+            return Err(ImagineError::Invalid(
+                "reference must be inside the caller's topic and at most 20 MB".into(),
+            ));
+        }
+        use base64::Engine as _;
+        let data = base64::engine::general_purpose::STANDARD.encode(tokio::fs::read(&path).await?);
+        body["image"] = serde_json::json!({ "url": format!("data:{mime};base64,{data}") });
+    }
+    #[derive(Deserialize)]
+    struct Started {
+        request_id: String,
+    }
+    let started: Started = checked(
+        client
+            .post("https://api.x.ai/v1/videos/generations")
+            .bearer_auth(key)
+            .json(&body)
+            .send()
+            .await?,
+    )
+    .await?
+    .json()
+    .await?;
+    let id = started.request_id;
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ImagineError::Job("invalid video request id".into()));
+    }
+    let url = loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let status: serde_json::Value = checked(
+            client
+                .get(format!("https://api.x.ai/v1/videos/{id}"))
+                .bearer_auth(key)
+                .send()
+                .await?,
+        )
+        .await?
+        .json()
+        .await?;
+        match status["status"].as_str().unwrap_or("") {
+            "done" => match status["video"]["url"].as_str() {
+                Some(url) => break url.to_string(),
+                None => {
+                    return Err(ImagineError::Job(format!(
+                        "video {id} finished without a URL"
+                    )));
+                }
+            },
+            "failed" | "expired" => {
+                return Err(ImagineError::Job(format!(
+                    "video {id} {}: {}",
+                    status["status"].as_str().unwrap_or("failed"),
+                    crate::outgoing::scrub(&status["error"].to_string())
+                )));
+            }
+            _ => {}
+        }
+    };
+    let bytes = checked(client.get(&url).send().await?)
+        .await?
+        .bytes()
+        .await?;
+    if bytes.len() < 12 || &bytes[4..8] != b"ftyp" {
+        return Err(ImagineError::Job("video download is not an MP4".into()));
+    }
+    let dir = topic.join("files/out");
+    tokio::fs::create_dir_all(&dir).await?;
+    let path = dir.join(format!("{id}.mp4"));
+    tokio::fs::write(&path, bytes).await?;
+    Ok(GeneratedVideo {
+        id,
+        path,
+        seconds,
+        size: size.into(),
     })
 }
 
