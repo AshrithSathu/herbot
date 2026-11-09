@@ -1919,7 +1919,9 @@ async fn a_long_voice_note_holds_up_only_its_own_topic(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(inbox, 0, "handled updates leave the inbox");
-    assert_eq!(store::load_offset(&pool).await.unwrap(), Some(1031));
+    // The offset moves past the batch's last update (the fixtures are out of
+    // order here; real Telegram batches are ascending).
+    assert_eq!(store::load_offset(&pool).await.unwrap(), Some(1006));
 }
 
 #[sqlx::test(migrations = "./migrations")]

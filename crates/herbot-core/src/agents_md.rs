@@ -247,15 +247,29 @@ mod tests {
     async fn write_creates_folders_and_replaces_the_file() {
         let root = tempfile::tempdir().unwrap();
         let at = Utc::now();
-        let rel = write(root.path(), -100, Some(7), "HQ › Research", "first", at)
-            .await
-            .unwrap();
+        let rel = write(
+            root.path(),
+            -100,
+            Some(7),
+            "HQ › Research",
+            "purpose-one",
+            at,
+        )
+        .await
+        .unwrap();
         assert_eq!(rel, PathBuf::from("chat_-100/topic_7/AGENTS.md"));
-        write(root.path(), -100, Some(7), "HQ › Research", "second", at)
-            .await
-            .unwrap();
+        write(
+            root.path(),
+            -100,
+            Some(7),
+            "HQ › Research",
+            "purpose-two",
+            at,
+        )
+        .await
+        .unwrap();
         let text = std::fs::read_to_string(root.path().join(&rel)).unwrap();
-        assert!(text.contains("second") && !text.contains("first"));
+        assert!(text.contains("purpose-two") && !text.contains("purpose-one"));
         let leftovers: Vec<_> = std::fs::read_dir(root.path().join("chat_-100/topic_7"))
             .unwrap()
             .map(|e| e.unwrap().file_name())

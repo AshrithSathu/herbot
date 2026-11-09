@@ -161,13 +161,18 @@ async fn lists_all_tools_with_caller_required(pool: PgPool) {
         names,
         [
             "ask_topic",
+            "cancel_task",
             "forget",
             "generate_video",
+            "list_tasks",
             "list_topics",
+            "pause_task",
             "post_to_topic",
             "read_topic",
             "recall",
             "remember",
+            "resume_task",
+            "schedule_task",
             "search_messages"
         ]
     );

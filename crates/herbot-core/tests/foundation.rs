@@ -95,8 +95,14 @@ async fn migrations_create_every_table(pool: PgPool) {
             "feedback",
             "inbox",
             "kv",
+            "memories",
             "messages",
+            "panel_inbox",
             "pending_questions",
+            "persona_confirmations",
+            "personal_file_state",
+            "preferences",
+            "tasks",
         ]
     );
 }
