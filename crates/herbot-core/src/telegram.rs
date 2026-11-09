@@ -80,6 +80,13 @@ pub const COMMAND_MENU: &[(&str, &str)] = &[
     ("think", "Answer one question thinking carefully"),
     ("heavy", "Answer one question with several sub-agents"),
     ("fast", "A quick answer to one question"),
+    ("video", "Generate a video"),
+    ("imagine", "Generate or edit an image"),
+    ("sticker", "Make a sticker from a replied photo or prompt"),
+    (
+        "summary",
+        "Summarise recent history or a replied message/document",
+    ),
     ("help", "List commands"),
 ];
 
@@ -391,7 +398,7 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         .or_else(|| msg.caption())
         .unwrap_or_default()
         .to_string();
-    let attachment = attachment_of(msg);
+    let mut attachment = attachment_of(msg);
     if text.is_empty() && voice.is_none() && attachment.is_none() {
         return None; // polls, contacts, locations, ...
     }
@@ -410,6 +417,34 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         .map(|m| m.id.0)
         .filter(|id| Some(*id) != topic);
 
+    let mut text = text;
+    if let Some(Command::Styled { style, .. }) = &command
+        && matches!(
+            style,
+            crate::modes::Style::Sticker
+                | crate::modes::Style::Summary
+                | crate::modes::Style::Imagine
+                | crate::modes::Style::Video
+        )
+        && let Some(replied) = msg.reply_to_message().filter(|r| {
+            Some(r.id.0) != topic
+                && topic_id(r) == topic
+                && r.from.as_ref().is_some_and(|sender| {
+                    sender.id == from.id
+                        || (sender.is_bot
+                            && sender
+                                .username
+                                .as_deref()
+                                .is_some_and(|name| name.eq_ignore_ascii_case(bot_username)))
+                })
+        })
+    {
+        attachment = attachment.or_else(|| attachment_of(replied));
+        if *style == crate::modes::Style::Summary {
+            text.push_str("\n\n[Quoted source to summarise]\n");
+            text.push_str(replied.text().or_else(|| replied.caption()).unwrap_or(""));
+        }
+    }
     Some(Inbound::Message(InboundMessage {
         chat,
         topic_id: topic,
@@ -490,8 +525,13 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
             confirmed: confirmed_with_yes(rest),
         },
         "mode" => Command::Mode(args(rest, word)),
-        "fast" | "think" | "heavy" | "deepsearch" | "deepersearch" | "research" => {
+        "fast" | "think" | "heavy" | "deepsearch" | "deepersearch" | "research" | "video"
+        | "imagine" | "sticker" | "summary" => {
             let style = match name.to_ascii_lowercase().as_str() {
+                "video" => crate::modes::Style::Video,
+                "imagine" => crate::modes::Style::Imagine,
+                "sticker" => crate::modes::Style::Sticker,
+                "summary" => crate::modes::Style::Summary,
                 "fast" => crate::modes::Style::Fast,
                 "think" => crate::modes::Style::Think,
                 "heavy" => crate::modes::Style::Heavy,
@@ -514,6 +554,21 @@ mod tests {
     #[test]
     fn parses_commands_for_this_bot() {
         let bot = "Herbot_Bot";
+        for (command, style) in [
+            ("video", crate::modes::Style::Video),
+            ("imagine", crate::modes::Style::Imagine),
+            ("sticker", crate::modes::Style::Sticker),
+            ("summary", crate::modes::Style::Summary),
+        ] {
+            assert_eq!(
+                parse_command(&format!("/{command}@{bot} hello"), bot),
+                CommandParse::ForThisBot(Command::Styled {
+                    style,
+                    question: "hello".into()
+                })
+            );
+            assert!(COMMAND_MENU.iter().any(|(name, _)| *name == command));
+        }
         assert_eq!(
             parse_command("/new", bot),
             CommandParse::ForThisBot(Command::New { confirmed: false })

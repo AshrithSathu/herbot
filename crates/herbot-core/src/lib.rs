@@ -23,6 +23,7 @@ pub mod db;
 pub mod errors;
 pub mod format;
 pub mod hub;
+pub mod imagine;
 pub mod inbound_files;
 pub mod internal;
 pub mod media;

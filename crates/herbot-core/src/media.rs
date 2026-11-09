@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 pub enum FileKind {
     /// Shown inline (jpg, png, webp).
     Photo,
+    Sticker,
     /// A round-trip voice note (ogg/opus): plays like one Ashrith recorded.
     Voice,
     /// Music or long audio (mp3, m4a, wav, flac).
@@ -40,6 +41,7 @@ impl FileKind {
 
     pub fn as_str(self) -> &'static str {
         match self {
+            FileKind::Sticker => "sticker",
             FileKind::Photo => "photo",
             FileKind::Voice => "voice",
             FileKind::Audio => "audio",
@@ -97,7 +99,7 @@ impl Activity {
     /// What's shown while a file of this kind is on its way.
     pub fn sending(kind: FileKind) -> Activity {
         match kind {
-            FileKind::Photo => Activity::UploadPhoto,
+            FileKind::Photo | FileKind::Sticker => Activity::UploadPhoto,
             FileKind::Video | FileKind::Animation => Activity::UploadVideo,
             FileKind::Voice => Activity::RecordVoice,
             FileKind::Audio | FileKind::Document => Activity::UploadDocument,
