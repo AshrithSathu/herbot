@@ -21,6 +21,7 @@ use crate::errors;
 use crate::format;
 use crate::media::{Activity, FileKind};
 use crate::meta::{self, Meta};
+use crate::modes::Style;
 use crate::outbound_files;
 use crate::outgoing;
 use crate::poller::{ApiError, TelegramApi};
@@ -43,6 +44,8 @@ pub struct TurnJob {
     /// Set when someone is waiting for this turn's outcome (General's
     /// `ask_topic`): gets the reply text, or the failure.
     pub reply: Option<ReplySlot>,
+    /// `/fast`, `/think`, `/heavy` or `/deepsearch`: this one message's mode.
+    pub style: Option<Style>,
 }
 
 /// A one-shot channel for a turn's outcome, shareable so `TurnJob` stays
@@ -96,6 +99,8 @@ pub struct TurnDeps<A: TelegramApi, R: AgentRunner> {
     pub agents_dir: PathBuf,
     /// The bot's own Telegram user id, for storing its replies.
     pub bot_user_id: u64,
+    /// Reasoning effort for Auto mode (`HERBOT_AGENT_EFFORT`).
+    pub auto_effort: String,
 }
 
 pub const TYPING_EVERY: Duration = Duration::from_secs(4);
@@ -133,6 +138,8 @@ pub enum TurnError {
     Agent(#[from] AgentError),
     #[error("agent run failed: {0}")]
     RunFailed(String),
+    #[error("could not write the topic's Codex settings: {0}")]
+    Settings(#[from] std::io::Error),
 }
 
 impl TurnError {
@@ -145,6 +152,7 @@ impl TurnError {
             TurnError::Agent(AgentError::Project(_)) => "agent.project",
             TurnError::Agent(AgentError::BadOutput { .. }) => "agent.bad_output",
             TurnError::RunFailed(_) => "agent.run_failed",
+            TurnError::Settings(_) => "agent.settings",
         }
     }
 
@@ -161,6 +169,7 @@ impl TurnError {
             TurnError::Agent(AgentError::Project(_)) => "couldn't add this topic to T3".into(),
             TurnError::Agent(AgentError::BadOutput { .. }) => "unexpected answer from T3".into(),
             TurnError::RunFailed(_) => "the agent run failed".into(),
+            TurnError::Settings(_) => "couldn't set this topic's mode".into(),
         }
     }
 }
@@ -247,6 +256,24 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
         store::mark_project_registered(&deps.pool, job.conversation_id).await?;
     }
 
+    // The effort this message needs: its own mode (/think, …) or the topic's.
+    let effort = match job.style {
+        Some(style) => style.effort(&deps.auto_effort),
+        None => status.mode.effort(&deps.auto_effort),
+    };
+    crate::modes::set_topic_effort(
+        &deps.agents_dir,
+        &agents_md::relative_dir(job.tg_chat_id, job.topic_id),
+        effort,
+    )
+    .await?;
+    let mut extra = Vec::new();
+    match (job.style, status.mode.instruction()) {
+        (Some(style), _) => extra.push(("mode", style.instruction().to_string())),
+        (None, Some(instruction)) => extra.push(("mode", instruction.to_string())),
+        (None, None) => {}
+    }
+
     let active = store::active_thread(&deps.pool, job.conversation_id).await?;
     let agents_md_changed = match (&active, status.agents_md_updated_at) {
         (Some(thread), Some(updated)) => updated > thread.last_turn_at.unwrap_or(thread.created_at),
@@ -261,6 +288,7 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
             sent_at: job.sent_at,
             agents_md_changed,
             caller_token: &crate::hub::caller_token(&deps.pool, job.conversation_id).await?,
+            extra,
         },
         &job.text,
     );

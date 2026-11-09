@@ -26,6 +26,7 @@ use crate::agents_md;
 use crate::errors::{self, ErrorId};
 use crate::inbound_files;
 use crate::media::{Activity, FileKind, OutFile};
+use crate::modes::{self, Mode, Style};
 use crate::policy::{self, Action, Rules};
 use crate::setup;
 use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
@@ -599,7 +600,8 @@ async fn apply<A: TelegramApi, T: Transcriber>(
         // The 👀 goes out alongside the work, not one Telegram round trip
         // before it.
         Action::Store(msg) => {
-            let ((), handled) = tokio::join!(mark_seen(ctx, &msg), take_message(ctx, msg.clone()));
+            let ((), handled) =
+                tokio::join!(mark_seen(ctx, &msg), take_message(ctx, msg.clone(), None));
             handled?
         }
         Action::RunCommand(msg, cmd) => {
@@ -616,6 +618,7 @@ async fn apply<A: TelegramApi, T: Transcriber>(
 async fn take_message<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     mut msg: InboundMessage,
+    style: Option<Style>,
 ) -> Result<(), HandleError> {
     if let Some(voice) = msg.voice.clone() {
         if voice.duration_secs > MAX_VOICE_SECONDS {
@@ -675,7 +678,7 @@ async fn take_message<A: TelegramApi, T: Transcriber>(
             Err(err) => return Err(err.into()),
         }
     }
-    store_and_continue(ctx, &msg).await
+    store_and_continue(ctx, &msg, style).await
 }
 
 /// Reacts 👀 to an admin message as soon as it arrives. A failed reaction
@@ -701,13 +704,18 @@ async fn hand_to_agent<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     conversation_id: i64,
+    style: Option<Style>,
 ) -> Result<(), HandleError> {
     for message_id in store::supersede_open_questions(ctx.pool, conversation_id).await? {
         ctx.api
             .remove_buttons(msg.chat.tg_chat_id, message_id)
             .await?;
     }
-    submit_turn(ctx, msg, conversation_id);
+    if let Some(style) = style.filter(|s| matches!(s, Style::DeepSearch | Style::Heavy)) {
+        // Long runs: say what's happening (typing alone looks stuck).
+        reply(ctx, msg, &format!("{}…", style.working())).await?;
+    }
+    submit_turn(ctx, msg, conversation_id, style);
     Ok(())
 }
 
@@ -716,6 +724,7 @@ fn submit_turn<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     conversation_id: i64,
+    style: Option<Style>,
 ) {
     ctx.turns.submit(TurnJob {
         conversation_id,
@@ -728,6 +737,7 @@ fn submit_turn<A: TelegramApi, T: Transcriber>(
         sender_id: msg.from_user_id,
         sent_at: msg.sent_at,
         reply: None,
+        style,
     });
 }
 
@@ -750,6 +760,7 @@ async fn reply<A: TelegramApi, T: Transcriber>(
 async fn store_and_continue<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
+    style: Option<Style>,
 ) -> Result<(), HandleError> {
     match store::store_message(ctx.pool, msg).await? {
         StoreOutcome::Stored {
@@ -757,7 +768,7 @@ async fn store_and_continue<A: TelegramApi, T: Transcriber>(
             message_row_id,
         } => {
             tracing::info!(conversation_id, message_row_id, "stored admin message");
-            continue_setup(ctx, msg, conversation_id).await?;
+            continue_setup(ctx, msg, conversation_id, style).await?;
         }
         StoreOutcome::Duplicate { conversation_id } => {
             tracing::debug!(conversation_id, "duplicate message ignored");
@@ -780,6 +791,7 @@ async fn continue_setup<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     conversation_id: i64,
+    style: Option<Style>,
 ) -> Result<(), HandleError> {
     let status = store::conversation_status_by_id(ctx.pool, conversation_id).await?;
     let is_voice = msg.voice.is_some();
@@ -794,7 +806,7 @@ async fn continue_setup<A: TelegramApi, T: Transcriber>(
             if is_voice {
                 reply(ctx, msg, &setup::heard(&msg.text)).await?;
             }
-            hand_to_agent(ctx, msg, conversation_id).await?;
+            hand_to_agent(ctx, msg, conversation_id, style).await?;
         }
         // A new topic: ask what this agent should be.
         SetupState::New => {
@@ -824,7 +836,7 @@ async fn continue_setup<A: TelegramApi, T: Transcriber>(
             if is_voice {
                 reply(ctx, msg, &setup::heard(&msg.text)).await?;
             }
-            hand_to_agent(ctx, msg, conversation_id).await?;
+            hand_to_agent(ctx, msg, conversation_id, style).await?;
         }
     }
     Ok(())
@@ -908,6 +920,9 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     if let Some(conversation_id) = setup::parse_keep(&press.data) {
         return handle_keep_tap(ctx, press, conversation_id).await;
     }
+    if let Some((conversation_id, mode)) = modes::parse_button(&press.data) {
+        return handle_mode_tap(ctx, press, conversation_id, mode).await;
+    }
     let Some((question_id, index)) = turns::parse_answer_button(&press.data) else {
         ctx.api
             .answer_button(&press.callback_id, Some(setup::STALE_BUTTON_TOAST))
@@ -948,7 +963,38 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
         sender_id: press.from_user_id,
         sent_at: Utc::now(),
         reply: None,
+        style: None,
     });
+    Ok(())
+}
+
+/// A `/mode` button: sets the topic's mode and updates the message in place.
+async fn handle_mode_tap<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    press: &ButtonPress,
+    conversation_id: i64,
+    mode: Mode,
+) -> Result<(), HandleError> {
+    let chat = press.chat.tg_chat_id;
+    if store::find_conversation(ctx.pool, chat, press.topic_id).await? != Some(conversation_id) {
+        ctx.api
+            .answer_button(&press.callback_id, Some(setup::OTHER_TOPIC_TOAST))
+            .await?;
+        return Ok(());
+    }
+    store::set_mode(ctx.pool, conversation_id, mode).await?;
+    let status = store::conversation_status_by_id(ctx.pool, conversation_id).await?;
+    ctx.api
+        .edit_text(
+            chat,
+            press.message_id,
+            &modes::summary(&status.place(), mode),
+        )
+        .await?;
+    ctx.api
+        .answer_button(&press.callback_id, Some(mode.label()))
+        .await?;
+    tracing::info!(conversation_id, mode = mode.as_str(), "mode changed");
     Ok(())
 }
 
@@ -1108,6 +1154,47 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
         Command::Forget { confirmed: true } => {
             let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
             perform_wipe(ctx, &s, wipe::WipeKind::Forget).await?
+        }
+        Command::Mode(arg) => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            if arg.is_empty() {
+                ctx.api
+                    .send_buttons(
+                        msg.chat.tg_chat_id,
+                        msg.topic_id,
+                        Some(msg.message_id),
+                        &modes::summary(&s.place(), s.mode),
+                        &modes::buttons(s.conversation_id, s.mode),
+                    )
+                    .await?;
+                return Ok(());
+            }
+            match Mode::parse(&arg) {
+                Some(mode) => {
+                    store::set_mode(ctx.pool, s.conversation_id, mode).await?;
+                    format!(
+                        "{} on for {}: {}.",
+                        mode.label(),
+                        s.place(),
+                        mode.description()
+                    )
+                }
+                None => "Modes are fast, auto, expert and heavy. Send /mode to pick one.".into(),
+            }
+        }
+        Command::Styled { style, question } => {
+            if question.trim().is_empty() {
+                format!(
+                    "Put your question after the command, like /{} what changed in Rust this year?",
+                    style.as_str()
+                )
+            } else {
+                // The question goes to the agent like any message, in that mode.
+                let mut asked = msg.clone();
+                asked.text = question;
+                asked.command = None;
+                return take_message(ctx, asked, Some(style)).await;
+            }
         }
         Command::Unknown(name) => format!("I don't know /{name}. Try /help."),
     };

@@ -27,6 +27,7 @@ pub mod inbound_files;
 pub mod internal;
 pub mod media;
 pub mod meta;
+pub mod modes;
 pub mod outbound_files;
 pub mod outgoing;
 pub mod policy;

@@ -162,6 +162,7 @@ async fn ask_topic<A: TelegramApi + 'static>(
         sender_id: state.admin_user_id,
         sent_at: Utc::now(),
         reply: Some(slot),
+        style: None,
     });
     tracing::info!(
         conversation_id = target.conversation_id,

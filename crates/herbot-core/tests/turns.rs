@@ -238,6 +238,7 @@ impl H {
                 runner: Arc::new(runner),
                 agents_dir: agents.path().to_path_buf(),
                 bot_user_id: BOT_ID,
+                auto_effort: "medium".into(),
             },
             _agents: agents,
         }
@@ -267,6 +268,7 @@ fn job(conversation_id: i64, topic: Option<i32>, reply_to: i32, text: &str) -> T
         sender_id: 1221260701,
         sent_at: Utc::now(),
         reply: None,
+        style: None,
     }
 }
 
@@ -675,6 +677,7 @@ async fn lanes_run_one_turn_at_a_time_per_conversation_and_in_parallel_across(po
         runner: runner.clone(),
         agents_dir: h.deps.agents_dir.clone(),
         bot_user_id: BOT_ID,
+        auto_effort: "medium".into(),
     });
 
     lanes.submit(job(1, Some(7), 30, "topic-first"));

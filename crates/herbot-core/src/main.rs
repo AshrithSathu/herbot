@@ -77,6 +77,9 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             warn_if_codex_effort_differs(&config.agent_effort);
+            herbot_core::modes::write_shared_config(&agents_dir)
+                .await
+                .context("could not write the agents' shared Codex settings")?;
             let runner = agent::T3Cli {
                 bin: config.t3_bin.clone(),
                 provider: "codex".to_string(),
@@ -97,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
                 runner: Arc::new(runner),
                 agents_dir: agents_dir.clone(),
                 bot_user_id: me.id.0,
+                auto_effort: config.agent_effort.clone(),
             }));
             let shared_turns: Arc<dyn turns::TurnQueue> = lanes;
             match &config.internal_token {

@@ -154,11 +154,9 @@ impl Renderer {
             Tag::Strikethrough => self.html.push_str("<s>"),
             Tag::Link { dest_url, .. } => {
                 let href = safe_href(&dest_url);
-                match &href {
-                    Some(h) => self
-                        .html
-                        .push_str(&format!("<a href=\"{}\">", escape_attr(h))),
-                    None => {}
+                if let Some(h) = &href {
+                    self.html
+                        .push_str(&format!("<a href=\"{}\">", escape_attr(h)));
                 }
                 self.links
                     .push(href.map(|_| "a".to_string()).unwrap_or_default());
@@ -216,10 +214,8 @@ impl Renderer {
             TagEnd::Emphasis => self.html.push_str("</i>"),
             TagEnd::Strong => self.html.push_str("</b>"),
             TagEnd::Strikethrough => self.html.push_str("</s>"),
-            TagEnd::Link | TagEnd::Image => {
-                if self.links.pop().is_some_and(|l| !l.is_empty()) {
-                    self.html.push_str("</a>");
-                }
+            TagEnd::Link | TagEnd::Image if self.links.pop().is_some_and(|l| !l.is_empty()) => {
+                self.html.push_str("</a>");
             }
             _ => {}
         }

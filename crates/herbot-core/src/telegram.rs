@@ -52,6 +52,14 @@ pub enum Command {
     Forget {
         confirmed: bool,
     },
+    /// `/mode` shows the topic's mode with buttons; `/mode fast` sets it.
+    Mode(String),
+    /// `/fast`, `/think`, `/heavy`, `/deepsearch` + a question: one message
+    /// in that mode.
+    Styled {
+        style: crate::modes::Style,
+        question: String,
+    },
     Unknown(String),
 }
 
@@ -64,6 +72,14 @@ pub const COMMAND_MENU: &[(&str, &str)] = &[
         "Wipe this topic's chat and start fresh (keeps its purpose)",
     ),
     ("forget", "Wipe this topic completely, purpose included"),
+    ("mode", "Fast, Auto, Expert or Heavy for this topic"),
+    (
+        "deepsearch",
+        "Research a question across the web, with sources",
+    ),
+    ("think", "Answer one question thinking carefully"),
+    ("heavy", "Answer one question with several sub-agents"),
+    ("fast", "A quick answer to one question"),
     ("help", "List commands"),
 ];
 
@@ -217,6 +233,7 @@ pub struct VoiceNote {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // one per update, never stored in bulk
 pub enum Inbound {
     Message(InboundMessage),
     /// The bot was added to a group (or unblocked in a private chat).
@@ -438,6 +455,11 @@ fn confirmed_with_yes(rest: &str) -> bool {
 
 /// Parses `/cmd`, `/cmd args` and `/cmd@botname args`. The `@botname` part
 /// must match this bot (case-insensitive) or the command belongs to another bot.
+/// Everything after the command word (`/think why?` → `why?`).
+fn args(rest: &str, word: &str) -> String {
+    rest[word.len()..].trim().to_string()
+}
+
 fn parse_command(text: &str, bot_username: &str) -> CommandParse {
     let Some(rest) = text.strip_prefix('/') else {
         return CommandParse::NotACommand;
@@ -467,6 +489,19 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
         "forget" => Command::Forget {
             confirmed: confirmed_with_yes(rest),
         },
+        "mode" => Command::Mode(args(rest, word)),
+        "fast" | "think" | "heavy" | "deepsearch" | "deepersearch" | "research" => {
+            let style = match name.to_ascii_lowercase().as_str() {
+                "fast" => crate::modes::Style::Fast,
+                "think" => crate::modes::Style::Think,
+                "heavy" => crate::modes::Style::Heavy,
+                _ => crate::modes::Style::DeepSearch,
+            };
+            Command::Styled {
+                style,
+                question: args(rest, word),
+            }
+        }
         other => Command::Unknown(other.to_string()),
     };
     CommandParse::ForThisBot(cmd)

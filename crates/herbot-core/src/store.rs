@@ -44,6 +44,8 @@ pub struct ConversationStatus {
     pub t3_project_registered: bool,
     /// Opens the active thread in the T3 Code app.
     pub thread_link: Option<String>,
+    /// Fast, Auto, Expert or Heavy (`/mode`).
+    pub mode: crate::modes::Mode,
 }
 
 impl ConversationStatus {
@@ -263,6 +265,7 @@ struct StatusRow {
     agents_md_path: Option<String>,
     agents_md_updated_at: Option<DateTime<Utc>>,
     t3_project_registered: bool,
+    mode: String,
 }
 
 /// The status query with `$rest` (a WHERE / ORDER BY literal) appended, as
@@ -274,7 +277,7 @@ macro_rules! status_select {
             "SELECT v.id, c.tg_chat_id, c.title, c.kind, c.is_forum, v.tg_topic_id,
             v.name, v.enabled, v.message_count, v.last_message_at, b.name AS bot_name,
             t.t3_thread_id, t.t3_link, v.purpose, v.setup_state, v.agents_md_path,
-            v.agents_md_updated_at, v.t3_project_registered
+            v.agents_md_updated_at, v.t3_project_registered, v.mode
      FROM conversations v
      JOIN chats c ON c.id = v.chat_id
      LEFT JOIN bots b ON b.id = v.bot_id
@@ -305,6 +308,7 @@ impl From<StatusRow> for ConversationStatus {
             agents_md_updated_at: row.agents_md_updated_at,
             t3_project_registered: row.t3_project_registered,
             thread_link: row.t3_link,
+            mode: crate::modes::Mode::parse(&row.mode).unwrap_or(crate::modes::Mode::Auto),
         }
     }
 }
@@ -385,6 +389,20 @@ pub async fn begin_setup(
     .fetch_optional(pool)
     .await?;
     Ok(old.flatten())
+}
+
+/// Sets a conversation's mode (`/mode`, the admin panel).
+pub async fn set_mode(
+    pool: &PgPool,
+    conversation_id: i64,
+    mode: crate::modes::Mode,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query("UPDATE conversations SET mode = $2 WHERE id = $1")
+        .bind(conversation_id)
+        .bind(mode.as_str())
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected() == 1)
 }
 
 /// "Keep the current purpose" after `/setup`: back to Ready with the purpose
