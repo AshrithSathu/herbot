@@ -7,7 +7,7 @@ import { XIcon, DownloadIcon } from 'lucide-react'
 import type { Attachment } from '../api'
 import { CopyButton } from '../ui'
 import { Button } from './ui/button'
-export const fileUrl = (path: string) => `/api/files/${path.split('/').map(encodeURIComponent).join('/')}`
+const fileUrl = (path: string) => `/api/files/${path.split('/').map(encodeURIComponent).join('/')}`
 function textOf(node: ReactNode): string {
   if (typeof node === 'string') return node
   if (Array.isArray(node)) return node.map(textOf).join('')

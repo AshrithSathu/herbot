@@ -150,20 +150,17 @@ export function ChatLog({ topicId, total, targetMessage }: { topicId: number; to
     if (el.scrollHeight <= el.clientHeight + 4) loadOlder()
   }, [hydrated, hasNextPage, isFetchingNextPage, isFetchNextPageError, firstId]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const jumpedTo = useRef<number | undefined>(undefined)
   useEffect(() => {
-    if (!targetMessage || !hydrated) return
+    if (!targetMessage || !hydrated || jumpedTo.current === targetMessage) return
     const index = rows.findIndex((r) => r.kind === 'message' && r.message.id === targetMessage)
     if (index < 0) {
       if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError) void fetchNextPage()
       return
     }
+    jumpedTo.current = targetMessage
     atBottom.current = false
     virtualizer.scrollToIndex(index, { align: 'center' })
-    const timer = setTimeout(
-      () => document.getElementById(`message-${targetMessage}`)?.setAttribute('data-highlight', 'true'),
-      150,
-    )
-    return () => clearTimeout(timer)
   }, [targetMessage, hydrated, rows, hasNextPage, isFetchingNextPage, isFetchNextPageError])
 
   function jumpToLatest() {
@@ -238,7 +235,7 @@ export function ChatLog({ topicId, total, targetMessage }: { topicId: number; to
                         </span>
                       </h3>
                     ) : (
-                      <Bubble message={row.message} />
+                      <Bubble message={row.message} highlighted={row.message.id === targetMessage} />
                     )}
                   </li>
                 )
@@ -315,11 +312,12 @@ function Top({
   )
 }
 
-function Bubble({ message: m }: { message: Message }) {
+function Bubble({ message: m, highlighted }: { message: Message; highlighted: boolean }) {
   return (
     <div
       id={`message-${m.id}`}
       data-message-id={m.id}
+      data-highlight={highlighted || undefined}
       className={cn(
         'flex max-w-[min(65ch,88%)] min-w-0 flex-col gap-1 rounded-2xl px-3.5 py-2',
         m.from_bot

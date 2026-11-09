@@ -108,6 +108,24 @@ async fn record_failure(
         }
     };
     tracing::error!(%error_id,%path,"panel operation failed");
+    if let Some(id) = path
+        .strip_prefix("/admin/api/conversations/")
+        .and_then(|p| p.strip_suffix("/messages"))
+        .and_then(|p| p.parse::<i64>().ok())
+        && let Some(l) = &s.live
+        && let Ok(st) = store::conversation_status_by_id(&s.admin.pool, id).await
+        && l.rules.home_chat_id == Some(st.tg_chat_id)
+    {
+        let text = format!("❌ Failed ({error_id}): panel message failed. Check logs.");
+        if let Err(e) = l
+            .api
+            .send_text(st.tg_chat_id, st.tg_topic_id, None, &text)
+            .await
+        {
+            tracing::error!(%error_id,error = %e,"could not notify Telegram about panel failure");
+        }
+    }
+
     // Preserve the useful explanation (for example, Telegram permissions), adding its log id.
     let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
         .await
@@ -331,22 +349,9 @@ async fn send(
         turns: &*l.turns,
         projects: &*s.admin.projects,
     };
-    if let Err(e) = poller::store_and_continue(&ctx, &msg, style).await {
-        let eid = crate::errors::record(
-            &s.admin.pool,
-            "panel.send",
-            &e.to_string(),
-            json!({"conversation_id":id}),
-        )
+    poller::store_and_continue(&ctx, &msg, style)
         .await
         .map_err(io)?;
-        let reason = format!("❌ Failed ({eid}): panel message failed. Check logs.");
-        let _ = l
-            .api
-            .send_text(msg.chat.tg_chat_id, msg.topic_id, Some(message_id), &reason)
-            .await;
-        return Err(fail(StatusCode::BAD_GATEWAY, reason));
-    }
     Ok(Json(json!({"message_id":message_id})))
 }
 #[derive(Deserialize)]
@@ -415,7 +420,14 @@ async fn safe_path(root: &FsPath, path: &str) -> Result<PathBuf> {
     let path = tokio::fs::canonicalize(root.join(p))
         .await
         .map_err(|_| fail(StatusCode::NOT_FOUND, "File not found"))?;
-    if !path.starts_with(&root) {
+    let mut files_root = root.clone();
+    for component in p.components() {
+        files_root.push(component.as_os_str());
+        if component.as_os_str() == "files" {
+            break;
+        }
+    }
+    if !path.starts_with(&root) || !path.starts_with(&files_root) {
         return Err(fail(StatusCode::FORBIDDEN, "File leaves workspace"));
     }
     Ok(path)

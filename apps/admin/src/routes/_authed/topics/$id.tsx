@@ -110,6 +110,26 @@ function TopicPage() {
             key={v}
             id={`tab-${v}`}
             role="tab"
+            tabIndex={tab === v ? 0 : -1}
+            onKeyDown={(e) => {
+              const views = ['chat', 'files', 'settings'] as const
+              const index = views.indexOf(v)
+              const next =
+                e.key === 'ArrowRight'
+                  ? views[(index + 1) % 3]
+                  : e.key === 'ArrowLeft'
+                    ? views[(index + 2) % 3]
+                    : e.key === 'Home'
+                      ? views[0]
+                      : e.key === 'End'
+                        ? views[2]
+                        : undefined
+              if (next) {
+                e.preventDefault()
+                setTab(next)
+                document.getElementById(`tab-${next}`)?.focus()
+              }
+            }}
             aria-selected={tab === v}
             aria-controls={`view-${v}`}
             variant={tab === v ? 'secondary' : 'ghost'}
@@ -120,12 +140,12 @@ function TopicPage() {
           </Button>
         ))}
       </div>
-      {tab === 'chat' && (
+      <div hidden={tab !== 'chat'}>
         <div role="tabpanel" id="view-chat" aria-labelledby="tab-chat" className="flex min-w-0 flex-col gap-3">
           <ChatLog topicId={t.id} total={t.messages} targetMessage={message} />
           <Composer key={t.id} id={t.id} enabled={t.enabled} />
         </div>
-      )}
+      </div>
       {tab === 'files' && (
         <div role="tabpanel" id="view-files" aria-labelledby="tab-files">
           <TopicFiles id={t.id} />
