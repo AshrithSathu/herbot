@@ -48,6 +48,16 @@ pub struct ApiError(pub String);
 /// The Telegram calls Herbot makes. Implemented by the real bot and by a fake
 /// in tests.
 pub trait TelegramApi: Send + Sync {
+    fn set_buttons(
+        &self,
+        chat: i64,
+        message: i32,
+        rows: &[Vec<(String, String)>],
+    ) -> impl Future<Output = Result<(), ApiError>> + Send {
+        let _ = (chat, message, rows);
+        async { Ok(()) }
+    }
+
     fn delete_message(
         &self,
         chat_id: i64,
@@ -271,6 +281,25 @@ impl BotApi {
 }
 
 impl TelegramApi for BotApi {
+    async fn set_buttons(
+        &self,
+        chat: i64,
+        message: i32,
+        rows: &[Vec<(String, String)>],
+    ) -> Result<(), ApiError> {
+        let keyboard = InlineKeyboardMarkup::new(rows.iter().map(|row| {
+            row.iter()
+                .map(|(label, data)| InlineKeyboardButton::callback(label.clone(), data.clone()))
+                .collect::<Vec<_>>()
+        }));
+        self.0
+            .edit_message_reply_markup(TgChatId(chat), MessageId(message))
+            .reply_markup(keyboard)
+            .await
+            .map(|_| ())
+            .map_err(api_err)
+    }
+
     async fn delete_message(&self, chat_id: i64, message_id: i32) -> Result<(), ApiError> {
         self.0
             .delete_message(TgChatId(chat_id), MessageId(message_id))
@@ -1093,29 +1122,6 @@ async fn handle_mode_tap<A: TelegramApi, T: Transcriber>(
     mode: Mode,
 ) -> Result<(), HandleError> {
     let chat = press.chat.tg_chat_id;
-    if let Some(id) = press
-        .data
-        .strip_prefix("retry:")
-        .and_then(|s| s.parse::<i64>().ok())
-    {
-        ctx.api.answer_button(&press.callback_id, None).await?;
-        let msg = InboundMessage {
-            chat: press.chat.clone(),
-            topic_id: press.topic_id,
-            message_id: press.message_id,
-            from_user_id: press.from_user_id,
-            from_name: press.from_name.clone(),
-            from_is_bot: false,
-            text: String::new(),
-            voice: None,
-            attachment: None,
-            files: vec![],
-            reply_to_message_id: None,
-            sent_at: Utc::now(),
-            command: None,
-        };
-        return retry(ctx, &msg, Some(id)).await;
-    }
     if store::find_conversation(ctx.pool, chat, press.topic_id).await? != Some(conversation_id) {
         ctx.api
             .answer_button(&press.callback_id, Some(setup::OTHER_TOPIC_TOAST))
@@ -1146,29 +1152,6 @@ async fn handle_keep_tap<A: TelegramApi, T: Transcriber>(
     conversation_id: i64,
 ) -> Result<(), HandleError> {
     let chat = press.chat.tg_chat_id;
-    if let Some(id) = press
-        .data
-        .strip_prefix("retry:")
-        .and_then(|s| s.parse::<i64>().ok())
-    {
-        ctx.api.answer_button(&press.callback_id, None).await?;
-        let msg = InboundMessage {
-            chat: press.chat.clone(),
-            topic_id: press.topic_id,
-            message_id: press.message_id,
-            from_user_id: press.from_user_id,
-            from_name: press.from_name.clone(),
-            from_is_bot: false,
-            text: String::new(),
-            voice: None,
-            attachment: None,
-            files: vec![],
-            reply_to_message_id: None,
-            sent_at: Utc::now(),
-            command: None,
-        };
-        return retry(ctx, &msg, Some(id)).await;
-    }
     let here = store::find_conversation(ctx.pool, chat, press.topic_id).await?;
     if here != Some(conversation_id) {
         ctx.api
@@ -1230,29 +1213,6 @@ async fn handle_wipe_tap<A: TelegramApi, T: Transcriber>(
     tap: wipe::WipeTap,
 ) -> Result<(), HandleError> {
     let chat = press.chat.tg_chat_id;
-    if let Some(id) = press
-        .data
-        .strip_prefix("retry:")
-        .and_then(|s| s.parse::<i64>().ok())
-    {
-        ctx.api.answer_button(&press.callback_id, None).await?;
-        let msg = InboundMessage {
-            chat: press.chat.clone(),
-            topic_id: press.topic_id,
-            message_id: press.message_id,
-            from_user_id: press.from_user_id,
-            from_name: press.from_name.clone(),
-            from_is_bot: false,
-            text: String::new(),
-            voice: None,
-            attachment: None,
-            files: vec![],
-            reply_to_message_id: None,
-            sent_at: Utc::now(),
-            command: None,
-        };
-        return retry(ctx, &msg, Some(id)).await;
-    }
     let here = store::find_conversation(ctx.pool, chat, press.topic_id).await?;
     if here != Some(tap.conversation_id) {
         ctx.api

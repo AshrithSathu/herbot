@@ -92,6 +92,7 @@ async fn migrations_create_every_table(pool: PgPool) {
             "chats",
             "conversations",
             "errors",
+            "feedback",
             "kv",
             "messages",
             "pending_questions",

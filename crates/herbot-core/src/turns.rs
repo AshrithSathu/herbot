@@ -301,7 +301,7 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
     } else {
         extra.push(("private", "off".into()));
     }
-    let missed:bool=sqlx::query_scalar("WITH previous AS MATERIALIZED (SELECT negative_feedback FROM conversations WHERE id=$1 FOR UPDATE), updated AS (UPDATE conversations SET negative_feedback=false WHERE id=$1 RETURNING id) SELECT negative_feedback FROM previous,updated").bind(job.conversation_id).fetch_one(&deps.pool).await?;
+    let missed:bool=sqlx::query_scalar("WITH previous AS MATERIALIZED (SELECT negative_feedback FROM conversations WHERE id=$1 FOR UPDATE) UPDATE conversations SET negative_feedback=false FROM previous WHERE id=$1 RETURNING previous.negative_feedback").bind(job.conversation_id).fetch_one(&deps.pool).await?;
     if missed {
         extra.push((
             "feedback",
@@ -478,6 +478,7 @@ async fn send_files<A: TelegramApi, R: AgentRunner>(
 ) -> Result<Vec<String>, TurnError> {
     let folder = agents_md::relative_dir(job.tg_chat_id, job.topic_id);
     let mut sent = Vec::new();
+    let mut last_message = None;
     for (i, wanted) in file_refs.iter().enumerate() {
         let reply_to = (reply_to_first && i == 0).then_some(job.reply_to);
         let resolved = match outbound_files::resolve(&deps.agents_dir, &folder, wanted).await {
@@ -546,7 +547,21 @@ async fn send_files<A: TelegramApi, R: AgentRunner>(
             name = %resolved.saved.name,
             "sent a file"
         );
+        last_message = Some(sent_id);
         sent.push(resolved.saved.name);
+    }
+    if let Some(id) = last_message {
+        deps.api
+            .set_buttons(
+                job.tg_chat_id,
+                id,
+                &[vec![(
+                    "🔄".into(),
+                    format!("retry:{}", job.conversation_id),
+                )]],
+            )
+            .await?;
+        set_retry(deps, job, id).await?;
     }
     Ok(sent)
 }

@@ -49,6 +49,13 @@ const OPEN: Rules = Rules {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Call {
+    Delete {
+        message_id: i32,
+    },
+    File {
+        name: String,
+        content: String,
+    },
     Send {
         chat: i64,
         topic: Option<i32>,
@@ -117,6 +124,25 @@ impl FakeApi {
 }
 
 impl TelegramApi for FakeApi {
+    async fn delete_message(&self, _: i64, message_id: i32) -> Result<(), ApiError> {
+        self.push(Call::Delete { message_id });
+        Ok(())
+    }
+
+    async fn send_file(
+        &self,
+        _: i64,
+        _: Option<i32>,
+        _: Option<i32>,
+        file: &herbot_core::media::OutFile,
+    ) -> Result<i32, ApiError> {
+        self.push(Call::File {
+            name: file.path.file_name().unwrap().to_string_lossy().into(),
+            content: std::fs::read_to_string(&file.path).unwrap(),
+        });
+        Ok(999)
+    }
+
     async fn send_text(
         &self,
         chat_id: i64,
@@ -1918,4 +1944,218 @@ async fn updates_left_from_a_crash_are_handled_at_the_next_start(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(inbox, 0);
+}
+
+/// Explicit local smoke: no Telegram token, no T3 process, only herbot_w5.
+#[tokio::test]
+#[ignore = "requires the isolated herbot_w5 database on port 5433"]
+async fn w5_actions_smoke() {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect("postgres://herbot:herbot@127.0.0.1:5433/herbot_w5")
+        .await
+        .unwrap();
+    herbot_core::db::migrate(&pool).await.unwrap();
+    sqlx::query("DELETE FROM chats WHERE tg_chat_id=$1")
+        .bind(HQ)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let h = H::new(pool);
+    h.run(&["admin_topic_text"]).await;
+    let id: i64 = sqlx::query_scalar("SELECT id FROM conversations LIMIT 1")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE conversations SET purpose='Research Rust crates',setup_state='ready' WHERE id=$1",
+    )
+    .bind(id)
+    .execute(&h.pool)
+    .await
+    .unwrap();
+    assert!(h.process(LOCKED, "w5_edited_message").await.is_none());
+    assert!(
+        h.jobs
+            .all()
+            .last()
+            .unwrap()
+            .text
+            .contains("edited his message")
+    );
+    assert!(h.last_message().await.0.contains("<script>"));
+    // Non-admin edits and reactions must never alter history or submit turns.
+    let jobs = h.jobs.all().len();
+    let mut stranger: Value =
+        serde_json::from_str(include_str!("fixtures/w5_edited_message.json")).unwrap();
+    stranger["edited_message"]["from"]["id"] = 222.into();
+    assert!(
+        poller::process(
+            &h.ctx(LOCKED),
+            &serde_json::from_str(&stranger.to_string()).unwrap()
+        )
+        .await
+        .is_none()
+    );
+    assert_eq!(h.jobs.all().len(), jobs);
+    store::store_bot_message(&h.pool, id, 777, 999, "An answer")
+        .await
+        .unwrap();
+    assert!(h.process(LOCKED, "w5_message_reaction").await.is_none());
+    assert_eq!(h.count("SELECT count(*) FROM feedback").await, 1);
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT negative_feedback FROM conversations WHERE id=$1")
+            .bind(id)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE messages SET attachments='[{\"name\":\"report.txt\"}]'::jsonb WHERE tg_message_id=777").execute(&h.pool).await.unwrap();
+    let mut msg: Value =
+        serde_json::from_str(include_str!("fixtures/admin_topic_text.json")).unwrap();
+    for (n, text) in [
+        (9010, "/retry"),
+        (9011, "/search Rust"),
+        (9012, "/export"),
+        (9013, "/private on"),
+        (9014, "SECRET EPHEMERAL TEXT"),
+        (9015, "/status"),
+    ] {
+        msg["update_id"] = n.into();
+        msg["message"]["message_id"] = n.into();
+        msg["message"]["text"] = text.into();
+        let update: Update = serde_json::from_str(&msg.to_string()).unwrap();
+        assert!(
+            telegram::normalize(&update, BOT).is_some(),
+            "skipped {text}: {update:?}"
+        );
+        assert!(
+            poller::process(&h.ctx(LOCKED), &update).await.is_none(),
+            "{text}"
+        );
+    }
+    assert!(
+        h.jobs
+            .all()
+            .iter()
+            .any(|j| j.text.contains("differently or better"))
+    );
+    assert!(
+        h.jobs
+            .all()
+            .iter()
+            .any(|j| j.text == "SECRET EPHEMERAL TEXT")
+    );
+    assert!(store::is_private(&h.pool, id).await.unwrap());
+    store::store_bot_message(&h.pool, id, 778, 999, "SECRET BOT ANSWER")
+        .await
+        .unwrap();
+    assert_eq!(
+        h.count("SELECT count(*) FROM messages WHERE body LIKE 'SECRET%'")
+            .await,
+        0
+    );
+    let token = herbot_core::hub::caller_token(&h.pool, id).await.unwrap();
+    assert!(
+        herbot_core::hub::resolve_caller(&h.pool, &token)
+            .await
+            .is_err()
+    );
+    let files: Vec<_> = h
+        .api
+        .calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::File { name, content } => Some((name, content)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(files.len(), 2);
+    let html = &files
+        .iter()
+        .find(|(name, _)| name.ends_with(".html"))
+        .unwrap()
+        .1;
+    assert!(html.contains("&lt;script&gt;") && !html.contains("<script>"));
+    assert!(html.contains("report.txt"));
+    assert!(html.contains("color-scheme:light dark") && html.contains("viewport"));
+    std::fs::write("/tmp/herbot-w5-export.html", html).unwrap();
+    assert!(
+        h.api
+            .sent_texts()
+            .iter()
+            .any(|t| t.contains("https://t.me/c/1234567890/7/21"))
+    );
+    assert!(h.api.sent_texts().iter().any(|t| t.contains("🕶️")));
+    msg["message"]["text"] = "/private off".into();
+    msg["message"]["message_id"] = 9020.into();
+    assert!(
+        poller::process(
+            &h.ctx(LOCKED),
+            &serde_json::from_str(&msg.to_string()).unwrap()
+        )
+        .await
+        .is_none()
+    );
+    assert!(!store::is_private(&h.pool, id).await.unwrap());
+    // Exercise a full delayed turn, feedback header, retry markup and progress cleanup.
+    struct Runner(Mutex<Vec<String>>);
+    impl herbot_core::agent::AgentRunner for Runner {
+        async fn ensure_project(&self, _: &std::path::Path, _: &str) -> Result<(), AgentError> {
+            Ok(())
+        }
+        async fn start(
+            &self,
+            _: &std::path::Path,
+            _: &str,
+            message: &str,
+        ) -> Result<herbot_core::agent::TurnResult, AgentError> {
+            self.send("w5-smoke-thread", message).await
+        }
+        async fn send(
+            &self,
+            id: &str,
+            message: &str,
+        ) -> Result<herbot_core::agent::TurnResult, AgentError> {
+            self.0.lock().unwrap().push(message.into());
+            tokio::time::sleep(std::time::Duration::from_secs(14)).await;
+            Ok(herbot_core::agent::TurnResult {
+                thread_id: id.into(),
+                outcome: herbot_core::agent::TurnOutcome::Replied("A better answer".into()),
+            })
+        }
+        async fn list(
+            &self,
+            _: &std::path::Path,
+        ) -> Result<Vec<herbot_core::agent::ThreadInfo>, AgentError> {
+            Ok(vec![])
+        }
+    }
+    let api = std::sync::Arc::new(FakeApi::default());
+    let runner = std::sync::Arc::new(Runner(Mutex::new(vec![])));
+    let deps = herbot_core::turns::TurnDeps {
+        pool: h.pool.clone(),
+        api: api.clone(),
+        runner: runner.clone(),
+        agents_dir: h.agents.path().into(),
+        bot_user_id: 999,
+        auto_effort: "medium".into(),
+    };
+    let mut job = h.jobs.all()[0].clone();
+    job.text = "Improve your answer".into();
+    herbot_core::turns::run_turn(&deps, job).await;
+    assert!(runner.0.lock().unwrap()[0].contains("feedback: Ashrith gave a thumbs-down"));
+    assert!(
+        api.calls()
+            .iter()
+            .any(|c| matches!(c,Call::Edit{text,..} if text.contains("Working on it… 0:13")))
+    );
+    assert!(api.calls().iter().any(|c| matches!(c, Call::Delete { .. })));
+    assert!(api.calls().iter().any(|c|matches!(c,Call::SendButtons{rows,..} if rows.iter().flatten().any(|(label,data)|label=="🔄" && data==&format!("retry:{id}")))));
+    assert!(
+        !sqlx::query_scalar::<_, bool>("SELECT negative_feedback FROM conversations WHERE id=$1")
+            .bind(id)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap()
+    );
 }
