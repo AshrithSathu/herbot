@@ -281,6 +281,15 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
     }
 
     let active = store::active_thread(&deps.pool, job.conversation_id).await?;
+    // Custom instructions or memories changed since this thread last ran.
+    if let (Some(thread), Some(changed)) = (&active, crate::personal::updated_at(&deps.pool).await?)
+        && changed > thread.last_turn_at.unwrap_or(thread.created_at)
+    {
+        extra.push((
+            "note",
+            "PERSONAL.md (custom instructions, about-you, memories) changed since your last turn; reread ../../PERSONAL.md".to_string(),
+        ));
+    }
     let agents_md_changed = match (&active, status.agents_md_updated_at) {
         (Some(thread), Some(updated)) => updated > thread.last_turn_at.unwrap_or(thread.created_at),
         _ => false,

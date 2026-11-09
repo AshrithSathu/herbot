@@ -30,6 +30,7 @@ pub mod meta;
 pub mod modes;
 pub mod outbound_files;
 pub mod outgoing;
+pub mod personal;
 pub mod policy;
 pub mod poller;
 pub mod setup;

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
-import { HashIcon, LayoutGridIcon, LogOutIcon, MessageCircleIcon, MessagesSquareIcon, ScrollTextIcon } from 'lucide-react'
+import { BrainIcon, SlidersHorizontalIcon, HashIcon, LayoutGridIcon, LogOutIcon, MessageCircleIcon, MessagesSquareIcon, ScrollTextIcon } from 'lucide-react'
 import { logout, type Topic } from '../api'
 import { topicStatus, type TopicStatus } from '../format'
 import { topicsQuery } from '../queries'
@@ -25,6 +25,8 @@ import { cn } from '@/lib/utils'
 const PAGES = [
   { to: '/', label: 'Overview', icon: LayoutGridIcon, exact: true },
   { to: '/topics', label: 'Topics', icon: MessagesSquareIcon, exact: true },
+  { to: '/memory', label: 'Memory', icon: BrainIcon, exact: true },
+  { to: '/personalize', label: 'Personalize', icon: SlidersHorizontalIcon, exact: true },
   { to: '/logs', label: 'Logs', icon: ScrollTextIcon, exact: false },
 ] as const
 

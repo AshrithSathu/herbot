@@ -15,7 +15,9 @@ use chrono::{DateTime, Utc};
 /// v4 added the herbot-mcp tools section (different for General and topics).
 /// v5 added Grok-parity abilities: formatting, live web search, files in and
 /// out, image generation, modes and DeepSearch.
-pub const TEMPLATE_VERSION: i32 = 5;
+/// v6 added memory, custom instructions, voice, tasks, conversation actions
+/// and media shortcuts.
+pub const TEMPLATE_VERSION: i32 = 6;
 
 /// What every agent can do (Grok parity). Feature sections from other
 /// modules are appended in [`feature_sections`].
@@ -36,9 +38,17 @@ Then send the result with a `[[file: …]]` line pointing at the generated image
 - **Modes.** When the header has a `mode:` line, follow it: `fast` (brief), `expert` (think it through), `heavy` (fan out to sub-agents in parallel, then combine), `deepsearch` (thorough cited research report, also sent as a file).\n\
 - **Follow-ups.** When there are obvious next steps, you may end with up to three short follow-up questions he might ask next, as one `[[ask: …]]` line. Don't do it every time.\n";
 
+/// Where every agent finds Ashrith's custom instructions, about-you and
+/// shared memories (written by `personal::write_file`). Topic folders are
+/// always `chat_<id>/<leaf>`, two levels below the agents root.
+const PERSONAL_RULE: &str = "## Ashrith's preferences and memories\n\
+\n\
+Read `../../PERSONAL.md` (relative to this folder) at the start of every conversation and whenever your header says it changed. \
+It holds his custom instructions (follow them in every answer), what he's told you about himself, and memories shared by every topic.\n";
+
 /// Ground rules other features add (voice, tasks, memory, …).
 fn feature_sections() -> Vec<&'static str> {
-    vec![]
+    vec![PERSONAL_RULE, crate::personal::AGENTS_MD_SECTION]
 }
 
 const GENERAL_TOOLS: &str = "## Your Herbot tools\n\

@@ -25,6 +25,8 @@ pub struct Caller {
 pub enum HubError {
     #[error("unknown caller token; pass the `caller` value from your <herbot-meta> header")]
     UnknownCaller,
+    #[error(transparent)]
+    Personal(#[from] crate::personal::PersonalError),
     #[error("{0}")]
     Forbidden(String),
     #[error("{0}")]
@@ -270,4 +272,68 @@ pub async fn action_target(pool: &PgPool, caller: &Caller, topic: &str) -> Resul
         ));
     }
     Ok(target)
+}
+
+/// Global personal data is available to every authenticated conversation.
+pub async fn remember(
+    pool: &PgPool,
+    caller_token: &str,
+    dir: &std::path::Path,
+    content: &str,
+) -> Result<crate::personal::Memory, HubError> {
+    let caller = resolve_caller(pool, caller_token).await?;
+    personal_result(
+        pool,
+        crate::personal::remember(pool, dir, content, Some(caller.conversation_id), None).await,
+    )
+    .await
+}
+pub async fn forget(
+    pool: &PgPool,
+    caller_token: &str,
+    dir: &std::path::Path,
+    id: i64,
+) -> Result<u64, HubError> {
+    resolve_caller(pool, caller_token).await?;
+    personal_result(pool, crate::personal::forget(pool, dir, Some(id)).await).await
+}
+pub async fn recall(
+    pool: &PgPool,
+    caller_token: &str,
+    query: Option<&str>,
+) -> Result<Vec<crate::personal::Memory>, HubError> {
+    resolve_caller(pool, caller_token).await?;
+    personal_result(
+        pool,
+        crate::personal::recall(pool, query)
+            .await
+            .map_err(Into::into),
+    )
+    .await
+}
+
+async fn personal_result<T>(
+    pool: &PgPool,
+    result: Result<T, crate::personal::PersonalError>,
+) -> Result<T, HubError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(
+            err @ (crate::personal::PersonalError::Invalid(_)
+            | crate::personal::PersonalError::NotFound),
+        ) => Err(err.into()),
+        Err(err) => {
+            let id = crate::errors::record(
+                pool,
+                "personal.tool",
+                &err.to_string(),
+                serde_json::json!({}),
+            )
+            .await?;
+            tracing::error!(error_id = %id, error = %err, "personalisation tool failed");
+            Err(HubError::BadRequest(format!(
+                "❌ Failed ({id}): personalisation could not be updated. Check logs."
+            )))
+        }
+    }
 }

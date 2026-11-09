@@ -43,6 +43,9 @@ pub enum Command {
     Start,
     Help,
     Status,
+    Memory,
+    Customize(String),
+    AboutMe(String),
     Setup,
     /// `/new` asks first; `/new yes` wipes this topic's chat.
     New {
@@ -80,6 +83,9 @@ pub const COMMAND_MENU: &[(&str, &str)] = &[
     ("think", "Answer one question thinking carefully"),
     ("heavy", "Answer one question with several sub-agents"),
     ("fast", "A quick answer to one question"),
+    ("memory", "View and forget shared memories"),
+    ("customize", "View or set global answer instructions"),
+    ("aboutme", "Set what Herbot should know about you"),
     ("help", "List commands"),
 ];
 
@@ -485,6 +491,9 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
         "start" => Command::Start,
         "help" => Command::Help,
         "status" => Command::Status,
+        "memory" => Command::Memory,
+        "customize" => Command::Customize(rest[word.len()..].trim().to_string()),
+        "aboutme" => Command::AboutMe(rest[word.len()..].trim().to_string()),
         "setup" => Command::Setup,
         "new" => Command::New {
             confirmed: confirmed_with_yes(rest),

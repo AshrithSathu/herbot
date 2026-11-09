@@ -178,3 +178,40 @@ export const getError = createServerFn({ method: 'GET' })
     const core = await serverSide()
     return core<ErrorRow>(`/errors/${encodeURIComponent(id)}`)
   })
+
+export interface Memory {
+  id: number
+  content: string
+  source_conversation_id: number | null
+  created_at: string
+  updated_at: string
+}
+export interface Preferences { custom_instructions: string; about_you: string }
+export const listMemories = createServerFn({ method: 'GET' }).handler(async () => {
+  const core = await serverSide()
+  return core<Memory[]>('/memories')
+})
+export const saveMemory = createServerFn({ method: 'POST' })
+  .validator((data: { id?: number; content: string }) => data)
+  .handler(async ({ data }) => {
+    const core = await serverSide()
+    return core<Memory>(data.id == null ? '/memories' : `/memories/${data.id}`, {
+      method: data.id == null ? 'POST' : 'PUT', body: { content: data.content },
+    })
+  })
+export const deleteMemory = createServerFn({ method: 'POST' })
+  .validator((data: { id?: number }) => data)
+  .handler(async ({ data }) => {
+    const core = await serverSide()
+    return core<{ deleted: number }>(data.id == null ? '/memories' : `/memories/${data.id}`, { method: 'DELETE' })
+  })
+export const getPreferences = createServerFn({ method: 'GET' }).handler(async () => {
+  const core = await serverSide()
+  return core<Preferences>('/preferences')
+})
+export const savePreferences = createServerFn({ method: 'POST' })
+  .validator((data: Preferences) => data)
+  .handler(async ({ data }) => {
+    const core = await serverSide()
+    return core<Preferences>('/preferences', { method: 'PUT', body: data })
+  })

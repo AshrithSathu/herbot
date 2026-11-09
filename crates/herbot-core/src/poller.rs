@@ -525,6 +525,8 @@ pub struct Ctx<'a, A: TelegramApi, T: Transcriber> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum HandleError {
+    #[error(transparent)]
+    Personal(#[from] crate::personal::PersonalError),
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
     #[error(transparent)]
@@ -552,6 +554,7 @@ impl From<wipe::WipeError> for HandleError {
 impl HandleError {
     fn kind(&self) -> &'static str {
         match self {
+            HandleError::Personal(_) => "personal.write",
             HandleError::Db(_) => "telegram.handle_db",
             HandleError::Api(_) => "telegram.handle_api",
             HandleError::Voice(_) => "voice.transcribe",
@@ -571,6 +574,9 @@ General is the everyday chat. Every other topic is its own agent with its own me
 /status: this conversation's details\n\
 /new: wipe this topic's chat and start fresh (keeps its purpose)\n\
 /forget: wipe this topic completely, purpose included\n\
+/memory: view and forget shared memories\n\
+/customize [text|clear]: global answer instructions\n\
+/aboutme <text|clear>: what Herbot should know about you\n\
 /help: this list";
 
 pub const WELCOME_TEXT: &str = "👋 Herbot is here. General is our everyday chat. Every other topic is its own agent: say anything in a new topic and I'll ask what it should be.";
@@ -956,6 +962,9 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     press: &ButtonPress,
 ) -> Result<(), HandleError> {
     let chat = press.chat.tg_chat_id;
+    if press.data.starts_with("mem:") {
+        return handle_memory_button(ctx, press).await;
+    }
     if let Some(tap) = wipe::parse(&press.data) {
         return handle_wipe_tap(ctx, press, tap).await;
     }
@@ -1158,6 +1167,47 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
 ) -> Result<(), HandleError> {
     let text = match cmd {
         Command::Start | Command::Help => HELP_TEXT.to_string(),
+        Command::Memory => {
+            return memory_page(ctx, msg.chat.tg_chat_id, msg.topic_id, 0).await;
+        }
+        Command::Customize(text) | Command::AboutMe(text) => {
+            let about = matches!(msg.command, Some(Command::AboutMe(_)));
+            let prefs = crate::personal::preferences(ctx.pool).await?;
+            if text.is_empty() {
+                // The two fields together can exceed Telegram's message limit.
+                for text in [
+                    format!("Custom instructions:\n{}", prefs.custom_instructions),
+                    format!("About you:\n{}", prefs.about_you),
+                ] {
+                    ctx.api
+                        .send_text(
+                            msg.chat.tg_chat_id,
+                            msg.topic_id,
+                            Some(msg.message_id),
+                            &text,
+                        )
+                        .await?;
+                }
+                return Ok(());
+            }
+            let value = if text.eq_ignore_ascii_case("clear") {
+                String::new()
+            } else {
+                text
+            };
+            crate::personal::set_preference(
+                ctx.pool,
+                ctx.agents_dir,
+                if about {
+                    "about_you"
+                } else {
+                    "custom_instructions"
+                },
+                &value,
+            )
+            .await?;
+            "Personalisation saved for every topic.".to_string()
+        }
         Command::Setup => {
             let status = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
             return send_greeting(ctx, msg, &status).await;
@@ -1296,8 +1346,9 @@ pub async fn process<A: TelegramApi, T: Transcriber>(
     Some(error_id)
 }
 
-fn short_reason(err: &HandleError) -> &'static str {
-    match err {
+fn short_reason(err: &HandleError) -> String {
+    let reason = match err {
+        HandleError::Personal(err) => return setup::clip(&err.to_string(), 200),
         HandleError::Db(_) => "database error",
         HandleError::Api(_) => "Telegram API error",
         HandleError::Voice(VoiceError::NotConfigured) => "voice notes are off (no OPENAI_API_KEY)",
@@ -1305,7 +1356,8 @@ fn short_reason(err: &HandleError) -> &'static str {
         HandleError::AgentsMd(_) => "couldn't save AGENTS.md",
         HandleError::T3(_) => "couldn't delete this topic's T3 threads, so nothing was wiped",
         HandleError::Media(_) => "couldn't receive that file",
-    }
+    };
+    reason.to_string()
 }
 
 /// Registers the `/` command menu, only where Herbot works: the home group
@@ -1639,4 +1691,141 @@ pub async fn run<T: Transcriber + Send + 'static>(
     }
     lanes.finish(Duration::from_secs(10)).await;
     tracing::info!("telegram polling stopped");
+}
+
+async fn memory_page<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    chat: i64,
+    topic: Option<i32>,
+    page: usize,
+) -> Result<(), HandleError> {
+    let memories = crate::personal::recall(ctx.pool, None).await?;
+    let page = page.min(memories.len().saturating_sub(1) / 10);
+    ctx.api
+        .send_text(
+            chat,
+            topic,
+            None,
+            &format!("Shared memories: {} (page {})", memories.len(), page + 1),
+        )
+        .await?;
+    for memory in memories.iter().skip(page * 10).take(10) {
+        ctx.api
+            .send_buttons(
+                chat,
+                topic,
+                None,
+                &format!("#{}: {}", memory.id, memory.content),
+                &[vec![(
+                    format!("Forget #{}", memory.id),
+                    format!("mem:del:{}", memory.id),
+                )]],
+            )
+            .await?;
+    }
+    let mut buttons = Vec::new();
+    if page > 0 {
+        buttons.push(("Previous".into(), format!("mem:page:{}", page - 1)));
+    }
+    if (page + 1) * 10 < memories.len() {
+        buttons.push(("Next".into(), format!("mem:page:{}", page + 1)));
+    }
+    if !memories.is_empty() {
+        buttons.push(("Forget all".into(), "mem:all".into()));
+    }
+    if !buttons.is_empty() {
+        ctx.api
+            .send_buttons(chat, topic, None, "Manage memories", &[buttons])
+            .await?;
+    }
+    Ok(())
+}
+
+async fn handle_memory_button<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    press: &ButtonPress,
+) -> Result<(), HandleError> {
+    let chat = press.chat.tg_chat_id;
+    let status = store::conversation_status(ctx.pool, &press.chat, press.topic_id).await?;
+    let parts: Vec<_> = press.data.split(':').collect();
+    match parts.as_slice() {
+        ["mem", "page", page] => {
+            if let Ok(page) = page.parse::<usize>() {
+                memory_page(ctx, chat, press.topic_id, page).await?;
+            }
+        }
+        ["mem", "del", id] => {
+            if let Ok(id) = id.parse::<i64>() {
+                crate::personal::forget(ctx.pool, ctx.agents_dir, Some(id)).await?;
+                ctx.api.remove_buttons(chat, press.message_id).await?;
+                ctx.api
+                    .edit_text(chat, press.message_id, "Memory forgotten.")
+                    .await?;
+            }
+        }
+        ["mem", "all"] => {
+            let stamp = Utc::now().timestamp();
+            let cutoff = crate::personal::recall(ctx.pool, None)
+                .await?
+                .last()
+                .map(|m| m.id)
+                .unwrap_or(0);
+            let id = status.conversation_id;
+            ctx.api
+                .send_buttons(
+                    chat,
+                    press.topic_id,
+                    None,
+                    "Forget every shared memory? Custom instructions and about-you will stay.",
+                    &[vec![
+                        (
+                            "Yes, forget all".into(),
+                            format!("mem:yes:{id}:{stamp}:{cutoff}"),
+                        ),
+                        ("Cancel".into(), format!("mem:cancel:{id}:{stamp}:{cutoff}")),
+                    ]],
+                )
+                .await?;
+        }
+        ["mem", action @ ("yes" | "cancel"), id, stamp, cutoff] => {
+            let valid = id.parse::<i64>().ok() == Some(status.conversation_id)
+                && stamp
+                    .parse::<i64>()
+                    .ok()
+                    .is_some_and(|stamp| (0..600).contains(&(Utc::now().timestamp() - stamp)));
+            if valid && cutoff.parse::<i64>().is_ok() {
+                if *action == "yes" {
+                    crate::personal::forget_through(
+                        ctx.pool,
+                        ctx.agents_dir,
+                        cutoff.parse().expect("validated cutoff"),
+                    )
+                    .await?;
+                }
+                ctx.api.remove_buttons(chat, press.message_id).await?;
+                ctx.api
+                    .edit_text(
+                        chat,
+                        press.message_id,
+                        if *action == "yes" {
+                            "All memories forgotten."
+                        } else {
+                            "Cancelled."
+                        },
+                    )
+                    .await?;
+            } else {
+                ctx.api
+                    .answer_button(
+                        &press.callback_id,
+                        Some("Confirmation expired or belongs to another topic."),
+                    )
+                    .await?;
+                return Ok(());
+            }
+        }
+        _ => {}
+    }
+    ctx.api.answer_button(&press.callback_id, None).await?;
+    Ok(())
 }
