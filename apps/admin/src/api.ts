@@ -34,6 +34,8 @@ export interface Topic {
   purpose: string | null
   setup_state: 'new' | 'awaiting_purpose' | 'ready'
   enabled: boolean
+  voice_replies: boolean
+  voice: string
   messages: number
   last_activity: string | null
   thread_link: string | null
@@ -177,4 +179,13 @@ export const getError = createServerFn({ method: 'GET' })
   .handler(async ({ data: id }) => {
     const core = await serverSide()
     return core<ErrorRow>(`/errors/${encodeURIComponent(id)}`)
+  })
+
+export const saveVoice = createServerFn({ method: 'POST' })
+  .validator((data: { id: number; voice_replies: boolean; voice: string }) => data)
+  .handler(async ({ data }) => {
+    const core = await serverSide()
+    return core<Topic>(`/conversations/${data.id}/voice`, {
+      method: 'PUT', body: { voice_replies: data.voice_replies, voice: data.voice },
+    })
   })

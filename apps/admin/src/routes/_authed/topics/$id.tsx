@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute, notFound, useBlocker } from '@tanstack/react-router'
 import { BrushCleaningIcon, ExternalLinkIcon, FileTextIcon, Trash2Icon } from 'lucide-react'
-import { savePurpose, setEnabled, wipeTopic, type Topic, type TopicDetail } from '../../../api'
+import { saveVoice, savePurpose, setEnabled, wipeTopic, type Topic, type TopicDetail } from '../../../api'
 import { PURPOSE_MAX, charCount, plural, purposeProblem } from '../../../format'
 import { keys, messagesQuery, topicQuery } from '../../../queries'
 import { ChatLog } from '@/components/chat-log'
@@ -89,6 +89,7 @@ function TopicPage() {
 
       <Answering topic={t} />
       <Purpose key={t.id} topic={t} />
+      <Voice topic={t} />
 
       <Section
         id="agents-md"
@@ -419,6 +420,72 @@ function CleanSlate({ topic }: { topic: Topic }) {
         })}
       </ul>
       {wipe.isError && <ErrorNote title="Nothing was wiped">{wipe.error.message}</ErrorNote>}
+    </Section>
+  )
+}
+
+const VOICES = [
+  ['alloy', 'Balanced'], ['ash', 'Grounded'], ['ballad', 'Expressive'],
+  ['coral', 'Warm'], ['echo', 'Clear'], ['fable', 'Storytelling'],
+  ['onyx', 'Deep'], ['nova', 'Bright'], ['sage', 'Calm'],
+  ['shimmer', 'Gentle'], ['verse', 'Versatile'], ['marin', 'Conversational'], ['cedar', 'Steady'],
+] as const
+
+function Voice({ topic }: { topic: Topic }) {
+  const cache = useTopicCache(topic.id)
+  const saving = useRef(false)
+  const save = useMutation({
+    mutationFn: (settings: { voice_replies: boolean; voice: string }) =>
+      saveVoice({ data: { id: topic.id, ...settings } }),
+    onSuccess: (updated) => cache.patch(() => updated),
+    onSettled: () => {
+      saving.current = false
+      return cache.queryClient.invalidateQueries({ queryKey: keys.topics })
+    },
+  })
+  const update = (settings: { voice_replies: boolean; voice: string }) => {
+    if (saving.current) return
+    saving.current = true
+    save.mutate(settings)
+  }
+  return (
+    <Section id="voice" title="Voice">
+      <Card>
+        <CardContent className="flex flex-col gap-5 pt-6" aria-busy={save.isPending}>
+          <FieldLabel htmlFor="voice-replies">
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldTitle>Spoken replies</FieldTitle>
+                <FieldDescription id="voice-help">
+                  Read agent replies aloud with an AI-generated voice, after the text arrives.
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                id="voice-replies"
+                aria-describedby="voice-help"
+                checked={topic.voice_replies}
+                disabled={save.isPending}
+                onCheckedChange={(voice_replies) => update({ voice_replies, voice: topic.voice })}
+              />
+            </Field>
+          </FieldLabel>
+          <Field>
+            <FieldLabel htmlFor="voice-choice">Voice</FieldLabel>
+            <select
+              id="voice-choice"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-base shadow-xs outline-none pointer-coarse:h-11 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50"
+              value={topic.voice}
+              disabled={save.isPending}
+              onChange={(event) => update({ voice_replies: topic.voice_replies, voice: event.target.value })}
+            >
+              {VOICES.map(([name, description]) => <option key={name} value={name}>{name} · {description}</option>)}
+            </select>
+            <FieldDescription>Also used by /speak when spoken replies are off.</FieldDescription>
+          </Field>
+          {save.isPending && <span role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />Saving voice…</span>}
+          {save.isError && <ErrorNote title="Couldn’t save voice">{save.error.message}</ErrorNote>}
+        </CardContent>
+      </Card>
     </Section>
   )
 }
