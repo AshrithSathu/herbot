@@ -74,42 +74,125 @@ pub async fn generate_video(
                 .into(),
         ));
     }
-    tokio::time::timeout(Duration::from_secs(540), async {
-        let client = reqwest::Client::builder().timeout(Duration::from_secs(90)).build()?;
-        let mut form = Form::new().text("model", model.to_owned()).text("prompt", prompt.to_owned())
-            .text("seconds", seconds.to_string()).text("size", size.to_owned());
-        if let Some(path) = image_path {
-            let root = tokio::fs::canonicalize(topic).await?;
-            let path = tokio::fs::canonicalize(if path.is_absolute() { path.to_owned() } else { topic.join(path) }).await?;
-            let mime = crate::outbound_files::mime_of(&path).filter(|m| ["image/png","image/jpeg","image/webp"].contains(m))
-                .ok_or_else(|| ImagineError::Invalid("reference must be a PNG, JPEG or WebP".into()))?;
-            if !path.starts_with(&root) || tokio::fs::metadata(&path).await?.len() > 20*1024*1024 {
-                return Err(ImagineError::Invalid("reference must be inside the caller's topic and at most 20 MB".into()));
+    tokio::time::timeout(Duration::from_secs(540), generate_video_job(api_key, model, topic, prompt, seconds, size, image_path))
+        .await.map_err(|_| ImagineError::Job("video generation exceeded 540 seconds; remote job may still finish; no automatic retry".into()))?
+}
+
+async fn generate_video_job(
+    api_key: &str,
+    model: &str,
+    topic: &Path,
+    prompt: &str,
+    seconds: u32,
+    size: &str,
+    image_path: Option<&Path>,
+) -> Result<GeneratedVideo, ImagineError> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(90))
+        .build()?;
+    let mut form = Form::new()
+        .text("model", model.to_owned())
+        .text("prompt", prompt.to_owned())
+        .text("seconds", seconds.to_string())
+        .text("size", size.to_owned());
+    if let Some(path) = image_path {
+        let root = tokio::fs::canonicalize(topic).await?;
+        let path = tokio::fs::canonicalize(if path.is_absolute() {
+            path.to_owned()
+        } else {
+            topic.join(path)
+        })
+        .await?;
+        let mime = crate::outbound_files::mime_of(&path)
+            .filter(|m| ["image/png", "image/jpeg", "image/webp"].contains(m))
+            .ok_or_else(|| ImagineError::Invalid("reference must be a PNG, JPEG or WebP".into()))?;
+        if !path.starts_with(&root) || tokio::fs::metadata(&path).await?.len() > 20 * 1024 * 1024 {
+            return Err(ImagineError::Invalid(
+                "reference must be inside the caller's topic and at most 20 MB".into(),
+            ));
+        }
+        form = form.part(
+            "input_reference",
+            Part::bytes(tokio::fs::read(&path).await?)
+                .file_name("reference")
+                .mime_str(mime)?,
+        );
+    }
+    let mut job: Job = checked(
+        client
+            .post("https://api.openai.com/v1/videos")
+            .bearer_auth(api_key)
+            .multipart(form)
+            .send()
+            .await?,
+    )
+    .await?
+    .json()
+    .await?;
+    if job.id.is_empty()
+        || !job
+            .id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ImagineError::Job("invalid video job id".into()));
+    }
+    loop {
+        match job.status.as_str() {
+            "completed" => break,
+            "failed" => {
+                return Err(ImagineError::Job(format!(
+                    "video {} failed: {}",
+                    job.id,
+                    crate::outgoing::scrub(&job.error.unwrap_or_default().to_string())
+                )));
             }
-            form = form.part("input_reference", Part::bytes(tokio::fs::read(&path).await?).file_name("reference").mime_str(mime)?);
-        }
-        let mut job: Job = checked(client.post("https://api.openai.com/v1/videos").bearer_auth(api_key).multipart(form).send().await?).await?.json().await?;
-        if job.id.is_empty() || !job.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-            return Err(ImagineError::Job("invalid video job id".into()));
-        }
-        loop {
-            match job.status.as_str() {
-                "completed" => break,
-                "failed" => return Err(ImagineError::Job(format!("video {} failed: {}",job.id,crate::outgoing::scrub(&job.error.unwrap_or_default().to_string())))),
-                "queued" | "in_progress" => {},
-                other => return Err(ImagineError::Job(format!("video {} unexpected status: {other}",job.id))),
+            "queued" | "in_progress" => {}
+            other => {
+                return Err(ImagineError::Job(format!(
+                    "video {} unexpected status: {other}",
+                    job.id
+                )));
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            job = checked(client.get(format!("https://api.openai.com/v1/videos/{}",job.id)).bearer_auth(api_key).send().await?).await?.json().await?;
         }
-        let bytes = checked(client.get(format!("https://api.openai.com/v1/videos/{}/content",job.id)).bearer_auth(api_key).send().await?).await?.bytes().await?;
-        if bytes.len() < 12 || &bytes[4..8] != b"ftyp" { return Err(ImagineError::Job("video download is not an MP4".into())); }
-        let dir = topic.join("files/out");
-        tokio::fs::create_dir_all(&dir).await?;
-        let path = dir.join(format!("{}.mp4",job.id));
-        tokio::fs::write(&path, bytes).await?;
-        Ok(GeneratedVideo { id: job.id, path, seconds, size: size.into() })
-    }).await.map_err(|_| ImagineError::Job("video generation exceeded 540 seconds; remote job may still finish; no automatic retry".into()))?
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        job = checked(
+            client
+                .get(format!("https://api.openai.com/v1/videos/{}", job.id))
+                .bearer_auth(api_key)
+                .send()
+                .await?,
+        )
+        .await?
+        .json()
+        .await?;
+    }
+    let bytes = checked(
+        client
+            .get(format!(
+                "https://api.openai.com/v1/videos/{}/content",
+                job.id
+            ))
+            .bearer_auth(api_key)
+            .send()
+            .await?,
+    )
+    .await?
+    .bytes()
+    .await?;
+    if bytes.len() < 12 || &bytes[4..8] != b"ftyp" {
+        return Err(ImagineError::Job("video download is not an MP4".into()));
+    }
+    let dir = topic.join("files/out");
+    tokio::fs::create_dir_all(&dir).await?;
+    let path = dir.join(format!("{}.mp4", job.id));
+    tokio::fs::write(&path, bytes).await?;
+    Ok(GeneratedVideo {
+        id: job.id,
+        path,
+        seconds,
+        size: size.into(),
+    })
 }
 
 /// Keep alpha, fit exactly 512px on the longest side, and stay below 512KB.

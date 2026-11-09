@@ -92,6 +92,7 @@ async fn migrations_create_every_table(pool: PgPool) {
             "chats",
             "conversations",
             "errors",
+            "inbox",
             "kv",
             "messages",
             "pending_questions",
@@ -263,4 +264,45 @@ async fn setup_state_rules_are_enforced(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn imagine_rejects_invalid_requests_and_cross_topic_reference_before_api() {
+    use herbot_core::imagine::{ImagineError, generate_video};
+    let topic = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let reference = outside.path().join("reference.png");
+    std::fs::write(&reference, b"not sent").unwrap();
+    for (prompt, seconds, size) in [
+        ("", 4, "720x1280"),
+        ("boat", 5, "720x1280"),
+        ("boat", 4, "512x512"),
+    ] {
+        assert!(matches!(
+            generate_video(
+                "unused",
+                "sora-2",
+                topic.path(),
+                prompt,
+                seconds,
+                size,
+                None
+            )
+            .await,
+            Err(ImagineError::Invalid(_))
+        ));
+    }
+    assert!(matches!(
+        generate_video(
+            "unused",
+            "sora-2",
+            topic.path(),
+            "boat",
+            4,
+            "720x1280",
+            Some(&reference)
+        )
+        .await,
+        Err(ImagineError::Invalid(_))
+    ));
 }

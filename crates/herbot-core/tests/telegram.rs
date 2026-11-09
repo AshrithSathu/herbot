@@ -458,10 +458,12 @@ fn every_fixture_normalizes_as_expected() {
         (HQ, Some(7), 500)
     );
 
+    let Some(Inbound::Message(sticker)) = n("admin_sticker") else {
+        panic!("sticker attachment");
+    };
     assert_eq!(
-        n("admin_sticker"),
-        None,
-        "no text or voice, nothing to store"
+        sticker.attachment.unwrap().kind,
+        telegram::AttachmentKind::Sticker
     );
     assert_eq!(
         n("admin_command_other_bot"),

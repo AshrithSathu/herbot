@@ -581,6 +581,11 @@ General is the everyday chat. Every other topic is its own agent with its own me
 /status: this conversation's details\n\
 /new: wipe this topic's chat and start fresh (keeps its purpose)\n\
 /forget: wipe this topic completely, purpose included\n\
+/mode: choose Fast, Auto, Expert or Heavy\n\
+/fast <question>: a quick answer\n\
+/think <question>: think carefully\n\
+/heavy <question>: use several agents\n\
+/deepsearch <question>: research with sources\n\
 /video <prompt>: generate a video\n\
 /imagine <prompt>: generate an image\n\
 /sticker: reply to a photo, or add a prompt\n\

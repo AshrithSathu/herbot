@@ -552,6 +552,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn media_commands_take_only_same_topic_trusted_reply_sources() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/admin_topic_reply.json")).unwrap();
+        value["message"]["text"] = serde_json::json!("/summary");
+        value["message"]["reply_to_message"]["text"] =
+            serde_json::json!("A long decision to summarise");
+        value["message"]["reply_to_message"]["is_topic_message"] = serde_json::json!(true);
+        value["message"]["reply_to_message"]["message_thread_id"] = serde_json::json!(7);
+        let get = |v: &serde_json::Value| {
+            let update: Update = serde_json::from_str(&v.to_string()).unwrap();
+            match normalize(&update, "herbot_test_bot").unwrap() {
+                Inbound::Message(m) => m,
+                _ => panic!("message"),
+            }
+        };
+        assert!(get(&value).text.contains("A long decision"));
+        value["message"]["reply_to_message"]["message_thread_id"] = serde_json::json!(8);
+        assert!(!get(&value).text.contains("A long decision"));
+        value["message"]["reply_to_message"]["message_thread_id"] = serde_json::json!(7);
+        value["message"]["reply_to_message"]["from"]["id"] = serde_json::json!(222);
+        assert!(!get(&value).text.contains("A long decision"));
+    }
+
+    #[test]
     fn parses_commands_for_this_bot() {
         let bot = "Herbot_Bot";
         for (command, style) in [

@@ -445,6 +445,11 @@ async fn send_files<A: TelegramApi, R: AgentRunner>(
             }
         };
         if job.style == Some(Style::Sticker) {
+            if resolved.file.kind != FileKind::Photo {
+                return Err(TurnError::RunFailed(
+                    "sticker source must be a JPG, PNG or WebP image".into(),
+                ));
+            }
             let destination = deps
                 .agents_dir
                 .join(&folder)
