@@ -6,3 +6,10 @@ members = ["crates/herbot-core", "crates/herbot-mcp"]
 edition = "2024"
 license = "UNLICENSED"
 publish = false
+
+# Production builds: one codegen unit and thin LTO for a faster, smaller
+# binary; debug info stripped (symbols stay, so panics still name functions).
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "debuginfo"
