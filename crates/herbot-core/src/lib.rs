@@ -23,6 +23,7 @@ pub mod db;
 pub mod errors;
 pub mod hub;
 pub mod internal;
+pub mod media;
 pub mod meta;
 pub mod outgoing;
 pub mod policy;

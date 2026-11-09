@@ -16,14 +16,15 @@ use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types::{
     AllowedUpdate, BotCommand, BotCommandScope, CallbackQueryId, ChatAction, ChatId as TgChatId,
-    FileId, InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ReactionType, ReplyParameters,
-    ThreadId,
+    FileId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, LinkPreviewOptions, MessageId,
+    ParseMode, ReactionType, ReplyParameters, ThreadId,
 };
 use tokio::sync::{mpsc, watch};
 
 use crate::agent::{AgentError, ProjectCleaner};
 use crate::agents_md;
 use crate::errors::{self, ErrorId};
+use crate::media::{Activity, FileKind, OutFile};
 use crate::policy::{self, Action, Rules};
 use crate::setup;
 use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
@@ -108,6 +109,66 @@ pub trait TelegramApi: Send + Sync {
         &self,
         file_id: &str,
     ) -> impl Future<Output = Result<Vec<u8>, ApiError>> + Send;
+
+    /// Sends formatted text (Telegram HTML). If Telegram can't parse it, the
+    /// plain version goes instead, so a reply is never lost to formatting.
+    fn send_rich(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        html: &str,
+        plain: &str,
+    ) -> impl Future<Output = Result<i32, ApiError>> + Send {
+        let _ = html;
+        self.send_text(chat_id, topic_id, reply_to, plain)
+    }
+
+    /// Replaces a bot message with formatted text (plain if it won't parse).
+    fn edit_rich(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+        html: &str,
+        plain: &str,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send {
+        let _ = html;
+        self.edit_text(chat_id, message_id, plain)
+    }
+
+    /// Sends a file from this machine (photo, voice note, video, document…).
+    fn send_file(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        file: &OutFile,
+    ) -> impl Future<Output = Result<i32, ApiError>> + Send {
+        let _ = (chat_id, topic_id, reply_to, file);
+        async { Err(ApiError("sending files is not supported here".into())) }
+    }
+
+    /// Shows what the bot is doing ("sending a photo…") for a few seconds.
+    fn activity(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        activity: Activity,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send {
+        let _ = activity;
+        self.typing(chat_id, topic_id)
+    }
+}
+
+/// Links stay links: no preview cards under replies.
+fn no_previews() -> LinkPreviewOptions {
+    LinkPreviewOptions {
+        is_disabled: true,
+        url: None,
+        prefer_small_media: false,
+        prefer_large_media: false,
+        show_above_text: false,
+    }
 }
 
 fn api_err(e: teloxide::RequestError) -> ApiError {
@@ -221,6 +282,118 @@ impl TelegramApi for BotApi {
             .await
             .map(|_| ())
             .map_err(api_err)
+    }
+
+    async fn send_rich(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        html: &str,
+        plain: &str,
+    ) -> Result<i32, ApiError> {
+        let mut req = self
+            .0
+            .send_message(ChatId(chat_id), html)
+            .parse_mode(ParseMode::Html)
+            .link_preview_options(no_previews());
+        if let Some(topic) = topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(topic)));
+        }
+        if let Some(reply) = reply_to {
+            req = req.reply_parameters(
+                ReplyParameters::new(MessageId(reply)).allow_sending_without_reply(),
+            );
+        }
+        match req.await {
+            Ok(m) => Ok(m.id.0),
+            Err(teloxide::RequestError::Api(teloxide::ApiError::CantParseEntities(why))) => {
+                tracing::warn!(%why, "Telegram couldn't parse the formatting; sending plain text");
+                self.send_text(chat_id, topic_id, reply_to, plain).await
+            }
+            Err(err) => Err(api_err(err)),
+        }
+    }
+
+    async fn edit_rich(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+        html: &str,
+        plain: &str,
+    ) -> Result<(), ApiError> {
+        let req = self
+            .0
+            .edit_message_text(ChatId(chat_id), MessageId(message_id), html)
+            .parse_mode(ParseMode::Html)
+            .link_preview_options(no_previews());
+        match req.await {
+            Ok(_) => Ok(()),
+            Err(teloxide::RequestError::Api(teloxide::ApiError::MessageNotModified)) => Ok(()),
+            Err(teloxide::RequestError::Api(teloxide::ApiError::CantParseEntities(_))) => {
+                self.edit_text(chat_id, message_id, plain).await
+            }
+            Err(err) => Err(api_err(err)),
+        }
+    }
+
+    async fn send_file(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        file: &OutFile,
+    ) -> Result<i32, ApiError> {
+        let input = InputFile::file(file.path.clone());
+        let chat = ChatId(chat_id);
+        let thread = topic_id.map(|t| ThreadId(MessageId(t)));
+        let reply =
+            reply_to.map(|r| ReplyParameters::new(MessageId(r)).allow_sending_without_reply());
+        let caption = file.caption.clone();
+        // Each kind is its own request type; set the same fields on each.
+        macro_rules! send {
+            ($req:expr) => {{
+                let mut req = $req;
+                if let Some(thread) = thread {
+                    req = req.message_thread_id(thread);
+                }
+                if let Some(reply) = reply.clone() {
+                    req = req.reply_parameters(reply);
+                }
+                if let Some(caption) = caption.clone() {
+                    req = req.caption(caption);
+                }
+                req.await.map(|m| m.id.0).map_err(api_err)
+            }};
+        }
+        match file.kind {
+            FileKind::Photo => send!(self.0.send_photo(chat, input)),
+            FileKind::Voice => send!(self.0.send_voice(chat, input)),
+            FileKind::Audio => send!(self.0.send_audio(chat, input)),
+            FileKind::Video => send!(self.0.send_video(chat, input)),
+            FileKind::Animation => send!(self.0.send_animation(chat, input)),
+            FileKind::Document => send!(self.0.send_document(chat, input)),
+        }
+    }
+
+    async fn activity(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        activity: Activity,
+    ) -> Result<(), ApiError> {
+        let action = match activity {
+            Activity::Typing => ChatAction::Typing,
+            Activity::UploadPhoto => ChatAction::UploadPhoto,
+            Activity::UploadVideo => ChatAction::UploadVideo,
+            Activity::UploadDocument => ChatAction::UploadDocument,
+            Activity::RecordVoice => ChatAction::RecordVoice,
+        };
+        let mut req = self.0.send_chat_action(ChatId(chat_id), action);
+        if let Some(topic) = topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(topic)));
+        }
+        req.await.map(|_| ()).map_err(api_err)
     }
 
     async fn download_file(&self, file_id: &str) -> Result<Vec<u8>, ApiError> {
