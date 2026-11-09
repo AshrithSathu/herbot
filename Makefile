@@ -7,7 +7,7 @@ export
 endif
 export DATABASE_URL ?= postgres://herbot:herbot@127.0.0.1:5433/herbot
 
-.PHONY: help db-up db-down db-reset run test test-voice check fmt lint smoke admin admin-build admin-e2e
+.PHONY: help db-up db-down db-reset run test test-voice check fmt lint smoke admin admin-build
 
 help: ## List targets
 	@grep -hE '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -46,6 +46,3 @@ admin: ## Run the admin panel (dev) on 127.0.0.1:3300 against the running herbot
 
 admin-build: ## Type-check and build the admin panel (serve it with `pnpm -C apps/admin start`)
 	pnpm -C apps/admin typecheck && pnpm -C apps/admin build
-
-admin-e2e: db-up ## Browser tests of the panel (your Chrome) against a throwaway herbot-core and database
-	./scripts/admin-e2e.sh

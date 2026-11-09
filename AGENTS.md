@@ -15,7 +15,7 @@ Telegram Bot API ⇄ crates/herbot-core (Rust, teloxide) ⇄ bots-T3 (Codex, ful
 |---|---|---|
 | `crates/herbot-core` | Telegram polling, admin-only policy, conversations, topic setup and AGENTS.md, voice transcription, per-conversation lanes, T3 adapter, admin API | Rust (tokio, axum, sqlx, teloxide, reqwest) |
 | `crates/herbot-mcp` | MCP server Codex starts over stdio: `list_topics`, `search_messages`, `read_topic` (via `herbot_core::hub`), and General's `ask_topic` and `post_to_topic` (via herbot-core's `/internal` API) | Rust (`rmcp`) |
-| `apps/admin` | Admin panel: TanStack Query for data, shadcn/ui on Tailwind v4, Playwright e2e (`make admin-e2e`) | TanStack Start |
+| `apps/admin` | Admin panel: TanStack Query for data, shadcn/ui on Tailwind v4, `server.mjs` for production | TanStack Start |
 | `bots/<slug>/` | One T3 project per bot persona. `AGENTS.md` there is the persona. | Markdown |
 
 A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no topic. In a forum supergroup, each topic is its own conversation, and "General" has no topic ID.
@@ -57,10 +57,14 @@ Polling Telegram for updates is not a turn. It keeps polling after a network err
 - Logs: JSON by default (`HERBOT_LOG_FORMAT=pretty` locally). No `println!`.
 - Telegram parsing is pure (`telegram::normalize`) and the policy is pure (`policy::decide`), so both are tested without network. Network calls go through the `TelegramApi` trait, which has a fake for tests.
 
-## Testing: every step ships with tests
+## Testing: write tests, run them when asked
+
+- **Run tests only when Ashrith asks** (`make check`, `cargo test`, anything else). Don't run them after every change; say what is untested instead.
+- No end-to-end (browser) tests. They were removed on 2026-11-09.
+- New Rust code still ships with unit or integration tests.
 
 - `make test`: unit tests plus integration tests against real Postgres. Each `#[sqlx::test]` gets a fresh database.
-- `make check`: fmt, clippy, then tests. Run it before saying a step is done.
+- `make check`: fmt, clippy, then tests. Run it when asked, before a step is called done.
 - `make smoke`: starts the real binary and checks `/health`, `/ready` and graceful shutdown.
 - Telegram behaviour is tested with real Bot API JSON fixtures in `crates/herbot-core/tests/fixtures/`.
 - A step is done only when its "Done when" checks in `docs/ROADMAP.md` pass.
