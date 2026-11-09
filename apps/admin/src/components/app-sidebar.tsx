@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
-import { BrainIcon, SlidersHorizontalIcon, HashIcon, LayoutGridIcon, LogOutIcon, MessageCircleIcon, MessagesSquareIcon, ScrollTextIcon } from 'lucide-react'
+import { BrainIcon, SlidersHorizontalIcon, SearchIcon, PlugIcon, HashIcon, LayoutGridIcon, LogOutIcon, MessageCircleIcon, MessagesSquareIcon, ScrollTextIcon } from 'lucide-react'
 import { logout, type Topic } from '../api'
 import { topicStatus, type TopicStatus } from '../format'
 import { topicsQuery } from '../queries'
@@ -28,6 +28,8 @@ const PAGES = [
   { to: '/memory', label: 'Memory', icon: BrainIcon, exact: true },
   { to: '/personalize', label: 'Personalize', icon: SlidersHorizontalIcon, exact: true },
   { to: '/tasks', label: 'Tasks', icon: ScrollTextIcon, exact: true },
+  { to: '/search', label: 'Search', icon: SearchIcon, exact: true },
+  { to: '/connectors', label: 'Connectors', icon: PlugIcon, exact: true },
   { to: '/logs', label: 'Logs', icon: ScrollTextIcon, exact: false },
 ] as const
 

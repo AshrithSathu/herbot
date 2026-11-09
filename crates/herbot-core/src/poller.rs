@@ -957,11 +957,22 @@ async fn reply<A: TelegramApi, T: Transcriber>(
     Ok(())
 }
 
-async fn store_and_continue<A: TelegramApi, T: Transcriber>(
+pub(crate) async fn store_and_continue<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     style: Option<Style>,
 ) -> Result<(), HandleError> {
+    type SetupLocks =
+        std::sync::Mutex<std::collections::HashMap<LaneKey, Arc<tokio::sync::Mutex<()>>>>;
+    static LOCKS: std::sync::OnceLock<SetupLocks> = std::sync::OnceLock::new();
+    let lock = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("setup locks")
+        .entry((msg.chat.tg_chat_id, msg.topic_id))
+        .or_default()
+        .clone();
+    let _guard = lock.lock().await;
     match store::store_message(ctx.pool, msg).await? {
         StoreOutcome::Stored {
             conversation_id,

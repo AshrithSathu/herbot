@@ -1,3 +1,4 @@
+import { NewAgent } from '../../../components/new-agent'
 import { useSuspenseQuery } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { MessagesSquareIcon } from 'lucide-react'
@@ -21,6 +22,7 @@ function TopicsPage() {
         title="Topics"
         description="General first, then each forum topic in the order you made them. Each one is its own agent."
       />
+      <NewAgent />
       <StaleWarning error={error} />
       {topics.length === 0 ? (
         <EmptyState icon={MessagesSquareIcon} title="No topics yet">

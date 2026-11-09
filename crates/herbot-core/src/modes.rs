@@ -93,6 +93,7 @@ and say briefly where they disagreed";
 /// A one-message mode: `/fast`, `/think`, `/heavy` or `/deepsearch <question>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Style {
+    Auto,
     Fast,
     Think,
     Heavy,
@@ -110,6 +111,7 @@ impl Style {
             Style::Imagine => "imagine",
             Style::Sticker => "sticker",
             Style::Summary => "summary",
+            Style::Auto => "auto",
             Style::Fast => "fast",
             Style::Think => "think",
             Style::Heavy => "heavy",
@@ -119,6 +121,7 @@ impl Style {
 
     pub fn effort(self, auto: &str) -> &str {
         match self {
+            Style::Auto => auto,
             Style::Fast => Mode::Fast.effort(auto),
             Style::Think => Mode::Expert.effort(auto),
             Style::Heavy => Mode::Heavy.effort(auto),
@@ -129,6 +132,7 @@ impl Style {
 
     pub fn instruction(self) -> &'static str {
         match self {
+            Style::Auto => "auto: use balanced reasoning appropriate to this question",
             Style::Fast => Mode::Fast.instruction().expect("fast has one"),
             Style::Think => Mode::Expert.instruction().expect("expert has one"),
             Style::Heavy => HEAVY,
@@ -147,6 +151,7 @@ impl Style {
             Style::Imagine => "🎨 Generating your image",
             Style::Sticker => "🎨 Making your sticker",
             Style::Summary => "📝 Summarising",
+            Style::Auto => "Thinking",
             Style::Fast => "⚡ Fast answer coming",
             Style::Think => "🧠 Thinking it through",
             Style::Heavy => "🏋️ Heavy mode: sub-agents are on it",

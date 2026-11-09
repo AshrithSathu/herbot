@@ -45,4 +45,5 @@ pub mod turns;
 pub mod voice;
 pub mod wipe;
 
+pub mod panel;
 pub mod tasks;

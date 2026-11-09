@@ -134,7 +134,7 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
       type="button"
       variant="ghost"
       size="sm"
-      className="text-muted-foreground"
+      className="min-h-11 min-w-11 text-muted-foreground"
       onClick={async () => {
         await navigator.clipboard.writeText(text)
         setCopied(true)

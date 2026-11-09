@@ -38,6 +38,7 @@ export interface Topic {
   voice: string
   messages: number
   last_activity: string | null
+  mode: string
   thread_link: string | null
 }
 
@@ -54,6 +55,7 @@ export interface Message {
   from_bot: boolean
   is_voice: boolean
   body: string
+  attachments: Attachment[]
 }
 
 /** Oldest first. `has_more`: another page exists in the direction asked. */
@@ -132,21 +134,30 @@ export const savePurpose = createServerFn({ method: 'POST' })
   .validator((data: { id: number; purpose: string }) => data)
   .handler(async ({ data }) => {
     const core = await serverSide()
-    return core<Topic>(`/conversations/${data.id}/purpose`, { method: 'PUT', body: { purpose: data.purpose } })
+    return core<Topic>(`/conversations/${data.id}/purpose`, {
+      method: 'PUT',
+      body: { purpose: data.purpose },
+    })
   })
 
 export const setEnabled = createServerFn({ method: 'POST' })
   .validator((data: { id: number; enabled: boolean }) => data)
   .handler(async ({ data }) => {
     const core = await serverSide()
-    return core<Topic>(`/conversations/${data.id}/enabled`, { method: 'PUT', body: { enabled: data.enabled } })
+    return core<Topic>(`/conversations/${data.id}/enabled`, {
+      method: 'PUT',
+      body: { enabled: data.enabled },
+    })
   })
 
 export const wipeTopic = createServerFn({ method: 'POST' })
   .validator((data: { id: number; kind: 'new' | 'forget' }) => data)
   .handler(async ({ data }) => {
     const core = await serverSide()
-    return core<WipeResult>(`/conversations/${data.id}/wipe`, { method: 'POST', body: { kind: data.kind } })
+    return core<WipeResult>(`/conversations/${data.id}/wipe`, {
+      method: 'POST',
+      body: { kind: data.kind },
+    })
   })
 
 export const getMessages = createServerFn({ method: 'GET' })
@@ -247,4 +258,81 @@ export const changeTask = createServerFn({ method: 'POST' })
   .validator((data: { id: number; action: 'pause' | 'resume' | 'cancel' | 'run' }) => data)
   .handler(async ({ data }) => {
     const core = await serverSide(); return core<Task>(`/tasks/${data.id}/${data.action}`, { method: 'POST' })
+  })
+export interface Attachment {
+  kind: string
+  path: string
+  name: string
+  mime: string | null
+  size: number
+}
+export interface SearchHit {
+  id: number
+  conversation_id: number
+  name: string
+  snippet: string
+}
+export const getActivity = createServerFn({ method: 'GET' })
+  .validator((id: number) => id)
+  .handler(async ({ data }) => (await serverSide())<{ in_progress: boolean }>(`/conversations/${data}/activity`))
+export const getFiles = createServerFn({ method: 'GET' })
+  .validator((id: number) => id)
+  .handler(async ({ data }) => (await serverSide())<Attachment[]>(`/conversations/${data}/files`))
+export const saveMode = createServerFn({ method: 'POST' })
+  .validator((data: { id: number; mode: string }) => data)
+  .handler(async ({ data }) =>
+    (await serverSide())<{ mode: string }>(`/conversations/${data.id}/mode`, {
+      method: 'PUT',
+      body: { mode: data.mode },
+    }),
+  )
+export const createTopic = createServerFn({ method: 'POST' })
+  .validator((data: { name: string; purpose: string }) => data)
+  .handler(async ({ data }) =>
+    (await serverSide())<{ id: number }>('/topics', {
+      method: 'POST',
+      body: data,
+    }),
+  )
+export const searchMessages = createServerFn({ method: 'GET' })
+  .validator((data: { q: string; before?: number }) => data)
+  .handler(async ({ data }) =>
+    (await serverSide())<SearchHit[]>(
+      `/search?${new URLSearchParams({ q: data.q, ...(data.before ? { before: String(data.before) } : {}) })}`,
+    ),
+  )
+export const getConnectors = createServerFn({ method: 'GET' }).handler(async () =>
+  (await serverSide())<{
+    servers: {
+      name: string
+      source: string
+      command: string | null
+      url: string | null
+    }[]
+    tools: string[]
+  }>('/connectors'),
+)
+export const sendMessage = createServerFn({ method: 'POST' })
+  .validator((data: FormData) => {
+    if (!(data instanceof FormData)) throw new Error('Expected a message form')
+    return data
+  })
+  .handler(async ({ data }) => {
+    const { requireSignIn } = await import('./server/auth')
+    requireSignIn()
+    const { env } = await import('./server/env')
+    const id = Number(data.get('id'))
+    if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid topic')
+    data.delete('id')
+    const response = await fetch(`${env.coreUrl()}/admin/api/conversations/${id}/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${env.adminToken()}` },
+      body: data,
+    })
+    const result = (await response.json()) as {
+      error?: string
+      message_id?: number
+    }
+    if (!response.ok) throw new Error(result.error ?? 'Message failed')
+    return result
   })

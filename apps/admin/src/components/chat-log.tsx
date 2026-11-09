@@ -10,7 +10,7 @@ import { getMessages, type Message, type MessagePage } from '../api'
 import { clock, dayKey, dayLabel, plural, when } from '../format'
 import { keys, messagesQuery } from '../queries'
 import { EmptyState, ErrorNote } from '../ui'
-import { ClampedText } from '@/components/clamped-text'
+import { RichMessage, FilePreview } from './rich-message'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Spinner } from '@/components/ui/spinner'
@@ -23,14 +23,13 @@ const NEAR_BOTTOM = 72
 /** Within this many pixels of the top, the page before is loaded. */
 const NEAR_TOP = 240
 /** Longer messages are clamped to this many lines until you expand them. */
-const CLAMP_LINES = 12
 
 type Row =
   | { kind: 'top'; key: 'top' }
   | { kind: 'day'; key: string; iso: string }
   | { kind: 'message'; key: number; message: Message }
 
-export function ChatLog({ topicId, total }: { topicId: number; total: number }) {
+export function ChatLog({ topicId, total, targetMessage }: { topicId: number; total: number; targetMessage?: number }) {
   const { data, fetchNextPage, hasNextPage, isFetchingNextPage, isFetchNextPageError, error } =
     useSuspenseInfiniteQuery(messagesQuery(topicId))
   // Pages are newest first; within a page, oldest first.
@@ -151,6 +150,19 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
     if (el.scrollHeight <= el.clientHeight + 4) loadOlder()
   }, [hydrated, hasNextPage, isFetchingNextPage, isFetchNextPageError, firstId]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const jumpedTo = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (!targetMessage || !hydrated || jumpedTo.current === targetMessage) return
+    const index = rows.findIndex((r) => r.kind === 'message' && r.message.id === targetMessage)
+    if (index < 0) {
+      if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError) void fetchNextPage()
+      return
+    }
+    jumpedTo.current = targetMessage
+    atBottom.current = false
+    virtualizer.scrollToIndex(index, { align: 'center' })
+  }, [targetMessage, hydrated, rows, hasNextPage, isFetchingNextPage, isFetchNextPageError])
+
   function jumpToLatest() {
     const el = scroller.current
     atBottom.current = true // pinned first, so rows measured on the way down keep it at the end
@@ -195,7 +207,7 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
             if (atBottom.current && unseen > 0) setUnseen(0)
             if (el.scrollTop < NEAR_TOP && hasNextPage && !isFetchingNextPage && !isFetchNextPageError) loadOlder()
           }}
-          className="scroller relative h-[min(36rem,65dvh)] overflow-y-auto overscroll-contain rounded-xl border bg-background outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          className="scroller relative h-[clamp(16rem,calc(100dvh-29rem),36rem)] overflow-y-auto overscroll-contain rounded-xl border bg-background outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         >
           {hydrated ? (
             <ol ref={list} className="relative" style={{ height: virtualizer.getTotalSize() + gap }}>
@@ -223,7 +235,7 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
                         </span>
                       </h3>
                     ) : (
-                      <Bubble message={row.message} />
+                      <Bubble message={row.message} highlighted={row.message.id === targetMessage} />
                     )}
                   </li>
                 )
@@ -260,13 +272,25 @@ export function ChatLog({ topicId, total }: { topicId: number; total: number }) 
       <p className="sr-only" aria-live="polite">
         {unseen > 0 ? `${plural(unseen, 'new message')} below` : ''}
       </p>
-      {liveError && <ErrorNote title="Couldn’t load new messages">{liveError} Retrying with the next refresh.</ErrorNote>}
+      {liveError && (
+        <ErrorNote title="Couldn’t load new messages">{liveError} Retrying with the next refresh.</ErrorNote>
+      )}
     </div>
   )
 }
 
 /** The top of the log: load older, loading, failed, or the very beginning. */
-function Top({ failed, more, loading, onLoad }: { failed: string | null; more: boolean; loading: boolean; onLoad: () => void }) {
+function Top({
+  failed,
+  more,
+  loading,
+  onLoad,
+}: {
+  failed: string | null
+  more: boolean
+  loading: boolean
+  onLoad: () => void
+}) {
   return (
     <div className="flex min-h-12 items-center justify-center pt-3 pb-1">
       {failed ? (
@@ -288,13 +312,17 @@ function Top({ failed, more, loading, onLoad }: { failed: string | null; more: b
   )
 }
 
-function Bubble({ message: m }: { message: Message }) {
+function Bubble({ message: m, highlighted }: { message: Message; highlighted: boolean }) {
   return (
     <div
+      id={`message-${m.id}`}
       data-message-id={m.id}
+      data-highlight={highlighted || undefined}
       className={cn(
         'flex max-w-[min(65ch,88%)] min-w-0 flex-col gap-1 rounded-2xl px-3.5 py-2',
-        m.from_bot ? 'self-end rounded-br-md bg-accent text-accent-foreground' : 'self-start rounded-bl-md border bg-card',
+        m.from_bot
+          ? 'self-start rounded-bl-md border bg-card'
+          : 'self-end rounded-br-md bg-accent text-accent-foreground',
       )}
     >
       {/* Virtualized: day headings off screen aren't in the page, so each
@@ -302,25 +330,16 @@ function Bubble({ message: m }: { message: Message }) {
       <span className="sr-only">
         {m.from_bot ? 'Herbot' : 'You'}, {dayLabel(m.sent_at)} at {clock(m.sent_at)}:
       </span>
-      <ClampedText
-        lines={CLAMP_LINES}
-        className={cn('leading-relaxed', !m.body && 'text-muted-foreground italic')}
-        toggleClassName="text-[11px] leading-none"
-        footer={
-          <span className="flex items-center gap-2 text-[11px] leading-none text-muted-foreground">
-            {m.is_voice && (
-              <span className="inline-flex items-center gap-1">
-                <MicIcon className="size-3" aria-hidden /> voice note
-              </span>
-            )}
-            <time dateTime={m.sent_at} title={when(m.sent_at)}>
-              {clock(m.sent_at)}
-            </time>
-          </span>
-        }
-      >
-        {m.body || '(no text)'}
-      </ClampedText>
+      <RichMessage body={m.body} />
+      {m.attachments?.map((f) => (
+        <FilePreview key={f.path} file={f} />
+      ))}
+      <span className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        {m.is_voice && <MicIcon className="size-3" />}
+        <time dateTime={m.sent_at} title={when(m.sent_at)}>
+          {clock(m.sent_at)}
+        </time>
+      </span>
     </div>
   )
 }
