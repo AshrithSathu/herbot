@@ -53,7 +53,7 @@ export const topicQuery = (id: number) =>
     queryFn: () => getTopic({ data: id }),
     // Small (no messages), so polling is cheap. A changed message count is
     // what tells the chat log to fetch what's new.
-    refetchInterval: 10_000,
+    refetchInterval: 2_000,
   })
 
 /** A topic's history, newest page first; each next page is older. Pages

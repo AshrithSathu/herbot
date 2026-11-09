@@ -12,10 +12,13 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthedIndexRouteImport } from './routes/_authed/index'
+import { Route as AuthedConnectorsRouteImport } from './routes/_authed/connectors'
+import { Route as AuthedSearchRouteImport } from './routes/_authed/search'
 import { Route as AuthedLogsIndexRouteImport } from './routes/_authed/logs/index'
 import { Route as AuthedLogsIdRouteImport } from './routes/_authed/logs/$id'
 import { Route as AuthedTopicsIndexRouteImport } from './routes/_authed/topics/index'
 import { Route as AuthedTopicsIdRouteImport } from './routes/_authed/topics/$id'
+import { Route as ApiFilesSplatRouteImport } from './routes/api/files.$'
 
 const AuthedRoute = AuthedRouteImport.update({
   id: '/_authed',
@@ -29,6 +32,16 @@ const LoginRoute = LoginRouteImport.update({
 const AuthedIndexRoute = AuthedIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedConnectorsRoute = AuthedConnectorsRouteImport.update({
+  id: '/connectors',
+  path: '/connectors',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedSearchRoute = AuthedSearchRouteImport.update({
+  id: '/search',
+  path: '/search',
   getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedLogsIndexRoute = AuthedLogsIndexRouteImport.update({
@@ -51,20 +64,31 @@ const AuthedTopicsIdRoute = AuthedTopicsIdRouteImport.update({
   path: '/topics/$id',
   getParentRoute: () => AuthedRoute,
 } as any)
+const ApiFilesSplatRoute = ApiFilesSplatRouteImport.update({
+  id: '/api/files/$',
+  path: '/api/files/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthedIndexRoute
   '/login': typeof LoginRoute
+  '/connectors': typeof AuthedConnectorsRoute
+  '/search': typeof AuthedSearchRoute
   '/logs/$id': typeof AuthedLogsIdRoute
   '/topics/$id': typeof AuthedTopicsIdRoute
+  '/api/files/$': typeof ApiFilesSplatRoute
   '/logs/': typeof AuthedLogsIndexRoute
   '/topics/': typeof AuthedTopicsIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
+  '/connectors': typeof AuthedConnectorsRoute
+  '/search': typeof AuthedSearchRoute
   '/': typeof AuthedIndexRoute
   '/logs/$id': typeof AuthedLogsIdRoute
   '/topics/$id': typeof AuthedTopicsIdRoute
+  '/api/files/$': typeof ApiFilesSplatRoute
   '/logs': typeof AuthedLogsIndexRoute
   '/topics': typeof AuthedTopicsIndexRoute
 }
@@ -72,25 +96,48 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
+  '/_authed/connectors': typeof AuthedConnectorsRoute
+  '/_authed/search': typeof AuthedSearchRoute
   '/_authed/': typeof AuthedIndexRoute
   '/_authed/logs/$id': typeof AuthedLogsIdRoute
   '/_authed/topics/$id': typeof AuthedTopicsIdRoute
+  '/api/files/$': typeof ApiFilesSplatRoute
   '/_authed/logs/': typeof AuthedLogsIndexRoute
   '/_authed/topics/': typeof AuthedTopicsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/login' | '/logs/$id' | '/topics/$id' | '/logs/' | '/topics/'
+    | '/'
+    | '/login'
+    | '/connectors'
+    | '/search'
+    | '/logs/$id'
+    | '/topics/$id'
+    | '/api/files/$'
+    | '/logs/'
+    | '/topics/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/' | '/logs/$id' | '/topics/$id' | '/logs' | '/topics'
+  to:
+    | '/login'
+    | '/connectors'
+    | '/search'
+    | '/'
+    | '/logs/$id'
+    | '/topics/$id'
+    | '/api/files/$'
+    | '/logs'
+    | '/topics'
   id:
     | '__root__'
     | '/_authed'
     | '/login'
+    | '/_authed/connectors'
+    | '/_authed/search'
     | '/_authed/'
     | '/_authed/logs/$id'
     | '/_authed/topics/$id'
+    | '/api/files/$'
     | '/_authed/logs/'
     | '/_authed/topics/'
   fileRoutesById: FileRoutesById
@@ -98,6 +145,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AuthedRoute: typeof AuthedRouteWithChildren
   LoginRoute: typeof LoginRoute
+  ApiFilesSplatRoute: typeof ApiFilesSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -121,6 +169,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AuthedIndexRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/connectors': {
+      id: '/_authed/connectors'
+      path: '/connectors'
+      fullPath: '/connectors'
+      preLoaderRoute: typeof AuthedConnectorsRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/search': {
+      id: '/_authed/search'
+      path: '/search'
+      fullPath: '/search'
+      preLoaderRoute: typeof AuthedSearchRouteImport
       parentRoute: typeof AuthedRoute
     }
     '/_authed/logs/': {
@@ -151,10 +213,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedTopicsIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/api/files/$': {
+      id: '/api/files/$'
+      path: '/api/files/$'
+      fullPath: '/api/files/$'
+      preLoaderRoute: typeof ApiFilesSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 interface AuthedRouteChildren {
+  AuthedConnectorsRoute: typeof AuthedConnectorsRoute
+  AuthedSearchRoute: typeof AuthedSearchRoute
   AuthedIndexRoute: typeof AuthedIndexRoute
   AuthedLogsIdRoute: typeof AuthedLogsIdRoute
   AuthedTopicsIdRoute: typeof AuthedTopicsIdRoute
@@ -163,6 +234,8 @@ interface AuthedRouteChildren {
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedConnectorsRoute: AuthedConnectorsRoute,
+  AuthedSearchRoute: AuthedSearchRoute,
   AuthedIndexRoute: AuthedIndexRoute,
   AuthedLogsIdRoute: AuthedLogsIdRoute,
   AuthedTopicsIdRoute: AuthedTopicsIdRoute,
@@ -176,6 +249,7 @@ const AuthedRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   AuthedRoute: AuthedRouteWithChildren,
   LoginRoute: LoginRoute,
+  ApiFilesSplatRoute: ApiFilesSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
