@@ -61,6 +61,7 @@ pub fn router(state: Arc<AdminState>) -> Router {
         .route("/admin/api/conversations/{id}/messages", get(messages))
         .route("/admin/api/conversations/{id}/purpose", put(set_purpose))
         .route("/admin/api/conversations/{id}/enabled", put(set_enabled))
+        .route("/admin/api/conversations/{id}/voice", put(set_voice))
         .route(
             "/admin/api/conversations/{id}/wipe",
             post(wipe_conversation),
@@ -161,6 +162,8 @@ struct ConversationSummary {
     purpose: Option<String>,
     setup_state: &'static str,
     enabled: bool,
+    voice_replies: bool,
+    voice: String,
     messages: i64,
     last_activity: Option<DateTime<Utc>>,
     thread_link: Option<String>,
@@ -180,6 +183,8 @@ impl ConversationSummary {
             }),
             setup_state: status.setup_state.as_str(),
             enabled: status.enabled,
+            voice_replies: status.voice_replies,
+            voice: status.voice.clone(),
             messages: status.message_count,
             last_activity: status.last_message_at,
             thread_link: status.thread_link.clone(),
@@ -697,5 +702,33 @@ async fn save_preferences(
     match crate::personal::set_preferences(&state.pool, &state.agents_dir, &prefs).await {
         Ok(()) => ok(prefs),
         Err(e) => personal_fail(&state, e).await,
+    }
+}
+
+#[derive(Deserialize)]
+struct VoiceBody {
+    voice_replies: bool,
+    voice: String,
+}
+async fn set_voice(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<VoiceBody>,
+) -> Reply {
+    guard!(headers, state);
+    if !crate::speech::valid_voice(&body.voice) {
+        return fail(StatusCode::BAD_REQUEST, "unknown voice");
+    }
+    match crate::speech::set_voice(&state.pool, id, body.voice_replies, &body.voice).await {
+        Ok(()) => match summary(&state.pool, id).await {
+            Ok((s, _)) => ok(s),
+            Err(e) => db_fail(e),
+        },
+        Err(crate::speech::SpeechError::Db(sqlx::Error::RowNotFound)) => {
+            fail(StatusCode::NOT_FOUND, "no such conversation")
+        }
+        Err(crate::speech::SpeechError::Db(e)) => db_fail(e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }

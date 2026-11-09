@@ -48,7 +48,11 @@ It holds his custom instructions (follow them in every answer), what he's told y
 
 /// Ground rules other features add (voice, tasks, memory, …).
 fn feature_sections() -> Vec<&'static str> {
-    vec![PERSONAL_RULE, crate::personal::AGENTS_MD_SECTION]
+    vec![
+        PERSONAL_RULE,
+        crate::personal::AGENTS_MD_SECTION,
+        crate::speech::AGENTS_MD_SECTION,
+    ]
 }
 
 const GENERAL_TOOLS: &str = "## Your Herbot tools\n\

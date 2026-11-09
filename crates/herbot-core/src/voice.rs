@@ -1,7 +1,6 @@
 //! Voice notes become English text through OpenAI's transcription API.
 //!
-//! Codex (on the subscription) cannot take audio, so this is the one place
-//! Herbot calls OpenAI's API directly. English only, by design.
+//! Codex (on the subscription) cannot take audio, so Herbot transcribes it through OpenAI's API. English only, by design.
 
 use std::future::Future;
 use std::time::Duration;

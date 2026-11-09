@@ -233,6 +233,7 @@ impl H {
         let agents = tempfile::tempdir().unwrap();
         Self {
             deps: TurnDeps {
+                speaker: std::sync::Arc::new(herbot_core::speech::NoSpeaker),
                 pool,
                 api: Arc::new(FakeApi::default()),
                 runner: Arc::new(runner),
@@ -673,6 +674,7 @@ async fn lanes_run_one_turn_at_a_time_per_conversation_and_in_parallel_across(po
     let api = h.deps.api.clone();
     let runner = h.deps.runner.clone();
     let lanes = Lanes::new(TurnDeps {
+        speaker: std::sync::Arc::new(herbot_core::speech::NoSpeaker),
         pool: h.deps.pool.clone(),
         api: api.clone(),
         runner: runner.clone(),

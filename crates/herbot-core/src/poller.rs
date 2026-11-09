@@ -30,7 +30,7 @@ use crate::modes::{self, Mode, Style};
 use crate::policy::{self, Action, Rules};
 use crate::setup;
 use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
-use crate::telegram::{self, ButtonPress, ChatKind, Command, Inbound, InboundMessage};
+use crate::telegram::{self, ButtonPress, ChatKind, Command, InboundMessage};
 use crate::turns::{self, TurnJob, TurnQueue};
 use crate::voice::{MAX_VOICE_SECONDS, Transcriber, VoiceError};
 use crate::wipe;
@@ -81,6 +81,16 @@ pub trait TelegramApi: Send + Sync {
         message_id: i32,
         text: &str,
     ) -> impl Future<Output = Result<(), ApiError>> + Send;
+
+    fn edit_buttons(
+        &self,
+        chat: i64,
+        message: i32,
+        text: &str,
+        _rows: &[Vec<(String, String)>],
+    ) -> impl Future<Output = Result<(), ApiError>> + Send {
+        self.edit_text(chat, message, text)
+    }
 
     /// Removes the buttons under a bot message, keeping its text.
     fn remove_buttons(
@@ -325,6 +335,30 @@ impl TelegramApi for BotApi {
             .map_err(api_err)
     }
 
+    async fn edit_buttons(
+        &self,
+        chat: i64,
+        message: i32,
+        text: &str,
+        rows: &[Vec<(String, String)>],
+    ) -> Result<(), ApiError> {
+        let keyboard = InlineKeyboardMarkup::new(rows.iter().map(|row| {
+            row.iter()
+                .map(|(label, data)| InlineKeyboardButton::callback(label.clone(), data.clone()))
+                .collect::<Vec<_>>()
+        }));
+        match self
+            .0
+            .edit_message_text(ChatId(chat), MessageId(message), text)
+            .reply_markup(keyboard)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(teloxide::RequestError::Api(teloxide::ApiError::MessageNotModified)) => Ok(()),
+            Err(err) => Err(api_err(err)),
+        }
+    }
+
     async fn remove_buttons(&self, chat_id: i64, message_id: i32) -> Result<(), ApiError> {
         match self
             .0
@@ -509,6 +543,7 @@ impl TelegramApi for BotApi {
 /// Everything the handler needs.
 pub struct Ctx<'a, A: TelegramApi, T: Transcriber> {
     pub pool: &'a PgPool,
+    pub speaker: &'a dyn crate::speech::Speaker,
     pub api: &'a A,
     pub transcriber: &'a T,
     pub rules: Rules,
@@ -533,6 +568,8 @@ pub enum HandleError {
     Api(#[from] ApiError),
     #[error(transparent)]
     Voice(#[from] VoiceError),
+    #[error(transparent)]
+    Speech(#[from] crate::speech::SpeechError),
     #[error("could not write AGENTS.md: {0}")]
     AgentsMd(#[from] std::io::Error),
     #[error(transparent)]
@@ -557,6 +594,7 @@ impl HandleError {
             HandleError::Personal(_) => "personal.write",
             HandleError::Db(_) => "telegram.handle_db",
             HandleError::Api(_) => "telegram.handle_api",
+            HandleError::Speech(_) => "speech.command",
             HandleError::Voice(_) => "voice.transcribe",
             HandleError::AgentsMd(_) => "agents_md.write",
             HandleError::T3(_) => "t3.project_remove",
@@ -571,6 +609,9 @@ pub const SEEN_REACTION: &str = "👀";
 pub const HELP_TEXT: &str = "Herbot: your private bot.\n\n\
 General is the everyday chat. Every other topic is its own agent with its own memory.\n\n\
 /setup: set what this conversation is for\n\
+/voice: spoken replies and voice picker\n\
+/speak: reply to a bot message to read it aloud once\n\
+/persona: choose a purpose preset and matching voice\n\
 /status: this conversation's details\n\
 /new: wipe this topic's chat and start fresh (keeps its purpose)\n\
 /forget: wipe this topic completely, purpose included\n\
@@ -961,6 +1002,9 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     press: &ButtonPress,
 ) -> Result<(), HandleError> {
+    if press.data.starts_with("voice:") || press.data.starts_with("persona:") {
+        return crate::speech::button(ctx, press).await;
+    }
     let chat = press.chat.tg_chat_id;
     if press.data.starts_with("mem:") {
         return handle_memory_button(ctx, press).await;
@@ -1166,6 +1210,9 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
     cmd: Command,
 ) -> Result<(), HandleError> {
     let text = match cmd {
+        Command::Voice(_) | Command::Speak | Command::Persona => {
+            return crate::speech::command(ctx, msg, &cmd).await;
+        }
         Command::Start | Command::Help => HELP_TEXT.to_string(),
         Command::Memory => {
             return memory_page(ctx, msg.chat.tg_chat_id, msg.topic_id, 0).await;
@@ -1321,25 +1368,24 @@ pub async fn process<A: TelegramApi, T: Transcriber>(
         }
     };
 
-    // Fail loud: tell the admin where it happened, if it was their message.
-    if let Some(Inbound::Message(msg)) = telegram::normalize(update, ctx.bot_username)
-        && msg.from_user_id == ctx.rules.admin_user_id
-        && msg.chat.kind != ChatKind::Private
-    {
+    // Reapply the policy before reporting: strangers and other chats stay silent.
+    let target = telegram::normalize(update, ctx.bot_username)
+        .map(|inbound| policy::decide(inbound, &ctx.rules))
+        .and_then(|action| match action {
+            Action::Store(msg) | Action::RunCommand(msg, _) => {
+                Some((msg.chat.tg_chat_id, msg.topic_id, msg.message_id))
+            }
+            Action::Button(press) => {
+                Some((press.chat.tg_chat_id, press.topic_id, press.message_id))
+            }
+            _ => None,
+        });
+    if let Some((chat, topic, message)) = target {
         let text = format!(
             "❌ Failed ({error_id}): {}. Check logs.",
             short_reason(&err)
         );
-        if let Err(send_err) = ctx
-            .api
-            .send_text(
-                msg.chat.tg_chat_id,
-                msg.topic_id,
-                Some(msg.message_id),
-                &text,
-            )
-            .await
-        {
+        if let Err(send_err) = ctx.api.send_text(chat, topic, Some(message), &text).await {
             tracing::error!(%error_id, error = %send_err, "could not tell the admin about the failure");
         }
     }
@@ -1349,6 +1395,7 @@ pub async fn process<A: TelegramApi, T: Transcriber>(
 fn short_reason(err: &HandleError) -> String {
     let reason = match err {
         HandleError::Personal(err) => return setup::clip(&err.to_string(), 200),
+        HandleError::Speech(_) => "speech or voice settings failed",
         HandleError::Db(_) => "database error",
         HandleError::Api(_) => "Telegram API error",
         HandleError::Voice(VoiceError::NotConfigured) => "voice notes are off (no OPENAI_API_KEY)",
@@ -1389,6 +1436,7 @@ pub struct RunSettings<A: TelegramApi, T: Transcriber> {
     pub rules: Rules,
     pub bot_username: String,
     pub transcriber: T,
+    pub speaker: Arc<dyn crate::speech::Speaker>,
     /// Absolute path of the conversation folders.
     pub agents_dir: std::path::PathBuf,
     pub agent_label: String,
@@ -1437,6 +1485,7 @@ impl<A: TelegramApi, T: Transcriber> Shared<A, T> {
         let s = &self.settings;
         Ctx {
             pool: &self.pool,
+            speaker: &*s.speaker,
             api: &*s.api,
             transcriber: &s.transcriber,
             rules: s.rules,

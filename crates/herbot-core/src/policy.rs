@@ -191,6 +191,7 @@ mod tests {
             attachment: None,
             files: Vec::new(),
             media_group_id: None,
+            replied_bot_text: None,
             reply_to_message_id: None,
             sent_at: Utc::now(),
             command,

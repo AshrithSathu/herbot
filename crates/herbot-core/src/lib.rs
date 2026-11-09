@@ -35,6 +35,7 @@ pub mod policy;
 pub mod poller;
 pub mod setup;
 pub mod simulate;
+pub mod speech;
 pub mod store;
 pub mod telegram;
 pub mod telemetry;
