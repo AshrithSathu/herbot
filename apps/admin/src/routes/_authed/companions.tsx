@@ -124,6 +124,8 @@ function VoiceConversation({
     recorder?: MediaRecorder
     stream?: MediaStream
     audio?: HTMLAudioElement
+    source?: MediaElementAudioSourceNode
+    analyser?: AnalyserNode
     context?: AudioContext
     url?: string
     timer?: ReturnType<typeof setTimeout>
@@ -138,10 +140,18 @@ function VoiceConversation({
     m.audio = undefined
     if (m.url) URL.revokeObjectURL(m.url)
     m.url = undefined
-    void m.context?.close()
-    m.context = undefined
+    m.source?.disconnect()
+    m.analyser?.disconnect()
+    m.source = undefined
+    m.analyser = undefined
     setAnalyser(null)
     setHasAudio(false)
+  }
+  function unlockAudio() {
+    const context = media.current.context ?? new AudioContext()
+    media.current.context = context
+    void context.resume().catch(() => {})
+    return context
   }
   useEffect(() => {
     active.current = true
@@ -197,6 +207,7 @@ function VoiceConversation({
     setMessages((old) => [...old, { role: 'you', text }])
     setPhase('thinking')
     try {
+      const context = unlockAudio()
       const reply = await companionReply({
         data: {
           id: session.id,
@@ -219,18 +230,25 @@ function VoiceConversation({
       media.current.audio = audio
       setHasAudio(true)
       audio.onplay = () => setPhase('speaking')
-      const context = new AudioContext()
-      media.current.context = context
       const node = context.createAnalyser()
       node.fftSize = 256
-      context.createMediaElementSource(audio).connect(node)
+      const source = context.createMediaElementSource(audio)
+      media.current.source = source
+      media.current.analyser = node
+      source.connect(node)
       node.connect(context.destination)
       setAnalyser(node)
       audio.onended = () => {
         stopPlayback()
         if (active.current) setPhase('idle')
       }
-      await context.resume()
+      audio.onerror = () => {
+        setError('Audio playback failed. Try sending a new message.')
+        stopPlayback()
+        setPhase('idle')
+      }
+      if (context.state !== 'running')
+        throw new Error('Your browser paused audio. Tap Play reply to hear it.')
       await audio.play()
       setPhase('speaking')
     } catch (e) {
@@ -255,6 +273,7 @@ function VoiceConversation({
     setPhase('connecting')
     busy.current = true
     try {
+      unlockAudio()
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder)
         throw new Error(
           'Microphone recording needs a supported browser on HTTPS or localhost. You can type below.',
