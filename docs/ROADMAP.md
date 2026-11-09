@@ -76,6 +76,7 @@ Built as part of Step 4: typing indicator, secret scrubbing, splitting, quoted r
 ## Step 9: Isolated bots-T3 and VPS deploy
 - [ ] bots-T3 container: separate user, no host mounts except `bots/`, resource limits, rebuildable
 - [ ] Production `docker-compose`, webhook or long polling, Tailscale-only admin, nightly encrypted Postgres backup
+- [ ] Admin panel on real hardware (deferred from Step 8 on 2026-11-09): iPhone sheet clears the home indicator, the purpose box stays above the keyboard, history flick-scrolls smoothly on a mid-range Android, VoiceOver reads a topic well
 - Done when: a fresh VPS comes up from the README alone.
 
 ## Step 10: Hardening
