@@ -98,3 +98,7 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 ## Step 11: Hardening
 - [ ] Rate limits, retention job, health alerts to the admin
 - Done when: a week runs with no manual restarts.
+
+## Step 11: Review and performance
+- Header sanitization handles Unicode case expansion without panicking; outbound file resolution rejects sibling topics, including symlink escapes.
+- Verification results are recorded in the review report; no live bot or database checks are used.
