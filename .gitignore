@@ -9,3 +9,6 @@ node_modules/
 # Per-conversation AGENTS.md files (personal content, never committed)
 /agents
 /target-agents/
+
+# Local database backups (private chat history)
+backups/
