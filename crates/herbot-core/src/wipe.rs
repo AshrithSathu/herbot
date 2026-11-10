@@ -1,7 +1,13 @@
-//! Confirm-with-buttons for `/new` and `/forget`: the button data, the
-//! texts, and how long a confirmation stays valid. Pure; see `poller`.
+//! Clean sweeps: [`run`] deletes a conversation in T3 and in Herbot, and
+//! the rest is the confirm-with-buttons flow for `/new` and `/forget` (button
+//! data, texts, and how long a confirmation stays valid).
 
-use crate::store::Wiped;
+use std::path::Path;
+
+use sqlx::PgPool;
+
+use crate::agent::{AgentError, ProjectCleaner};
+use crate::store::{self, ConversationStatus, Wiped};
 
 /// A confirmation older than this is refused (send the command again).
 pub const CONFIRM_TTL_SECS: i64 = 10 * 60;
@@ -110,6 +116,69 @@ pub fn done(kind: WipeKind, wiped: Wiped) -> String {
             wiped.threads, wiped.messages
         ),
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WipeError {
+    #[error("database error: {0}")]
+    Db(#[from] sqlx::Error),
+    #[error(transparent)]
+    T3(#[from] AgentError),
+    #[error("could not delete AGENTS.md: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// The clean sweep behind `/new`, `/forget` and the admin panel's wipe.
+///
+/// Deletes the conversation's T3 project (with all its threads) first, and
+/// only then its Herbot history, so the two never disagree. The project is
+/// found through Herbot's own threads and removed by exact id, and only if
+/// every thread in it is one Herbot started: a project holding anything else
+/// (say, the herbot repo's own project) is never touched. `Forget` also
+/// clears the purpose and deletes AGENTS.md.
+pub async fn run(
+    pool: &PgPool,
+    projects: &dyn ProjectCleaner,
+    agents_dir: &Path,
+    status: &ConversationStatus,
+    kind: WipeKind,
+) -> Result<Wiped, WipeError> {
+    let ours = store::all_thread_ids(pool, status.conversation_id).await?;
+    let mut found = std::collections::BTreeSet::new();
+    for thread in &ours {
+        if let Some(project) = projects.project_of_thread(thread).await? {
+            found.insert(project);
+        }
+    }
+    for project in &found {
+        let inside = projects.threads_in_project(project).await?;
+        if let Some(foreign) = inside.iter().find(|t| !ours.contains(t)) {
+            return Err(AgentError::Project(format!(
+                "T3 project {project} also holds thread {foreign}, which Herbot didn't start; not deleting it"
+            ))
+            .into());
+        }
+        projects.remove_project(project).await?;
+    }
+    let wiped = store::wipe_conversation(pool, status.conversation_id).await?;
+    if kind == WipeKind::Forget
+        && let Some(path) = store::reset_setup(pool, status.conversation_id).await?
+    {
+        match tokio::fs::remove_file(agents_dir.join(path)).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    tracing::info!(
+        conversation_id = status.conversation_id,
+        projects = found.len(),
+        threads = wiped.threads,
+        messages = wiped.messages,
+        ?kind,
+        "wiped conversation"
+    );
+    Ok(wiped)
 }
 
 pub const CANCELLED: &str = "Cancelled. Nothing was deleted.";

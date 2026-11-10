@@ -29,7 +29,11 @@ pub struct ConversationStatus {
     pub is_forum: bool,
     pub tg_topic_id: Option<i32>,
     pub topic_name: Option<String>,
+    /// Switched off in the admin panel: messages there are ignored.
+    pub enabled: bool,
     pub message_count: i64,
+    /// When the newest stored message was sent.
+    pub last_message_at: Option<DateTime<Utc>>,
     pub bot_name: Option<String>,
     pub thread_id: Option<String>,
     pub purpose: Option<String>,
@@ -55,14 +59,30 @@ impl ConversationStatus {
     }
 }
 
-/// Where a conversation is in "what should I be here?" setup.
+/// Where a conversation is in "what should I be here?" setup
+/// (`conversations.setup_state`). Every transition, and what triggers it:
+///
+/// | from | to | trigger | where |
+/// |---|---|---|---|
+/// | New | Ready | General's first message (default purpose) | `poller::continue_setup` |
+/// | New | AwaitingPurpose | a topic's first message (greeting) | `poller::send_greeting` |
+/// | any | AwaitingPurpose | `/setup` | `poller::send_greeting`, [`begin_setup`] |
+/// | AwaitingPurpose | Ready | a message of 3+ words becomes the purpose | [`set_purpose`] |
+/// | AwaitingPurpose (had a purpose) | Ready | "Keep the current purpose" button | [`keep_purpose`] |
+/// | any | Ready | the admin panel saves a purpose | [`set_purpose`] |
+/// | any | New | `/forget` | [`reset_setup`] |
+///
+/// Ready always has a purpose (`conversations_ready_has_purpose`). Only
+/// Ready hands messages to the agent; while AwaitingPurpose, the next
+/// message is the purpose. See docs/STATE_MACHINES.md for every other one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupState {
     /// Nobody has asked yet.
     New,
     /// The greeting was sent; the next admin message becomes the purpose.
+    /// After `/setup`, the old purpose is still there until it's replaced.
     AwaitingPurpose,
-    /// Has a purpose.
+    /// Has a purpose; messages go to the agent.
     Ready,
 }
 
@@ -72,6 +92,15 @@ impl SetupState {
             "awaiting_purpose" => SetupState::AwaitingPurpose,
             "ready" => SetupState::Ready,
             _ => SetupState::New,
+        }
+    }
+
+    /// The stored name (`conversations.setup_state`, the admin API).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SetupState::New => "new",
+            SetupState::AwaitingPurpose => "awaiting_purpose",
+            SetupState::Ready => "ready",
         }
     }
 }
@@ -211,64 +240,111 @@ pub async fn conversation_status(
     conversation_status_by_id(pool, conversation_id).await
 }
 
+/// One row of `status_select!`; the count and last activity are kept on the
+/// conversation by triggers (migration 0008), so this never scans messages.
+#[derive(sqlx::FromRow)]
+struct StatusRow {
+    id: i64,
+    tg_chat_id: i64,
+    title: String,
+    kind: String,
+    is_forum: bool,
+    tg_topic_id: Option<i32>,
+    name: String,
+    enabled: bool,
+    message_count: i64,
+    last_message_at: Option<DateTime<Utc>>,
+    bot_name: Option<String>,
+    t3_thread_id: Option<String>,
+    t3_link: Option<String>,
+    purpose: Option<String>,
+    setup_state: String,
+    agents_md_path: Option<String>,
+    agents_md_updated_at: Option<DateTime<Utc>>,
+    t3_project_registered: bool,
+}
+
+/// The status query with `$rest` (a WHERE / ORDER BY literal) appended, as
+/// one static string. A conversation has at most one thread
+/// (`agent_threads_one_per_conversation`), so the join adds no rows.
+macro_rules! status_select {
+    ($rest:literal) => {
+        concat!(
+            "SELECT v.id, c.tg_chat_id, c.title, c.kind, c.is_forum, v.tg_topic_id,
+            v.name, v.enabled, v.message_count, v.last_message_at, b.name AS bot_name,
+            t.t3_thread_id, t.t3_link, v.purpose, v.setup_state, v.agents_md_path,
+            v.agents_md_updated_at, v.t3_project_registered
+     FROM conversations v
+     JOIN chats c ON c.id = v.chat_id
+     LEFT JOIN bots b ON b.id = v.bot_id
+     LEFT JOIN agent_threads t ON t.conversation_id = v.id ",
+            $rest
+        )
+    };
+}
+
+impl From<StatusRow> for ConversationStatus {
+    fn from(row: StatusRow) -> Self {
+        ConversationStatus {
+            conversation_id: row.id,
+            tg_chat_id: row.tg_chat_id,
+            chat_title: row.title,
+            chat_kind: row.kind,
+            is_forum: row.is_forum,
+            tg_topic_id: row.tg_topic_id,
+            topic_name: row.tg_topic_id.map(|_| row.name).filter(|n| !n.is_empty()),
+            enabled: row.enabled,
+            message_count: row.message_count,
+            last_message_at: row.last_message_at,
+            bot_name: row.bot_name,
+            thread_id: row.t3_thread_id,
+            purpose: row.purpose,
+            setup_state: SetupState::parse(&row.setup_state),
+            agents_md_path: row.agents_md_path,
+            agents_md_updated_at: row.agents_md_updated_at,
+            t3_project_registered: row.t3_project_registered,
+            thread_link: row.t3_link,
+        }
+    }
+}
+
 pub async fn conversation_status_by_id(
     pool: &PgPool,
     conversation_id: i64,
 ) -> Result<ConversationStatus, sqlx::Error> {
-    #[allow(clippy::type_complexity)]
-    let row: (
-        String,
-        String,
-        bool,
-        Option<i32>,
-        String,
-        i64,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<DateTime<Utc>>,
-        bool,
-        Option<String>,
-        i64,
-    ) = sqlx::query_as(
-        "SELECT c.title, c.kind, c.is_forum, v.tg_topic_id, v.name,
-                (SELECT count(*) FROM messages m WHERE m.conversation_id = v.id),
-                b.name,
-                (SELECT t.t3_thread_id FROM agent_threads t
-                  WHERE t.conversation_id = v.id AND t.status = 'active'),
-                v.purpose, v.setup_state, v.agents_md_path,
-                v.agents_md_updated_at, v.t3_project_registered,
-                (SELECT t.t3_link FROM agent_threads t
-                  WHERE t.conversation_id = v.id AND t.status = 'active'),
-                c.tg_chat_id
-         FROM conversations v
-         JOIN chats c ON c.id = v.chat_id
-         LEFT JOIN bots b ON b.id = v.bot_id
-         WHERE v.id = $1",
-    )
-    .bind(conversation_id)
-    .fetch_one(pool)
+    let row: StatusRow = sqlx::query_as(status_select!("WHERE v.id = $1"))
+        .bind(conversation_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(row.into())
+}
+
+/// Every conversation the admin panel lists (chats the bot hasn't left), in
+/// one query: each chat's General first, then its topics in order.
+pub async fn listed_conversations(pool: &PgPool) -> Result<Vec<ConversationStatus>, sqlx::Error> {
+    let rows: Vec<StatusRow> = sqlx::query_as(status_select!(
+        "WHERE c.status <> 'left'
+         ORDER BY c.id, (v.tg_topic_id IS NOT NULL), v.tg_topic_id"
+    ))
+    .fetch_all(pool)
     .await?;
-    Ok(ConversationStatus {
-        conversation_id,
-        tg_chat_id: row.14,
-        chat_title: row.0,
-        chat_kind: row.1,
-        is_forum: row.2,
-        tg_topic_id: row.3,
-        topic_name: row.3.map(|_| row.4).filter(|n| !n.is_empty()),
-        message_count: row.5,
-        bot_name: row.6,
-        thread_id: row.7,
-        purpose: row.8,
-        setup_state: SetupState::parse(&row.9),
-        agents_md_path: row.10,
-        agents_md_updated_at: row.11,
-        t3_project_registered: row.12,
-        thread_link: row.13,
-    })
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+/// A group's enabled conversations in one query: General first, then the
+/// most recently active topics.
+pub async fn group_conversations(
+    pool: &PgPool,
+    chat_row_id: i64,
+) -> Result<Vec<ConversationStatus>, sqlx::Error> {
+    let rows: Vec<StatusRow> = sqlx::query_as(status_select!(
+        "WHERE v.chat_id = $1 AND v.enabled
+         ORDER BY (v.tg_topic_id IS NOT NULL), v.last_message_at DESC NULLS LAST, v.id"
+    ))
+    .bind(chat_row_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// The conversation for (chat, topic), if it exists. Used for button taps,
@@ -288,23 +364,46 @@ pub async fn find_conversation(
     .await
 }
 
-/// Marks setup as started and remembers the greeting message (for removing
-/// its buttons later).
+/// Marks setup as started (→ AwaitingPurpose) and remembers the prompt
+/// message, if it has a button. Returns the previous prompt's message id, if
+/// it had one, so its button can be removed.
 pub async fn begin_setup(
     pool: &PgPool,
     conversation_id: i64,
     prompt_message_id: Option<i32>,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "UPDATE conversations
+) -> Result<Option<i32>, sqlx::Error> {
+    let old: Option<Option<i32>> = sqlx::query_scalar(
+        "UPDATE conversations c
          SET setup_state = 'awaiting_purpose', setup_prompt_tg_message_id = $2
-         WHERE id = $1",
+         FROM (SELECT id, setup_prompt_tg_message_id AS old FROM conversations WHERE id = $1) o
+         WHERE c.id = o.id
+         RETURNING o.old",
     )
     .bind(conversation_id)
     .bind(prompt_message_id)
-    .execute(pool)
+    .fetch_optional(pool)
+    .await?;
+    Ok(old.flatten())
+}
+
+/// "Keep the current purpose" after `/setup`: back to Ready with the purpose
+/// unchanged. Only from AwaitingPurpose with a purpose to keep; returns the
+/// prompt's message id (to remove its button), or `None` if the move isn't
+/// allowed any more (already replaced, kept, or forgotten).
+pub async fn keep_purpose(
+    pool: &PgPool,
+    conversation_id: i64,
+) -> Result<Option<Option<i32>>, sqlx::Error> {
+    sqlx::query_scalar(
+        "UPDATE conversations c
+         SET setup_state = 'ready', setup_prompt_tg_message_id = NULL
+         FROM (SELECT id, setup_prompt_tg_message_id AS old FROM conversations WHERE id = $1) o
+         WHERE c.id = o.id AND c.setup_state = 'awaiting_purpose' AND c.purpose IS NOT NULL
+         RETURNING o.old",
+    )
+    .bind(conversation_id)
+    .fetch_optional(pool)
     .await
-    .map(|_| ())
 }
 
 /// Saves the purpose and finishes setup. Returns the greeting message ID, if
@@ -375,6 +474,49 @@ pub async fn save_offset(pool: &PgPool, offset: i32) -> Result<(), sqlx::Error> 
     .map(|_| ())
 }
 
+/// Saves admin updates to the inbox and moves the poll offset past the whole
+/// batch, in one transaction: an update is either acknowledged and saved, or
+/// neither (and Telegram sends it again).
+pub async fn inbox_save(
+    pool: &PgPool,
+    updates: &[(i64, serde_json::Value)],
+    next_offset: i32,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for (update_id, body) in updates {
+        sqlx::query("INSERT INTO inbox (update_id, body) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(update_id)
+            .bind(body)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query(
+        "INSERT INTO kv (key, value) VALUES ($1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+    )
+    .bind(OFFSET_KEY)
+    .bind(json!(next_offset))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
+}
+
+/// Updates saved but not yet handled, oldest first.
+pub async fn inbox_pending(pool: &PgPool) -> Result<Vec<(i64, serde_json::Value)>, sqlx::Error> {
+    sqlx::query_as("SELECT update_id, body FROM inbox ORDER BY update_id")
+        .fetch_all(pool)
+        .await
+}
+
+/// An update has been handled (successfully or with its error recorded).
+pub async fn inbox_done(pool: &PgPool, update_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM inbox WHERE update_id = $1")
+        .bind(update_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
 /// The conversation's current T3 thread.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct ActiveThread {
@@ -390,14 +532,15 @@ pub async fn active_thread(
 ) -> Result<Option<ActiveThread>, sqlx::Error> {
     sqlx::query_as::<_, ActiveThread>(
         "SELECT id, t3_thread_id, created_at, last_turn_at FROM agent_threads
-         WHERE conversation_id = $1 AND status = 'active'",
+         WHERE conversation_id = $1",
     )
     .bind(conversation_id)
     .fetch_optional(pool)
     .await
 }
 
-/// Records a newly started thread as the conversation's active one.
+/// Records a newly started thread as the conversation's thread (it has at
+/// most one; `/new` and `/forget` delete it).
 pub async fn insert_thread(
     pool: &PgPool,
     conversation_id: i64,
@@ -423,41 +566,6 @@ pub async fn touch_thread(pool: &PgPool, thread_row_id: i64) -> Result<(), sqlx:
         .execute(pool)
         .await
         .map(|_| ())
-}
-
-/// `/new`: archives the active thread. Returns its T3 id if there was one.
-pub async fn archive_thread(
-    pool: &PgPool,
-    conversation_id: i64,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "UPDATE agent_threads SET status = 'archived', archived_at = now()
-         WHERE conversation_id = $1 AND status = 'active'
-         RETURNING t3_thread_id",
-    )
-    .bind(conversation_id)
-    .fetch_optional(pool)
-    .await
-}
-
-/// `/forget`: deletes the conversation's stored messages and archives its
-/// thread. Returns how many messages were deleted.
-pub async fn forget_conversation(pool: &PgPool, conversation_id: i64) -> Result<u64, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let deleted = sqlx::query("DELETE FROM messages WHERE conversation_id = $1")
-        .bind(conversation_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    sqlx::query(
-        "UPDATE agent_threads SET status = 'archived', archived_at = now()
-         WHERE conversation_id = $1 AND status = 'active'",
-    )
-    .bind(conversation_id)
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(deleted)
 }
 
 pub async fn mark_project_registered(
@@ -534,8 +642,8 @@ pub async fn create_question(
     options: &[String],
 ) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
-        "INSERT INTO pending_questions (thread_id, source, question, options)
-         VALUES ($1, 'ask_admin', $2, $3) RETURNING id",
+        "INSERT INTO pending_questions (thread_id, question, options)
+         VALUES ($1, $2, $3) RETURNING id",
     )
     .bind(thread_row_id)
     .bind(question)
@@ -671,7 +779,7 @@ pub async fn reset_setup(
     Ok(old.flatten())
 }
 
-/// Every T3 thread Herbot started for a conversation (active or archived).
+/// Every T3 thread Herbot started for a conversation (at most one).
 pub async fn all_thread_ids(
     pool: &PgPool,
     conversation_id: i64,

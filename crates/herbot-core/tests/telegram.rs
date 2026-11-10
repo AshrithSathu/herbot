@@ -21,8 +21,8 @@ use herbot_core::agent::{AgentError, BoxFuture, ProjectCleaner};
 use herbot_core::errors::ErrorId;
 use herbot_core::policy::{LEFT_ADDED_BY_STRANGER, LEFT_OUTSIDE_HOME, Rules};
 use herbot_core::poller::{
-    self, ALREADY_ANSWERED_TOAST, ApiError, Ctx, HELP_TEXT, SEEN_REACTION, TelegramApi,
-    WELCOME_TEXT,
+    self, ALREADY_ANSWERED_TOAST, ApiError, Ctx, HELP_TEXT, InboundLanes, Route, RunSettings,
+    SEEN_REACTION, TelegramApi, WELCOME_TEXT,
 };
 use herbot_core::setup;
 use herbot_core::store;
@@ -804,7 +804,15 @@ async fn setup_command_rewrites_the_agents_md(pool: PgPool) {
     h.api.clear();
 
     h.run(&["admin_setup_in_topic"]).await;
-    assert_eq!(h.api.sent_texts(), [setup::greeting("Herbot HQ › topic 7")]);
+    // It already has a purpose: say the next message replaces it, with a way out.
+    assert_eq!(
+        h.api.calls(),
+        [Call::SendButtons {
+            chat: HQ,
+            text: setup::new_purpose_prompt("Herbot HQ › topic 7"),
+            rows: setup::keep_button(topic7_id(&h).await),
+        }]
+    );
     let (_, state, _, _) = h.setup_row(Some(7)).await;
     assert_eq!(state, "awaiting_purpose");
 
@@ -818,6 +826,119 @@ async fn setup_command_rewrites_the_agents_md(pool: PgPool) {
     assert!(
         md.contains("what about rmcp?") && !md.contains("and compare them"),
         "{md}"
+    );
+}
+
+async fn topic7_id(h: &H) -> i64 {
+    h.count("SELECT id FROM conversations WHERE tg_topic_id = 7")
+        .await
+}
+
+/// A tap on "Keep the current purpose" (on bot message 500).
+fn keep_tap(conversation_id: i64) -> Update {
+    let mut update = fixture("button_research_topic7");
+    if let teloxide::types::UpdateKind::CallbackQuery(q) = &mut update.kind {
+        q.data = Some(setup::keep_button(conversation_id)[0][0].1.clone());
+    }
+    update
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn after_setup_the_current_purpose_can_be_kept(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&["admin_topic_text", "admin_topic_reply"]).await;
+    let (before, ..) = h.setup_row(Some(7)).await;
+    h.run(&["admin_setup_in_topic"]).await;
+    let (_, state, prompt, _) = h.setup_row(Some(7)).await;
+    assert_eq!((state.as_str(), prompt), ("awaiting_purpose", Some(900)));
+    h.api.clear();
+
+    let id = topic7_id(&h).await;
+    assert!(
+        poller::process(&h.ctx(LOCKED), &keep_tap(id))
+            .await
+            .is_none()
+    );
+    assert_eq!(
+        h.api.calls()[0],
+        Call::Edit {
+            chat: HQ,
+            message_id: 500,
+            text: setup::KEPT.to_string(),
+        }
+    );
+    let (after, state, prompt, _) = h.setup_row(Some(7)).await;
+    assert_eq!((state.as_str(), prompt), ("ready", None));
+    assert_eq!(after, before, "the purpose is unchanged");
+
+    // Messages go to the agent again instead of becoming the purpose.
+    let turns = h.jobs.all().len();
+    h.run(&["admin_topic_third"]).await;
+    assert_eq!(h.jobs.all().len(), turns + 1);
+    assert_eq!(h.setup_row(Some(7)).await.0, before);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn keep_does_nothing_once_the_purpose_was_replaced(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&[
+        "admin_topic_text",
+        "admin_topic_reply",
+        "admin_setup_in_topic",
+        "admin_topic_third",
+    ])
+    .await;
+    let (replaced, state, _, _) = h.setup_row(Some(7)).await;
+    assert_eq!(
+        (replaced.as_deref(), state.as_str()),
+        (Some("what about rmcp?"), "ready")
+    );
+    h.api.clear();
+
+    let id = topic7_id(&h).await;
+    assert!(
+        poller::process(&h.ctx(LOCKED), &keep_tap(id))
+            .await
+            .is_none()
+    );
+    let calls = h.api.calls();
+    assert!(
+        matches!(&calls[0], Call::Answer { toast: Some(t), .. } if t == setup::NOTHING_TO_KEEP_TOAST),
+        "{calls:?}"
+    );
+    assert_eq!(
+        calls[1],
+        Call::RemoveButtons {
+            chat: HQ,
+            message_id: 500
+        }
+    );
+    assert_eq!(
+        h.setup_row(Some(7)).await.0.as_deref(),
+        Some("what about rmcp?")
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_second_setup_leaves_one_keep_button(pool: PgPool) {
+    let h = H::new(pool);
+    h.run(&[
+        "admin_topic_text",
+        "admin_topic_reply",
+        "admin_setup_in_topic",
+    ])
+    .await;
+    h.api.clear();
+    h.run(&["admin_setup_in_topic"]).await;
+    let calls = h.api.calls();
+    assert!(matches!(calls[0], Call::SendButtons { .. }), "{calls:?}");
+    // The first prompt (the fake numbers every sent message 900) loses its button.
+    assert_eq!(
+        calls[1],
+        Call::RemoveButtons {
+            chat: HQ,
+            message_id: 900
+        }
     );
 }
 
@@ -1305,8 +1426,8 @@ async fn open_question(h: &H) -> i64 {
     .await
     .unwrap();
     let id: i64 = sqlx::query_scalar(
-        r#"INSERT INTO pending_questions (thread_id, source, question, options, tg_message_id)
-           SELECT id, 'ask_admin', 'There are 42 old logs.',
+        r#"INSERT INTO pending_questions (thread_id, question, options, tg_message_id)
+           SELECT id, 'There are 42 old logs.',
                   '["Delete all", "Only older than 30 days", "Keep them"]', 500
            FROM agent_threads WHERE t3_thread_id = 't3-q' RETURNING id"#,
     )
@@ -1661,4 +1782,140 @@ async fn poll_offset_round_trips(pool: PgPool) {
     store::save_offset(&pool, 1020).await.unwrap();
     store::save_offset(&pool, 1021).await.unwrap();
     assert_eq!(store::load_offset(&pool).await.unwrap(), Some(1021));
+}
+
+// ---- inbound lanes: each conversation in order, conversations side by side ----
+
+#[test]
+fn only_the_admins_messages_commands_and_taps_go_to_lanes() {
+    let route = |name| poller::route(&fixture(name), BOT, &LOCKED);
+    assert_eq!(route("admin_general_text"), Route::Lane((HQ, None)));
+    assert_eq!(route("voice_in_topic7"), Route::Lane((HQ, Some(7))));
+    assert_eq!(route("button_research_topic7"), Route::Lane((HQ, Some(7))));
+    // Never stored: strangers, DMs, a stranger adding the bot, bookkeeping.
+    assert_eq!(route("stranger_in_topic"), Route::Inline);
+    assert_eq!(route("stranger_dm_text"), Route::Inline);
+    assert_eq!(route("added_by_stranger"), Route::Inline);
+    assert_eq!(route("topic_created"), Route::Inline);
+    assert_eq!(route("channel_post"), Route::Skip);
+}
+
+/// Transcribes only once the test lets it.
+struct HeldVoice(std::sync::Arc<tokio::sync::Semaphore>);
+
+impl Transcriber for HeldVoice {
+    async fn transcribe(&self, _audio: Vec<u8>) -> Result<String, VoiceError> {
+        let _go = self.0.acquire().await.expect("semaphore open");
+        Ok("the long voice note".to_string())
+    }
+}
+
+fn lanes(
+    pool: &PgPool,
+    voice: HeldVoice,
+    agents: &std::path::Path,
+) -> InboundLanes<FakeApi, HeldVoice> {
+    InboundLanes::new(
+        pool.clone(),
+        RunSettings {
+            rules: LOCKED,
+            bot_username: BOT.to_string(),
+            transcriber: voice,
+            agents_dir: agents.to_path_buf(),
+            agent_label: AGENT_LABEL.to_string(),
+            api: std::sync::Arc::new(FakeApi::default()),
+            turns: std::sync::Arc::new(Jobs::default()),
+            projects: std::sync::Arc::new(FakeCleaner::default()),
+        },
+    )
+}
+
+/// Saves updates to the inbox the way the poll loop does, then queues them.
+async fn deliver(pool: &PgPool, lanes: &InboundLanes<FakeApi, HeldVoice>, names: &[&str]) {
+    let updates: Vec<Update> = names.iter().map(|n| fixture(n)).collect();
+    let saved: Vec<(i64, Value)> = updates
+        .iter()
+        .map(|u| (i64::from(u.id.0), serde_json::to_value(u).unwrap()))
+        .collect();
+    let next = updates.last().unwrap().id.0 as i32 + 1;
+    store::inbox_save(pool, &saved, next).await.unwrap();
+    for update in updates {
+        let Route::Lane(key) = lanes.route(&update) else {
+            panic!("expected a lane")
+        };
+        lanes.submit(key, update);
+    }
+}
+
+async fn admin_messages(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM messages WHERE NOT from_bot")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_long_voice_note_holds_up_only_its_own_topic(pool: PgPool) {
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let agents = tempfile::tempdir().unwrap();
+    let lanes = lanes(&pool, HeldVoice(gate.clone()), agents.path());
+
+    // A voice note in Research, then a text in General.
+    deliver(&pool, &lanes, &["voice_in_topic7", "admin_general_text"]).await;
+
+    // General's text is handled while the voice note is still transcribing.
+    let mut waited = 0;
+    while admin_messages(&pool).await < 1 {
+        assert!(waited < 100, "General waited on Research's voice note");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        waited += 1;
+    }
+    let inbox: i64 = sqlx::query_scalar("SELECT count(*) FROM inbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(inbox, 1, "the voice note is still waiting, and still saved");
+
+    gate.add_permits(1);
+    lanes.finish(std::time::Duration::from_secs(10)).await;
+    assert_eq!(admin_messages(&pool).await, 2);
+    let body: String = sqlx::query_scalar("SELECT body FROM messages WHERE is_voice")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(body, "the long voice note");
+    let inbox: i64 = sqlx::query_scalar("SELECT count(*) FROM inbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(inbox, 0, "handled updates leave the inbox");
+    assert_eq!(store::load_offset(&pool).await.unwrap(), Some(1031));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn updates_left_from_a_crash_are_handled_at_the_next_start(pool: PgPool) {
+    let agents = tempfile::tempdir().unwrap();
+    // Saved and acknowledged, but the process died before handling them.
+    let updates = [fixture("admin_general_text"), fixture("voice_in_topic7")];
+    let saved: Vec<(i64, Value)> = updates
+        .iter()
+        .map(|u| (i64::from(u.id.0), serde_json::to_value(u).unwrap()))
+        .collect();
+    store::inbox_save(&pool, &saved, 1031).await.unwrap();
+
+    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let lanes = lanes(&pool, HeldVoice(gate), agents.path());
+    lanes.resume().await;
+    lanes.finish(std::time::Duration::from_secs(10)).await;
+
+    assert_eq!(
+        admin_messages(&pool).await,
+        2,
+        "both handled after the restart"
+    );
+    let inbox: i64 = sqlx::query_scalar("SELECT count(*) FROM inbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(inbox, 0);
 }

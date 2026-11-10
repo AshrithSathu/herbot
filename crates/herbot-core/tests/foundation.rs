@@ -187,7 +187,7 @@ async fn one_conversation_per_chat_and_topic_including_no_topic(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn one_active_thread_per_conversation(pool: PgPool) {
+async fn one_thread_per_conversation(pool: PgPool) {
     sqlx::raw_sql(
         "INSERT INTO chats (tg_chat_id, kind) VALUES (42, 'private');
          INSERT INTO conversations (chat_id) VALUES (1);
@@ -201,15 +201,13 @@ async fn one_active_thread_per_conversation(pool: PgPool) {
         sqlx::query("INSERT INTO agent_threads (conversation_id, t3_thread_id) VALUES (1, 't3-b')")
             .execute(&pool)
             .await;
-    assert!(duplicate.is_err(), "two active threads must be rejected");
+    assert!(duplicate.is_err(), "a second thread must be rejected");
 
-    // After archiving (what `/new` does), a fresh thread is allowed.
-    sqlx::query(
-        "UPDATE agent_threads SET status = 'archived', archived_at = now() WHERE t3_thread_id = 't3-a'",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    // After deleting it (what `/new` and `/forget` do), a fresh one is allowed.
+    sqlx::query("DELETE FROM agent_threads WHERE t3_thread_id = 't3-a'")
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO agent_threads (conversation_id, t3_thread_id) VALUES (1, 't3-b')")
         .execute(&pool)
         .await

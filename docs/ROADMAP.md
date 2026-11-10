@@ -66,13 +66,20 @@ Built as part of Step 4: typing indicator, secret scrubbing, splitting, quoted r
 - Done when: ✅ 163 tests (hub permissions, internal API, real MCP over stdio against the binary, clean-sweep safety). ✅ Real T3: `project remove --force` deletes a project with its threads. ✅ Real Codex (GPT-6.1 Terra) called `list_topics` and `read_topic` on live data. ⏳ Manual in Telegram: ask General about other topics and have it `ask_topic`.
 
 ## Step 8: Admin panel (TanStack Start)
-- [ ] Chats and topics, personas, per-conversation settings, threads
-- [ ] Logs page: search by `E-<id>`
-- Done when: Playwright tests cover editing a conversation's persona and disabling it. Admin API auth tests pass.
+- [x] herbot-core admin API (`/admin/api`, bearer `HERBOT_ADMIN_TOKEN`): overview, topics, purpose, on/off, clean slate (shared `wipe::run` with `/new` and `/forget`), errors
+- [x] Panel: password sign-in with a signed cookie, overview, topics (purpose, on/off, AGENTS.md, recent messages, clean slate), logs searchable by `E-<id>`
+- [x] TanStack Query for all data: SSR-filled cache, prefetch on hover, polling, optimistic on/off with rollback
+- [x] Every component is shadcn/ui on Tailwind v4 (Sidebar with live agent list, Breadcrumb, Field, InputGroup, Item, Empty, AlertDialog, Sonner…), OKLCH palette, light and dark, phone layout; reviewed against the Emil design-engineering rules (44px touch targets, 16px inputs, neutral focus rings, reduced motion, no layout shift)
+- [x] Messages and errors page by cursor (`/conversations/{id}/messages?before|after`, `/errors?before`); the topic page's history is a bounded chat log that loads older pages and merges new messages live
+- [x] Production: message counts kept on the conversation (migration 0008), so turns and lists never count history; one query per list; `server.mjs` serves precompressed, immutable assets and compressed pages
+- [x] Explicit state machines (`docs/STATE_MACHINES.md`): the schema allows only reachable states (migration 0010 drops archived threads, disabled chats, timed-out questions); `/setup` on a set-up topic says the next message replaces the purpose and offers **Keep the current purpose**; the panel's badge and sidebar dot share one status
+- [x] Inbound lanes (migration 0009 `inbox`): each topic's updates in order, topics side by side, so a long voice note no longer holds up other topics; saved before Telegram is acknowledged and resumed after a crash
+- Done when: ✅ 14 admin API tests (auth, purpose, on/off, wipe, errors, message and error paging, literal search, exact message counters, short list purposes). The browser (e2e) suites were removed on 2026-11-09. ⏳ Ashrith signs in and clicks through it himself.
 
 ## Step 9: Isolated bots-T3 and VPS deploy
 - [ ] bots-T3 container: separate user, no host mounts except `bots/`, resource limits, rebuildable
 - [ ] Production `docker-compose`, webhook or long polling, Tailscale-only admin, nightly encrypted Postgres backup
+- [ ] Admin panel on real hardware (deferred from Step 8 on 2026-11-09): iPhone sheet clears the home indicator, the purpose box stays above the keyboard, history flick-scrolls smoothly on a mid-range Android, VoiceOver reads a topic well
 - Done when: a fresh VPS comes up from the README alone.
 
 ## Step 10: Hardening

@@ -27,6 +27,9 @@ pub struct Config {
     /// Shared secret for herbot-mcp's calls to the internal API
     /// (`HERBOT_INTERNAL_TOKEN`); `None` turns General's action tools off.
     pub internal_token: Option<String>,
+    /// Shared secret for the admin panel (`HERBOT_ADMIN_TOKEN`); `None`
+    /// turns the admin API off.
+    pub admin_token: Option<String>,
 }
 
 pub const DEFAULT_T3_BIN: &str = "~/.t3/bin/t3";
@@ -117,6 +120,8 @@ pub enum ConfigError {
     InvalidTurnTimeout(String),
     #[error("HERBOT_INTERNAL_TOKEN is too short (use at least 32 characters)")]
     WeakInternalToken,
+    #[error("HERBOT_ADMIN_TOKEN is too short (use at least 32 characters)")]
+    WeakAdminToken,
 }
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
@@ -203,6 +208,11 @@ impl Config {
             Some(t) if t.len() < 32 => return Err(ConfigError::WeakInternalToken),
             other => other,
         };
+        let admin_token = match get("HERBOT_ADMIN_TOKEN").map(|t| t.trim().to_string()) {
+            Some(t) if t.is_empty() => None,
+            Some(t) if t.len() < 32 => return Err(ConfigError::WeakAdminToken),
+            other => other,
+        };
         let home = get("HOME");
         let t3_bin = expand_home(&non_empty("HERBOT_T3_BIN", DEFAULT_T3_BIN), home.as_deref());
         let timeout_raw = non_empty(
@@ -227,6 +237,7 @@ impl Config {
             t3_bin,
             turn_timeout_secs,
             internal_token,
+            admin_token,
         })
     }
 }

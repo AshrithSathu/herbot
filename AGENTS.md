@@ -15,8 +15,10 @@ Telegram Bot API ⇄ crates/herbot-core (Rust, teloxide) ⇄ bots-T3 (Codex, ful
 |---|---|---|
 | `crates/herbot-core` | Telegram polling, admin-only policy, conversations, topic setup and AGENTS.md, voice transcription, per-conversation lanes, T3 adapter, admin API | Rust (tokio, axum, sqlx, teloxide, reqwest) |
 | `crates/herbot-mcp` | MCP server Codex starts over stdio: `list_topics`, `search_messages`, `read_topic` (via `herbot_core::hub`), and General's `ask_topic` and `post_to_topic` (via herbot-core's `/internal` API) | Rust (`rmcp`) |
-| `apps/admin` | Admin panel | TanStack Start |
+| `apps/admin` | Admin panel: TanStack Query for data, shadcn/ui on Tailwind v4, `server.mjs` for production | TanStack Start on Bun (runtime and package manager) |
 | `bots/<slug>/` | One T3 project per bot persona. `AGENTS.md` there is the persona. | Markdown |
+
+**State machines:** [docs/STATE_MACHINES.md](docs/STATE_MACHINES.md) lists every one (topic setup, threads, choice buttons, wipe confirmations, turns, incoming updates, the panel's), with each transition and where it's enforced. Read it before changing how a conversation moves between states, and update it in the same commit. The schema allows only reachable states.
 
 A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no topic. In a forum supergroup, each topic is its own conversation, and "General" has no topic ID.
 
@@ -25,6 +27,7 @@ A **conversation** is `(chat, topic)`. Private DMs and non-forum groups have no 
 - Conversation agents run in T3 Code on the Codex subscription: **`gpt-6.1-terra`, reasoning effort `medium`** (`HERBOT_AGENT_MODEL`, `HERBOT_AGENT_EFFORT`). herbot-core drives T3's host CLI (`t3 thread start|send --wait --json`, `t3 project add`, `t3 thread list`) through the `AgentRunner` trait (`agent.rs`). Each conversation folder under `agents/` is a T3 project, so Codex loads its AGENTS.md. T3 passes no effort, so Codex's own `model_reasoning_effort` applies; startup warns if it differs.
 - Voice notes are transcribed by OpenAI **`gpt-transcribe`**, English only (`language=en`), with `OPENAI_API_KEY`. This key is used for nothing else. No local speech models.
 - Voice notes longer than 10 minutes are refused before download, to cap cost.
+- The admin's messages, commands and button taps go through the `inbox` table and an inbound lane per conversation (`poller::InboundLanes`): in order within a topic, side by side across topics, so a long voice note holds up only its own topic. An update is saved in the same transaction that moves the Telegram offset past it, deleted once handled, and handled at the next start if a crash interrupted it. Nothing from anyone else is stored there.
 - Everything is English.
 - Agents offer choices by ending a reply with `[[ask: A | B | C]]` (2–6 options, ≤ 60 chars). Herbot turns it into buttons. A tap or a typed reply answers it. `agents_md::TEMPLATE_VERSION` versions the ground rules, and older AGENTS.md files are regenerated at startup.
 
@@ -57,10 +60,14 @@ Polling Telegram for updates is not a turn. It keeps polling after a network err
 - Logs: JSON by default (`HERBOT_LOG_FORMAT=pretty` locally). No `println!`.
 - Telegram parsing is pure (`telegram::normalize`) and the policy is pure (`policy::decide`), so both are tested without network. Network calls go through the `TelegramApi` trait, which has a fake for tests.
 
-## Testing: every step ships with tests
+## Testing: write tests, run them when asked
+
+- **Run tests only when Ashrith asks** (`make check`, `cargo test`, anything else). Don't run them after every change; say what is untested instead.
+- No end-to-end (browser) tests. They were removed on 2026-11-09.
+- New Rust code still ships with unit or integration tests.
 
 - `make test`: unit tests plus integration tests against real Postgres. Each `#[sqlx::test]` gets a fresh database.
-- `make check`: fmt, clippy, then tests. Run it before saying a step is done.
+- `make check`: fmt, clippy, then tests. Run it when asked, before a step is called done.
 - `make smoke`: starts the real binary and checks `/health`, `/ready` and graceful shutdown.
 - Telegram behaviour is tested with real Bot API JSON fixtures in `crates/herbot-core/tests/fixtures/`.
 - A step is done only when its "Done when" checks in `docs/ROADMAP.md` pass.

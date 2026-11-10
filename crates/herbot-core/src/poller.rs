@@ -19,7 +19,7 @@ use teloxide::types::{
     FileId, InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ReactionType, ReplyParameters,
     ThreadId,
 };
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::agent::{AgentError, ProjectCleaner};
 use crate::agents_md;
@@ -182,11 +182,16 @@ impl TelegramApi for BotApi {
     }
 
     async fn remove_buttons(&self, chat_id: i64, message_id: i32) -> Result<(), ApiError> {
-        self.0
+        match self
+            .0
             .edit_message_reply_markup(ChatId(chat_id), MessageId(message_id))
             .await
-            .map(|_| ())
-            .map_err(api_err)
+        {
+            Ok(_) => Ok(()),
+            // Already without buttons (a double tap, a second cleanup): done.
+            Err(teloxide::RequestError::Api(teloxide::ApiError::MessageNotModified)) => Ok(()),
+            Err(err) => Err(api_err(err)),
+        }
     }
 
     async fn answer_button(&self, callback_id: &str, toast: Option<&str>) -> Result<(), ApiError> {
@@ -262,6 +267,16 @@ pub enum HandleError {
     AgentsMd(#[from] std::io::Error),
     #[error(transparent)]
     T3(#[from] AgentError),
+}
+
+impl From<wipe::WipeError> for HandleError {
+    fn from(err: wipe::WipeError) -> Self {
+        match err {
+            wipe::WipeError::Db(e) => HandleError::Db(e),
+            wipe::WipeError::T3(e) => HandleError::T3(e),
+            wipe::WipeError::Io(e) => HandleError::AgentsMd(e),
+        }
+    }
 }
 
 impl HandleError {
@@ -352,41 +367,51 @@ async fn apply<A: TelegramApi, T: Transcriber>(
         Action::RenameChat { chat, title } => {
             store::rename_chat(ctx.pool, chat.tg_chat_id, &title).await?;
         }
-        Action::Store(mut msg) => {
-            mark_seen(ctx, &msg).await;
-            // Voice notes become English text before anything else sees them.
-            if let Some(voice) = msg.voice.clone() {
-                if voice.duration_secs > MAX_VOICE_SECONDS {
-                    let text = setup::too_long(voice.duration_secs, MAX_VOICE_SECONDS);
-                    reply(ctx, &msg, &text).await?;
-                    return Ok(());
-                }
-                let audio = ctx.api.download_file(&voice.file_id).await?;
-                let transcript = ctx.transcriber.transcribe(audio).await?;
-                if transcript.trim().is_empty() {
-                    reply(ctx, &msg, setup::NOTHING_HEARD).await?;
-                    return Ok(());
-                }
-                tracing::info!(
-                    seconds = voice.duration_secs,
-                    chars = transcript.len(),
-                    "transcribed voice note"
-                );
-                msg.text = if msg.text.trim().is_empty() {
-                    transcript
-                } else {
-                    format!("{}\n\n{}", msg.text.trim(), transcript)
-                };
-            }
-            store_and_continue(ctx, &msg).await?;
+        // The 👀 goes out alongside the work, not one Telegram round trip
+        // before it.
+        Action::Store(msg) => {
+            let ((), handled) = tokio::join!(mark_seen(ctx, &msg), take_message(ctx, msg.clone()));
+            handled?
         }
         Action::RunCommand(msg, cmd) => {
-            mark_seen(ctx, &msg).await;
-            run_command(ctx, &msg, cmd).await?
+            let ((), ran) = tokio::join!(mark_seen(ctx, &msg), run_command(ctx, &msg, cmd));
+            ran?
         }
         Action::Button(press) => handle_button(ctx, &press).await?,
     }
     Ok(())
+}
+
+/// An admin message: voice notes become English text before anything else
+/// sees them, then it's stored and setup or the agent takes it from there.
+async fn take_message<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    mut msg: InboundMessage,
+) -> Result<(), HandleError> {
+    if let Some(voice) = msg.voice.clone() {
+        if voice.duration_secs > MAX_VOICE_SECONDS {
+            let text = setup::too_long(voice.duration_secs, MAX_VOICE_SECONDS);
+            reply(ctx, &msg, &text).await?;
+            return Ok(());
+        }
+        let audio = ctx.api.download_file(&voice.file_id).await?;
+        let transcript = ctx.transcriber.transcribe(audio).await?;
+        if transcript.trim().is_empty() {
+            reply(ctx, &msg, setup::NOTHING_HEARD).await?;
+            return Ok(());
+        }
+        tracing::info!(
+            seconds = voice.duration_secs,
+            chars = transcript.len(),
+            "transcribed voice note"
+        );
+        msg.text = if msg.text.trim().is_empty() {
+            transcript
+        } else {
+            format!("{}\n\n{}", msg.text.trim(), transcript)
+        };
+    }
+    store_and_continue(ctx, &msg).await
 }
 
 /// Reacts 👀 to an admin message as soon as it arrives. A failed reaction
@@ -568,13 +593,35 @@ async fn save_purpose<A: TelegramApi, T: Transcriber>(
     Ok(old_prompt)
 }
 
+/// Asks what the conversation should be (→ AwaitingPurpose). With a purpose
+/// already set (`/setup`), it says the next message replaces it and offers a
+/// "Keep the current purpose" button back to Ready.
 async fn send_greeting<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     status: &ConversationStatus,
 ) -> Result<(), HandleError> {
-    reply(ctx, msg, &setup::greeting(&status.place())).await?;
-    store::begin_setup(ctx.pool, status.conversation_id, None).await?;
+    let prompt = match status.purpose {
+        None => {
+            reply(ctx, msg, &setup::greeting(&status.place())).await?;
+            None
+        }
+        Some(_) => Some(
+            ctx.api
+                .send_buttons(
+                    msg.chat.tg_chat_id,
+                    msg.topic_id,
+                    Some(msg.message_id),
+                    &setup::new_purpose_prompt(&status.place()),
+                    &setup::keep_button(status.conversation_id),
+                )
+                .await?,
+        ),
+    };
+    if let Some(older) = store::begin_setup(ctx.pool, status.conversation_id, prompt).await? {
+        // A second /setup: only the newest prompt keeps its button.
+        ctx.api.remove_buttons(msg.chat.tg_chat_id, older).await?;
+    }
     tracing::info!(
         conversation_id = status.conversation_id,
         "asked what this conversation is for"
@@ -593,6 +640,9 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     let chat = press.chat.tg_chat_id;
     if let Some(tap) = wipe::parse(&press.data) {
         return handle_wipe_tap(ctx, press, tap).await;
+    }
+    if let Some(conversation_id) = setup::parse_keep(&press.data) {
+        return handle_keep_tap(ctx, press, conversation_id).await;
     }
     let Some((question_id, index)) = turns::parse_answer_button(&press.data) else {
         ctx.api
@@ -638,42 +688,37 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     Ok(())
 }
 
-/// Deletes the conversation's T3 project (with all its threads) first, and
-/// only then its Herbot history, so the two never disagree.
-///
-/// The project is found through Herbot's own threads and removed by exact
-/// id, and only if every thread in it is one Herbot started. A project
-/// holding anything else (say, the herbot repo's own project) is never touched.
-async fn clean_sweep<A: TelegramApi, T: Transcriber>(
+/// "Keep the current purpose": AwaitingPurpose → Ready, only in its own topic
+/// and only while there's still a purpose waiting to be replaced.
+async fn handle_keep_tap<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
-    status: &ConversationStatus,
-) -> Result<store::Wiped, HandleError> {
-    let ours = store::all_thread_ids(ctx.pool, status.conversation_id).await?;
-    let mut projects = std::collections::BTreeSet::new();
-    for thread in &ours {
-        if let Some(project) = ctx.projects.project_of_thread(thread).await? {
-            projects.insert(project);
+    press: &ButtonPress,
+    conversation_id: i64,
+) -> Result<(), HandleError> {
+    let chat = press.chat.tg_chat_id;
+    let here = store::find_conversation(ctx.pool, chat, press.topic_id).await?;
+    if here != Some(conversation_id) {
+        ctx.api
+            .answer_button(&press.callback_id, Some(setup::OTHER_TOPIC_TOAST))
+            .await?;
+        return Ok(());
+    }
+    match store::keep_purpose(ctx.pool, conversation_id).await? {
+        Some(_) => {
+            ctx.api
+                .edit_text(chat, press.message_id, setup::KEPT)
+                .await?;
+            ctx.api.answer_button(&press.callback_id, None).await?;
+            tracing::info!(conversation_id, "kept the current purpose");
+        }
+        None => {
+            ctx.api
+                .answer_button(&press.callback_id, Some(setup::NOTHING_TO_KEEP_TOAST))
+                .await?;
+            ctx.api.remove_buttons(chat, press.message_id).await?;
         }
     }
-    for project in &projects {
-        let inside = ctx.projects.threads_in_project(project).await?;
-        if let Some(foreign) = inside.iter().find(|t| !ours.contains(t)) {
-            return Err(AgentError::Project(format!(
-                "T3 project {project} also holds thread {foreign}, which Herbot didn't start; not deleting it"
-            ))
-            .into());
-        }
-        ctx.projects.remove_project(project).await?;
-    }
-    let wiped = store::wipe_conversation(ctx.pool, status.conversation_id).await?;
-    tracing::info!(
-        conversation_id = status.conversation_id,
-        projects = projects.len(),
-        threads = wiped.threads,
-        messages = wiped.messages,
-        "wiped conversation"
-    );
-    Ok(wiped)
+    Ok(())
 }
 
 /// `/new` or `/forget`: explains what will be deleted, with Yes / Cancel buttons.
@@ -695,22 +740,13 @@ async fn ask_to_wipe<A: TelegramApi, T: Transcriber>(
     Ok(())
 }
 
-/// Wipes the conversation and returns what to tell the admin.
+/// Wipes the conversation (see [`wipe::run`]) and returns what to tell the admin.
 async fn perform_wipe<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     status: &ConversationStatus,
     kind: wipe::WipeKind,
 ) -> Result<String, HandleError> {
-    let wiped = clean_sweep(ctx, status).await?;
-    if kind == wipe::WipeKind::Forget
-        && let Some(path) = store::reset_setup(ctx.pool, status.conversation_id).await?
-    {
-        match tokio::fs::remove_file(ctx.agents_dir.join(path)).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
+    let wiped = wipe::run(ctx.pool, ctx.projects, ctx.agents_dir, status, kind).await?;
     Ok(wipe::done(kind, wiped))
 }
 
@@ -902,37 +938,207 @@ pub async fn register_commands(bot: &Bot, rules: &Rules) -> Result<(), teloxide:
 
 /// Long-polls Telegram until `shutdown` flips to true.
 /// What the poller needs besides the bot and database.
-pub struct RunSettings<T: Transcriber> {
+pub struct RunSettings<A: TelegramApi, T: Transcriber> {
     pub rules: Rules,
     pub bot_username: String,
     pub transcriber: T,
     /// Absolute path of the conversation folders.
     pub agents_dir: std::path::PathBuf,
     pub agent_label: String,
-    pub api: Arc<BotApi>,
+    pub api: Arc<A>,
     /// The agent lanes (shared with the internal API).
     pub turns: Arc<dyn TurnQueue>,
     pub projects: Arc<dyn ProjectCleaner>,
 }
 
-pub async fn run<T: Transcriber>(
+/// Where an update is handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// Nothing Herbot acts on.
+    Skip,
+    /// Quick and never stored: ignored updates (strangers, DMs, other
+    /// groups), leaving chats, and chat or topic bookkeeping.
+    Inline,
+    /// The admin's message, command or button tap: saved to the inbox, then
+    /// handled in order on its conversation's lane.
+    Lane(LaneKey),
+}
+
+/// A conversation: (Telegram chat, topic). `None` is General.
+pub type LaneKey = (i64, Option<i32>);
+
+pub fn route(update: &Update, bot_username: &str, rules: &Rules) -> Route {
+    let Some(inbound) = telegram::normalize(update, bot_username) else {
+        return Route::Skip;
+    };
+    match policy::decide(inbound, rules) {
+        Action::Store(msg) | Action::RunCommand(msg, _) => {
+            Route::Lane((msg.chat.tg_chat_id, msg.topic_id))
+        }
+        Action::Button(press) => Route::Lane((press.chat.tg_chat_id, press.topic_id)),
+        _ => Route::Inline,
+    }
+}
+
+struct Shared<A: TelegramApi, T: Transcriber> {
+    pool: PgPool,
+    settings: RunSettings<A, T>,
+}
+
+impl<A: TelegramApi, T: Transcriber> Shared<A, T> {
+    fn ctx(&self) -> Ctx<'_, A, T> {
+        let s = &self.settings;
+        Ctx {
+            pool: &self.pool,
+            api: &*s.api,
+            transcriber: &s.transcriber,
+            rules: s.rules,
+            bot_username: &s.bot_username,
+            agents_dir: &s.agents_dir,
+            agent_label: &s.agent_label,
+            turns: &*s.turns,
+            projects: &*s.projects,
+        }
+    }
+}
+
+/// One worker per conversation, created on first use. Each handles its
+/// conversation's updates in order (a voice note, then the text after it);
+/// conversations run side by side, so a long voice note holds up only its
+/// own topic.
+pub struct InboundLanes<A: TelegramApi + 'static, T: Transcriber + Send + 'static> {
+    shared: Arc<Shared<A, T>>,
+    senders: std::sync::Mutex<std::collections::HashMap<LaneKey, mpsc::UnboundedSender<Update>>>,
+    workers: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+impl<A: TelegramApi + 'static, T: Transcriber + Send + 'static> InboundLanes<A, T> {
+    pub fn new(pool: PgPool, settings: RunSettings<A, T>) -> Self {
+        Self {
+            shared: Arc::new(Shared { pool, settings }),
+            senders: Default::default(),
+            workers: Default::default(),
+        }
+    }
+
+    pub fn route(&self, update: &Update) -> Route {
+        let s = &self.shared.settings;
+        route(update, &s.bot_username, &s.rules)
+    }
+
+    /// Handles an update right here (for [`Route::Inline`]).
+    pub async fn handle_inline(&self, update: &Update) {
+        process(&self.shared.ctx(), update).await;
+    }
+
+    /// Queues an update on its conversation's lane. It must already be in
+    /// the inbox; the lane deletes it from there once handled.
+    pub fn submit(&self, key: LaneKey, update: Update) {
+        let mut senders = self.senders.lock().expect("inbound lanes lock");
+        let sender = senders.entry(key).or_insert_with(|| self.spawn_lane());
+        if let Err(returned) = sender.send(update) {
+            // The worker is gone (it shouldn't be); start another.
+            let fresh = self.spawn_lane();
+            let _ = fresh.send(returned.0);
+            senders.insert(key, fresh);
+        }
+    }
+
+    fn spawn_lane(&self) -> mpsc::UnboundedSender<Update> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Update>();
+        let shared = self.shared.clone();
+        let worker = tokio::spawn(async move {
+            while let Some(update) = rx.recv().await {
+                process(&shared.ctx(), &update).await;
+                let update_id = i64::from(update.id.0);
+                if let Err(err) = store::inbox_done(&shared.pool, update_id).await {
+                    // It stays in the inbox and runs again at the next start.
+                    tracing::error!(update_id, error = %err, "could not clear a handled update from the inbox");
+                }
+            }
+        });
+        self.workers
+            .lock()
+            .expect("inbound workers lock")
+            .push(worker);
+        tx
+    }
+
+    /// Waits up to `limit` for queued updates to finish. Anything unfinished
+    /// stays in the inbox and is handled at the next start.
+    pub async fn finish(&self, limit: Duration) {
+        self.senders.lock().expect("inbound lanes lock").clear(); // workers end when their queue empties
+        let workers: Vec<_> =
+            std::mem::take(&mut *self.workers.lock().expect("inbound workers lock"));
+        if tokio::time::timeout(limit, futures_join_all(workers))
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "some updates were still being handled at shutdown; they run again at the next start"
+            );
+        }
+    }
+
+    /// Handles what a previous run saved but didn't finish, in order, before
+    /// anything new.
+    pub async fn resume(&self) {
+        let pool = &self.shared.pool;
+        let pending = match store::inbox_pending(pool).await {
+            Ok(pending) => pending,
+            Err(err) => {
+                let _ =
+                    errors::record(pool, "telegram.inbox_load", &err.to_string(), json!({})).await;
+                return;
+            }
+        };
+        if !pending.is_empty() {
+            tracing::info!(
+                count = pending.len(),
+                "handling updates left from the last run"
+            );
+        }
+        for (update_id, body) in pending {
+            match serde_json::from_value::<Update>(body) {
+                Ok(update) => match self.route(&update) {
+                    Route::Lane(key) => self.submit(key, update),
+                    other => {
+                        if other == Route::Inline {
+                            self.handle_inline(&update).await;
+                        }
+                        let _ = store::inbox_done(pool, update_id).await;
+                    }
+                },
+                Err(err) => {
+                    let context = json!({ "update_id": update_id });
+                    let _ = errors::record(
+                        pool,
+                        "telegram.inbox_unreadable",
+                        &err.to_string(),
+                        context,
+                    )
+                    .await;
+                    let _ = store::inbox_done(pool, update_id).await;
+                }
+            }
+        }
+    }
+}
+
+async fn futures_join_all(workers: Vec<tokio::task::JoinHandle<()>>) {
+    for worker in workers {
+        let _ = worker.await;
+    }
+}
+
+pub async fn run<T: Transcriber + Send + 'static>(
     bot: Bot,
     pool: PgPool,
-    settings: RunSettings<T>,
+    settings: RunSettings<BotApi, T>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let bot_username = settings.bot_username.clone();
-    let ctx = Ctx {
-        pool: &pool,
-        api: &*settings.api,
-        transcriber: &settings.transcriber,
-        rules: settings.rules,
-        bot_username: &bot_username,
-        agents_dir: &settings.agents_dir,
-        agent_label: &settings.agent_label,
-        turns: &*settings.turns,
-        projects: &*settings.projects,
-    };
+    let lanes = InboundLanes::new(pool.clone(), settings);
 
     let mut offset = match store::load_offset(&pool).await {
         Ok(offset) => offset,
@@ -942,6 +1148,7 @@ pub async fn run<T: Transcriber>(
             None
         }
     };
+    lanes.resume().await;
     tracing::info!(?offset, bot = %bot_username, "telegram polling started");
 
     loop {
@@ -962,23 +1169,8 @@ pub async fn run<T: Transcriber>(
             _ = shutdown.changed() => break,
         };
 
-        match result {
-            Ok(updates) => {
-                for update in &updates {
-                    process(&ctx, update).await;
-                    let next = update.id.0 as i32 + 1;
-                    offset = Some(next);
-                    if let Err(err) = store::save_offset(&pool, next).await {
-                        let _ = errors::record(
-                            &pool,
-                            "telegram.offset_save",
-                            &err.to_string(),
-                            json!({ "offset": next }),
-                        )
-                        .await;
-                    }
-                }
-            }
+        let updates = match result {
+            Ok(updates) => updates,
             Err(err) => {
                 let _ = errors::record(&pool, "telegram.poll_failed", &err.to_string(), json!({}))
                     .await;
@@ -986,8 +1178,44 @@ pub async fn run<T: Transcriber>(
                     _ = tokio::time::sleep(POLL_RETRY_DELAY) => {},
                     _ = shutdown.changed() => break,
                 }
+                continue;
+            }
+        };
+        let Some(last) = updates.last() else { continue };
+        let next = last.id.0 as i32 + 1;
+
+        let mut queued = Vec::new();
+        for update in &updates {
+            match lanes.route(update) {
+                Route::Skip => {}
+                Route::Inline => lanes.handle_inline(update).await,
+                Route::Lane(key) => queued.push((key, update)),
             }
         }
+        let saved: Vec<(i64, serde_json::Value)> = queued
+            .iter()
+            .filter_map(|(_, u)| Some((i64::from(u.id.0), serde_json::to_value(u).ok()?)))
+            .collect();
+        if let Err(err) = store::inbox_save(&pool, &saved, next).await {
+            // Not acknowledged: Telegram sends the batch again.
+            let _ = errors::record(
+                &pool,
+                "telegram.inbox_save",
+                &err.to_string(),
+                json!({ "offset": next }),
+            )
+            .await;
+            tokio::select! {
+                _ = tokio::time::sleep(POLL_RETRY_DELAY) => {},
+                _ = shutdown.changed() => break,
+            }
+            continue;
+        }
+        offset = Some(next);
+        for (key, update) in queued {
+            lanes.submit(key, update.clone());
+        }
     }
+    lanes.finish(Duration::from_secs(10)).await;
     tracing::info!("telegram polling stopped");
 }
