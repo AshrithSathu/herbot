@@ -162,6 +162,11 @@ async fn overview(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> R
 struct ConversationSummary {
     id: i64,
     place: String,
+    /// Just the topic's own name ("General" for General, "Topic 7" when a
+    /// topic has no name), for lists and titles.
+    name: String,
+    /// The group's title, for context next to the name.
+    group: String,
     is_general: bool,
     purpose: Option<String>,
     setup_state: &'static str,
@@ -181,6 +186,12 @@ impl ConversationSummary {
         ConversationSummary {
             id: status.conversation_id,
             place: status.place(),
+            name: match (status.tg_topic_id, &status.topic_name) {
+                (None, _) => "General".into(),
+                (Some(_), Some(name)) if !name.trim().is_empty() => name.clone(),
+                (Some(id), _) => format!("Topic {id}"),
+            },
+            group: status.chat_title.clone(),
             is_general: status.tg_topic_id.is_none(),
             purpose: status.purpose.as_deref().map(|p| match purpose_chars {
                 Some(n) => shorten(p, n),

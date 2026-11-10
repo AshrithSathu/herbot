@@ -29,6 +29,10 @@ export interface Overview {
 export interface Topic {
   id: number
   place: string
+  /** The topic's own name: "General", "Topic 7" when unnamed. Prefer it to `place`. */
+  name: string
+  /** The group's title. */
+  group: string
   is_general: boolean
   /** In the list, cut to 300 characters; whole in a topic's detail. */
   purpose: string | null

@@ -190,6 +190,14 @@
 }
 
 @layer components {
+  /* Text from people and agents (see components/user-text.tsx). */
+  .user-text {
+    unicode-bidi: isolate;
+    overflow-wrap: anywhere;
+    /* Combining marks stacked dozens deep stay inside their own line box. */
+    overflow: clip;
+    overflow-clip-margin: 0.15em;
+  }
   /* Scrollbars are styled only inside small scrollers, never the page. */
   .scroller::-webkit-scrollbar {
     width: 8px;
