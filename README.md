@@ -133,3 +133,4 @@ Development happens in T3 Code with Codex: one roadmap step per branch (`step-N/
 
 Review hardening: header sanitization preserves Unicode byte offsets, and outbound files are restricted to the current topic or Codex generated images.
 History labels are loaded in a single batch; migration 0019 indexes question cleanup and per-topic task history.
+The T3 CLI deadline covers stdin writes as well as waiting for its response.
