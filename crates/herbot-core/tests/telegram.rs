@@ -1900,10 +1900,19 @@ async fn a_long_voice_note_holds_up_only_its_own_topic(pool: PgPool) {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         waited += 1;
     }
-    let inbox: i64 = sqlx::query_scalar("SELECT count(*) FROM inbox")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    // General's update leaves the inbox once its handling finishes (just
+    // after its message is stored); the voice note's stays.
+    let mut inbox: i64 = 0;
+    for _ in 0..100 {
+        inbox = sqlx::query_scalar("SELECT count(*) FROM inbox")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        if inbox == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert_eq!(inbox, 1, "the voice note is still waiting, and still saved");
 
     gate.add_permits(1);

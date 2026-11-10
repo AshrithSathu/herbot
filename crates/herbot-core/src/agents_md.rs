@@ -218,7 +218,7 @@ mod tests {
         assert!(text.starts_with("# Herbot › Ideas\n"));
         assert!(text.contains("Roast my startup ideas.\nBe brutal but fair.\n"));
         assert!(text.contains("2026-11-08"));
-        assert!(text.contains("Always reply in English"));
+        assert!(text.contains("Reply in English unless your header has a `language:` line"));
         assert!(text.contains("<herbot-meta>"));
         assert!(
             text.contains("[[ask: Delete all 42 logs | Only ones older than 30 days | Keep them]]")

@@ -310,7 +310,6 @@ impl HerbotTools {
             Err(e) => hub_error(e),
         }
     }
-    /// List global memories, optionally filtering by a case-insensitive substring.
     /// Search real-time posts on X (Twitter) from the last seven days, with
     /// authors, dates, engagement and links. Needs X_BEARER_TOKEN; if it
     /// isn't set, search the live web for x.com posts instead.
@@ -334,6 +333,7 @@ impl HerbotTools {
         }
     }
 
+    /// List global memories, optionally filtering by a case-insensitive substring.
     #[tool(annotations(read_only_hint = true))]
     pub async fn recall(
         &self,
@@ -426,8 +426,10 @@ impl HerbotTools {
         }
     }
 
-    /// Generate a video with OpenAI Sora, save it in your topic's files/out,
-    /// and return its MP4 path for [[file: path]]. May take up to nine minutes.
+    /// Generate a video (xAI's Grok Imagine when configured, otherwise a
+    /// storyboard video from OpenAI images), save it in your topic's
+    /// files/out, and return its MP4 path for [[file: path]]. May take up to
+    /// nine minutes.
     #[tool]
     pub async fn generate_video(
         &self,
