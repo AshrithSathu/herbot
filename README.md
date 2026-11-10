@@ -20,6 +20,12 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 3. It goes to that conversation's **T3 Code thread**, running Codex on **GPT-6.1 Terra at medium effort** (your Codex subscription). Each conversation folder is a T3 project, so Codex reads its `AGENTS.md`. Turns in one topic run in order; different topics run in parallel. While Codex works the topic shows "typing…", then the reply arrives quoting your message, with secrets scrubbed and long answers split.
 4. When the agent wants you to pick, its reply ends with **buttons** (from an `[[ask: A | B | C]]` line). Tap one, or just type your own answer, and the thread continues. If Codex ever blocks inside T3, you get a direct link to the thread.
 5. Agents have **herbot tools** (MCP). **General is the hub:** it can list every topic, search and read their history, ask another topic's agent something (`ask_topic`), or post into a topic. Each topic can search and read only its own history.
+Task history loads 50 rows at a time with Load older tasks. History tools search the full-text index first and use literal substring search when it has no matches.
+
+Panel creation and sends reuse an idempotency key on retry. A request interrupted during Telegram stays explicitly pending, so retry cannot duplicate an uncertain action. Panel inbox workers run independently per topic.
+
+Clean slate waits for active work and discards older queued messages using timestamps and Telegram message ordering, including fresh messages sent in the same second. Scheduled occurrences are saved with their claims and unfinished occurrences resume after a process restart; a crash during an external call can replay that effect.
+
 6. If anything fails, you get `❌ Failed (E-1042)` and the details are in the logs. There's no silent fallback.
 
 ### Commands

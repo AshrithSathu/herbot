@@ -26,6 +26,7 @@ export function NewAgent() {
   const [state, setState] = useReducer(transitionCreation, { status: 'closed' })
   const open = state.status !== 'closed'
   const busy = useRef(false)
+  const action = useRef<{ draft: string; key: string } | null>(null)
   const [name, setName] = useState(''),
     [purpose, setPurpose] = useState('')
   const client = useQueryClient(),
@@ -43,7 +44,9 @@ export function NewAgent() {
     busy.current = true
     setState({ status: 'creating' })
     try {
-      const { id } = await createTopic({ data: { name, purpose } })
+      const draft = JSON.stringify([name, purpose])
+      if (action.current?.draft !== draft) action.current = { draft, key: crypto.randomUUID() }
+      const { id } = await createTopic({ data: { name, purpose, idempotencyKey: action.current.key } })
       setState({ status: 'created', id })
       await continueToTopic(id)
     } catch (error) {

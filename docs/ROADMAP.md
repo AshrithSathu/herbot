@@ -100,5 +100,8 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - [x] Panel request states: explicit New agent and copy states, settings and task drafts kept across tabs, a guarded optimistic on/off switch, retryable history refresh and failed loads; companions retry a failed setup, ignore stale callbacks and keep a failed turn's text
 - [x] Review fixes: header sanitizing can't panic on Unicode case expansion; agents can send files only from their own topic (symlinks included) or Codex's generated images; the T3 CLI timeout covers writing the message too
 - [x] Performance: history labels in one batched query; migration 0019 indexes open-question cleanup, thread deletion and per-topic task history
+- [x] Round 2 safety: clean slate excludes active work and rejects older queued/replayed turns; scheduled occurrences survive a crash after claim (migration 0020); message high-water marks preserve fresh input in the wipe’s second (0022)
+- [x] Panel inbox drains per topic; create-agent/message requests retain durable idempotency keys and responses (migration 0021)
+- [x] Bounded task history with cursor pagination in the API/panel; hub search uses full-text first and a deliberate literal substring fallback
 - [ ] Rate limits, retention job, health alerts to the admin
 - Done when: a week runs with no manual restarts.

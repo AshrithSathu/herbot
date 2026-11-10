@@ -43,7 +43,7 @@ pub fn next(cron: &str, tz: &str, after: DateTime<Utc>) -> Result<DateTime<Utc>,
         .map_err(|e| TaskError::Invalid(format!("Cron has no future occurrence: {e}")))
 }
 /// Persisted lifecycle; wire values stay compatible with the panel and MCP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(type_name = "text", rename_all = "lowercase")]
 pub enum TaskStatus {
@@ -122,7 +122,7 @@ impl TaskAction {
     }
 }
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Task {
     pub id: i64,
     pub conversation_id: i64,
@@ -208,7 +208,15 @@ async fn capacity(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>) -> Result<(), 
     Ok(())
 }
 pub async fn list(pool: &PgPool, conversation: Option<i64>) -> Result<Vec<Task>, TaskError> {
-    Ok(sqlx::query_as("SELECT * FROM tasks WHERE ($1::bigint IS NULL OR conversation_id=$1) ORDER BY created_at DESC,id DESC").bind(conversation).fetch_all(pool).await?)
+    list_page(pool, conversation, None).await
+}
+pub async fn list_page(
+    pool: &PgPool,
+    conversation: Option<i64>,
+    before: Option<i64>,
+) -> Result<Vec<Task>, TaskError> {
+    Ok(sqlx::query_as("SELECT * FROM tasks WHERE ($1::bigint IS NULL OR conversation_id=$1) AND ($2::bigint IS NULL OR id<$2) ORDER BY id DESC LIMIT 50")
+        .bind(conversation).bind(before).fetch_all(pool).await?)
 }
 pub async fn change(pool: &PgPool, id: i64, action: &str) -> Result<Task, TaskError> {
     let mut tx = pool.begin().await?;
@@ -257,10 +265,35 @@ pub struct Scheduler<A: TelegramApi> {
 }
 impl<A: TelegramApi> Scheduler<A> {
     pub async fn tick(&self) -> Result<usize, TaskError> {
+        static OWNER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let owner = OWNER.get_or_init(|| {
+            format!(
+                "{}-{}",
+                std::process::id(),
+                Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            )
+        });
+
         let mut count = 0;
         // Bounded batch; each task gets its own claim transaction.
         for _ in 0..50 {
             let mut tx = self.pool.begin().await?;
+            let pending: Option<(i64, serde_json::Value)> = sqlx::query_as(
+                "SELECT id,snapshot FROM task_runs WHERE completed_at IS NULL AND dispatch_owner IS DISTINCT FROM $1 ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1")
+                .bind(owner).fetch_optional(&mut *tx).await?;
+            if let Some((run_id, snapshot)) = pending {
+                let task: Task = serde_json::from_value(snapshot)
+                    .map_err(|e| TaskError::Invalid(e.to_string()))?;
+                sqlx::query("UPDATE task_runs SET dispatch_owner=$2 WHERE id=$1")
+                    .bind(run_id)
+                    .bind(owner)
+                    .execute(&mut *tx)
+                    .await?;
+                tx.commit().await?;
+                self.dispatch_run(run_id, &task).await?;
+                count += 1;
+                continue;
+            }
             let now = Utc::now();
             let task: Option<Task>=sqlx::query_as("SELECT t.* FROM tasks t JOIN conversations c ON c.id=t.conversation_id JOIN chats h ON h.id=c.chat_id WHERE ((t.status='active' AND t.next_run_at <= $1) OR t.run_requested) AND c.enabled AND c.setup_state='ready' AND h.status='active' AND h.is_forum AND h.kind='supergroup' AND ($2::bigint IS NULL OR h.tg_chat_id=$2) ORDER BY t.next_run_at NULLS FIRST,t.id FOR UPDATE OF t SKIP LOCKED LIMIT 1").bind(now).bind(self.home_chat_id).fetch_optional(&mut *tx).await?;
             let Some(t) = task else { break };
@@ -275,44 +308,66 @@ impl<A: TelegramApi> Scheduler<A> {
             };
             let status = t.status.after_claim(t.cron.is_some());
             let claimed: Task = sqlx::query_as("UPDATE tasks SET next_run_at=$2,status=$3,last_run_at=$4,run_count=run_count+1,last_error=NULL,run_requested=false WHERE id=$1 RETURNING *").bind(t.id).bind(at).bind(status).bind(now).fetch_one(&mut *tx).await?;
+            let run_id: i64 = sqlx::query_scalar("INSERT INTO task_runs(task_id,conversation_id,snapshot,dispatch_owner) VALUES($1,$2,$3,$4) RETURNING id")
+                .bind(t.id).bind(t.conversation_id).bind(serde_json::to_value(&claimed).map_err(|e| TaskError::Invalid(e.to_string()))?).bind(owner).fetch_one(&mut *tx).await?;
             tx.commit().await?;
-            if let Err(err) = self.dispatch(&claimed).await {
-                let error_id = errors::record(
-                    &self.pool,
-                    "task.dispatch",
-                    &err.to_string(),
-                    serde_json::json!({"task_id":t.id,"conversation_id":t.conversation_id}),
-                )
-                .await?;
-                tracing::error!(%error_id,error=%err,task_id=t.id,"scheduled task failed");
-                sqlx::query("UPDATE tasks SET last_error=$2 WHERE id=$1")
-                    .bind(t.id)
-                    .bind(format!("{error_id}: {err}"))
-                    .execute(&self.pool)
-                    .await?;
-                let s = store::conversation_status_by_id(&self.pool, t.conversation_id).await?;
-                if let Err(e) = self
-                    .api
-                    .send_text(
-                        s.tg_chat_id,
-                        s.tg_topic_id,
-                        None,
-                        &format!(
-                            "❌ Failed ({error_id}): scheduled task dispatch failed. Check logs."
-                        ),
-                    )
-                    .await
-                {
-                    tracing::error!(%error_id,error=%e,"could not report task failure");
-                }
-            }
+            self.dispatch_run(run_id, &claimed).await?;
             count += 1;
         }
         Ok(count)
     }
-    async fn dispatch(&self, t: &Task) -> Result<(), TaskError> {
+    async fn dispatch_run(&self, run_id: i64, t: &Task) -> Result<(), TaskError> {
+        if let Err(err) = self.dispatch(run_id, t).await {
+            sqlx::query("UPDATE task_runs SET completed_at=clock_timestamp() WHERE id=$1")
+                .bind(run_id)
+                .execute(&self.pool)
+                .await?;
+            let error_id = errors::record(
+                &self.pool,
+                "task.dispatch",
+                &err.to_string(),
+                serde_json::json!({"task_id":t.id,"conversation_id":t.conversation_id}),
+            )
+            .await?;
+            tracing::error!(%error_id,error=%err,task_id=t.id,"scheduled task failed");
+            sqlx::query("UPDATE tasks SET last_error=$2 WHERE id=$1")
+                .bind(t.id)
+                .bind(format!("{error_id}: {err}"))
+                .execute(&self.pool)
+                .await?;
+            let s = store::conversation_status_by_id(&self.pool, t.conversation_id).await?;
+            if let Err(e) = self
+                .api
+                .send_text(
+                    s.tg_chat_id,
+                    s.tg_topic_id,
+                    None,
+                    &format!("❌ Failed ({error_id}): scheduled task dispatch failed. Check logs."),
+                )
+                .await
+            {
+                tracing::error!(%error_id,error=%e,"could not report task failure");
+            }
+        }
+
+        Ok(())
+    }
+    async fn dispatch(&self, run_id: i64, t: &Task) -> Result<(), TaskError> {
+        let _guard = crate::wipe::lock(&self.pool, t.conversation_id).await;
         let s = store::conversation_status_by_id(&self.pool, t.conversation_id).await?;
-        if !s.enabled {
+        if !s.enabled
+            || crate::wipe::predates_wipe(
+                &self.pool,
+                t.conversation_id,
+                t.last_run_at.unwrap_or(t.created_at),
+                0,
+            )
+            .await?
+        {
+            sqlx::query("UPDATE task_runs SET completed_at=clock_timestamp() WHERE id=$1")
+                .bind(run_id)
+                .execute(&self.pool)
+                .await?;
             return Ok(());
         }
         let header = outgoing::scrub(&format!(
@@ -345,7 +400,16 @@ impl<A: TelegramApi> Scheduler<A> {
         let claimed_at = t.last_run_at;
         tokio::spawn(async move {
             // The turn runner already records and reports agent failures.
-            if let Ok(Err(error)) = outcome.await
+            let result = outcome.await;
+            if let Err(e) =
+                sqlx::query("UPDATE task_runs SET completed_at=clock_timestamp() WHERE id=$1")
+                    .bind(run_id)
+                    .execute(&pool)
+                    .await
+            {
+                tracing::error!(run_id, error=%e, "could not complete scheduled occurrence");
+            }
+            if let Ok(Err(error)) = result
                 && let Err(db) =
                     sqlx::query("UPDATE tasks SET last_error=$2 WHERE id=$1 AND last_run_at=$3")
                         .bind(task_id)
@@ -549,5 +613,140 @@ mod state_tests {
             assert_eq!(state.after_claim(true), state);
         }
         assert!(TaskAction::parse("delete").is_err());
+    }
+}
+
+#[cfg(test)]
+mod durable_tests {
+    use super::*;
+    #[derive(Default)]
+    struct Api;
+    impl TelegramApi for Api {
+        async fn typing(&self, _: i64, _: Option<i32>) -> Result<(), ApiError> {
+            Ok(())
+        }
+        async fn send_buttons(
+            &self,
+            _: i64,
+            _: Option<i32>,
+            _: Option<i32>,
+            _: &str,
+            _: &[Vec<(String, String)>],
+        ) -> Result<i32, ApiError> {
+            Ok(100)
+        }
+        async fn edit_text(&self, _: i64, _: i32, _: &str) -> Result<(), ApiError> {
+            Ok(())
+        }
+        async fn remove_buttons(&self, _: i64, _: i32) -> Result<(), ApiError> {
+            Ok(())
+        }
+        async fn answer_button(&self, _: &str, _: Option<&str>) -> Result<(), ApiError> {
+            Ok(())
+        }
+        async fn leave_chat(&self, _: i64) -> Result<(), ApiError> {
+            Ok(())
+        }
+        async fn react(&self, _: i64, _: i32, _: &str) -> Result<(), ApiError> {
+            Ok(())
+        }
+        async fn download_file(&self, _: &str) -> Result<Vec<u8>, ApiError> {
+            Ok(vec![])
+        }
+
+        async fn send_text(
+            &self,
+            _: i64,
+            _: Option<i32>,
+            _: Option<i32>,
+            _: &str,
+        ) -> Result<i32, ApiError> {
+            Ok(100)
+        }
+    }
+    #[derive(Default)]
+    struct Queue(std::sync::Mutex<Vec<TurnJob>>);
+    impl TurnQueue for Queue {
+        fn submit(&self, job: TurnJob) {
+            self.0.lock().unwrap().push(job);
+        }
+    }
+    async fn seed(pool: &PgPool) {
+        sqlx::raw_sql("INSERT INTO chats(tg_chat_id,kind,is_forum) VALUES(-1001,'supergroup',true);
+            INSERT INTO conversations(chat_id,name,purpose,setup_state) VALUES(1,'General','Everyday chat','ready');")
+            .execute(pool).await.unwrap();
+    }
+    #[sqlx::test(migrations = "./migrations")]
+    async fn pending_occurrence_survives_claim_and_is_not_dispatched_twice(pool: PgPool) {
+        seed(&pool).await;
+        let task = create(
+            &pool,
+            CreateTask {
+                conversation_id: 1,
+                prompt: "Check the weather".into(),
+                title: None,
+                when: Some(Utc::now() + chrono::Duration::hours(1)),
+                cron: None,
+                timezone: None,
+            },
+        )
+        .await
+        .unwrap();
+        // Simulate the committed state immediately before a crashed process dispatched.
+        let claimed: Task = sqlx::query_as("UPDATE tasks SET status='done',next_run_at=NULL,run_count=1,last_run_at=now() WHERE id=$1 RETURNING *")
+            .bind(task.id).fetch_one(&pool).await.unwrap();
+        sqlx::query("INSERT INTO task_runs(task_id,conversation_id,snapshot,dispatch_owner) VALUES($1,1,$2,'dead-process')")
+            .bind(task.id).bind(serde_json::to_value(claimed).unwrap()).execute(&pool).await.unwrap();
+        let queue = Arc::new(Queue::default());
+        let scheduler = Scheduler {
+            pool: pool.clone(),
+            api: Arc::new(Api),
+            turns: queue.clone(),
+            admin_user_id: 1,
+            bot_user_id: 2,
+            home_chat_id: Some(-1001),
+        };
+        assert_eq!(scheduler.tick().await.unwrap(), 1);
+        assert_eq!(scheduler.tick().await.unwrap(), 0);
+        assert_eq!(queue.0.lock().unwrap().len(), 1);
+        queue.0.lock().unwrap()[0]
+            .reply
+            .as_ref()
+            .unwrap()
+            .deliver(Ok("done".into()));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let n: i64 =
+                    sqlx::query_scalar("SELECT count(*) FROM task_runs WHERE completed_at IS NULL")
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                if n == 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(scheduler.tick().await.unwrap(), 0);
+        let count: i64 = sqlx::query_scalar("SELECT run_count FROM tasks WHERE id=$1")
+            .bind(task.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+    #[sqlx::test(migrations = "./migrations")]
+    async fn history_is_bounded_and_pages_without_duplicates(pool: PgPool) {
+        seed(&pool).await;
+        sqlx::query("INSERT INTO tasks(conversation_id,prompt,once_at,next_run_at,timezone) SELECT 1,'Historical task',now(),now(),'UTC' FROM generate_series(1,123)")
+            .execute(&pool).await.unwrap();
+        let first = list(&pool, None).await.unwrap();
+        assert_eq!(first.len(), 50);
+        let second = list_page(&pool, None, Some(first[49].id)).await.unwrap();
+        let third = list_page(&pool, None, Some(second[49].id)).await.unwrap();
+        assert_eq!((second.len(), third.len()), (50, 23));
+        assert!(first[49].id > second[0].id && second[49].id > third[0].id);
     }
 }

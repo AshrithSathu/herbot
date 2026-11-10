@@ -189,6 +189,48 @@ pub async fn run_turn<A: TelegramApi + 'static, R: AgentRunner>(
     deps: &TurnDeps<A, R>,
     job: TurnJob,
 ) {
+    let _guard = crate::wipe::lock(&deps.pool, job.conversation_id).await;
+    // Use the persisted boundary too, so crash-replayed ingress cannot resurrect a wiped turn.
+    match crate::wipe::predates_wipe(&deps.pool, job.conversation_id, job.sent_at, job.reply_to)
+        .await
+    {
+        Ok(true) => {
+            if let Some(slot) = &job.reply {
+                slot.deliver(Err("Turn discarded by clean slate".into()));
+            }
+            return;
+        }
+        Ok(false) => {}
+        Err(e) => {
+            let reason = e.to_string();
+            match errors::record(
+                &deps.pool,
+                "turn.wipe_boundary",
+                &reason,
+                json!({"conversation_id":job.conversation_id}),
+            )
+            .await
+            {
+                Ok(id) => {
+                    let text =
+                        format!("❌ Failed ({id}): could not check clean slate. Check logs.");
+                    tracing::error!(error_id=%id, error=%e, "wipe boundary failed");
+                    if let Some(slot) = &job.reply {
+                        slot.deliver(Err(text.clone()));
+                    }
+                    if let Err(e) = deps
+                        .api
+                        .send_text(job.tg_chat_id, job.topic_id, None, &text)
+                        .await
+                    {
+                        tracing::error!(error=%e, "could not report boundary failure");
+                    }
+                }
+                Err(e) => tracing::error!(error=%e, "could not record boundary failure"),
+            }
+            return;
+        }
+    }
     let typing = spawn_typing(deps.api.clone(), job.tg_chat_id, job.topic_id);
     let started = tokio::time::Instant::now();
     let mut progress = None;

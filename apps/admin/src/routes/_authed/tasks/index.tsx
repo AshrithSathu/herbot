@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
+import { useMutation, useQueryClient, useSuspenseQuery, useSuspenseInfiniteQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { ClockIcon } from 'lucide-react'
 import { changeTask, createTask, type TaskInput } from '../../../api'
@@ -14,7 +14,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog'
 
 export const Route = createFileRoute('/_authed/tasks/')({
-  loader: async ({ context }) => { await Promise.all([context.queryClient.ensureQueryData(tasksQuery), context.queryClient.ensureQueryData(topicsQuery)]) },
+  loader: async ({ context }) => { await Promise.all([context.queryClient.ensureInfiniteQueryData(tasksQuery), context.queryClient.ensureQueryData(topicsQuery)]) },
   staticData: { crumb: 'Tasks' },
   head: () => ({ meta: [{ title: 'Tasks · Herbot admin' }] }),
   component: TasksPage,
@@ -23,7 +23,8 @@ export const Route = createFileRoute('/_authed/tasks/')({
 const selectClass = 'h-10 w-full rounded-md border bg-background px-3 text-base focus-visible:ring-2 focus-visible:ring-ring'
 
 function TasksPage() {
-  const { data: tasks, error } = useSuspenseQuery(tasksQuery)
+  const { data, error, fetchNextPage, hasNextPage, isFetchingNextPage } = useSuspenseInfiniteQuery(tasksQuery)
+  const tasks = data.pages.flat()
   const { data: topics } = useSuspenseQuery(topicsQuery)
   const client = useQueryClient()
   const refresh = () => client.invalidateQueries({ queryKey: ['tasks'] })
@@ -56,6 +57,7 @@ function TasksPage() {
           </AlertDialog>
         </div>
       </CardContent></Card>)}
+      {hasNextPage && <Button variant="outline" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()}>{isFetchingNextPage ? "Loading…" : "Load older tasks"}</Button>}
     </Section>
   </>
 }

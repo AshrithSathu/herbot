@@ -128,6 +128,43 @@ pub enum WipeError {
     Io(#[from] std::io::Error),
 }
 
+/// Shared with turns and ingress; scope includes the database for isolated tests.
+pub(crate) async fn lock(pool: &PgPool, id: i64) -> tokio::sync::OwnedMutexGuard<()> {
+    type Locks = std::sync::Mutex<
+        std::collections::HashMap<(String, i64), std::sync::Arc<tokio::sync::Mutex<()>>>,
+    >;
+    static LOCKS: std::sync::OnceLock<Locks> = std::sync::OnceLock::new();
+    let key = (
+        pool.connect_options()
+            .get_database()
+            .unwrap_or_default()
+            .to_owned(),
+        id,
+    );
+    let lock = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("conversation locks")
+        .entry(key)
+        .or_default()
+        .clone();
+    lock.lock_owned().await
+}
+
+pub(crate) async fn predates_wipe(
+    pool: &PgPool,
+    id: i64,
+    sent: chrono::DateTime<chrono::Utc>,
+    message_id: i32,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT COALESCE($2 <= wiped_at AND $3 <= wiped_through_message_id, false) FROM conversations WHERE id=$1")
+        .bind(id)
+        .bind(sent)
+        .bind(message_id)
+        .fetch_one(pool)
+        .await
+}
+
 /// The clean sweep behind `/new`, `/forget` and the admin panel's wipe.
 ///
 /// Deletes the conversation's T3 project (with all its threads) first, and
@@ -143,6 +180,7 @@ pub async fn run(
     status: &ConversationStatus,
     kind: WipeKind,
 ) -> Result<Wiped, WipeError> {
+    let _guard = lock(pool, status.conversation_id).await;
     let ours = store::all_thread_ids(pool, status.conversation_id).await?;
     let mut found = std::collections::BTreeSet::new();
     for thread in &ours {
