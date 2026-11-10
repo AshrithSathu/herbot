@@ -237,7 +237,8 @@ impl HerbotTools {
 
     /// General only: ask another topic's agent something and get its answer.
     /// The question and answer also show up in that topic in Telegram. Can take
-    /// a few minutes if the other agent has real work to do.
+    /// a few minutes if the other agent has real work to do. Only a topic
+    /// that is set up (has a purpose) can be asked.
     #[tool]
     pub async fn ask_topic(
         &self,

@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
+import { useMutation, useQueryClient, useSuspenseQuery, useSuspenseInfiniteQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { ClockIcon } from 'lucide-react'
 import { changeTask, createTask, type TaskInput } from '../../../api'
@@ -14,7 +14,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog'
 
 export const Route = createFileRoute('/_authed/tasks/')({
-  loader: async ({ context }) => { await Promise.all([context.queryClient.ensureQueryData(tasksQuery), context.queryClient.ensureQueryData(topicsQuery)]) },
+  loader: async ({ context }) => { await Promise.all([context.queryClient.ensureInfiniteQueryData(tasksQuery), context.queryClient.ensureQueryData(topicsQuery)]) },
   staticData: { crumb: 'Tasks' },
   head: () => ({ meta: [{ title: 'Tasks · Herbot admin' }] }),
   component: TasksPage,
@@ -23,7 +23,8 @@ export const Route = createFileRoute('/_authed/tasks/')({
 const selectClass = 'h-10 w-full rounded-md border bg-background px-3 text-base focus-visible:ring-2 focus-visible:ring-ring'
 
 function TasksPage() {
-  const { data: tasks, error } = useSuspenseQuery(tasksQuery)
+  const { data, error, fetchNextPage, hasNextPage, isFetchingNextPage } = useSuspenseInfiniteQuery(tasksQuery)
+  const tasks = data.pages.flat()
   const { data: topics } = useSuspenseQuery(topicsQuery)
   const client = useQueryClient()
   const refresh = () => client.invalidateQueries({ queryKey: ['tasks'] })
@@ -56,6 +57,7 @@ function TasksPage() {
           </AlertDialog>
         </div>
       </CardContent></Card>)}
+      {hasNextPage && <Button variant="outline" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()}>{isFetchingNextPage ? "Loading…" : "Load older tasks"}</Button>}
     </Section>
   </>
 }
@@ -80,6 +82,7 @@ function CreateTaskForm() {
       busy.current = true
       create.mutate({ conversation_id: Number(data.get('topic')), prompt: String(data.get('prompt')), title: String(data.get('title')) || undefined, ...(mode === 'once' ? { when: new Date(when).toISOString() } : { cron, timezone: String(data.get('timezone')) || undefined }) })
     }}>
+      <fieldset disabled={create.isPending} className="contents">
       <Field><FieldLabel htmlFor="task-topic">Topic</FieldLabel><select className={selectClass} id="task-topic" name="topic" required><option value="">Choose a topic</option>{topics.map(t => <option key={t.id} value={t.id}>{t.place}{!t.enabled ? ' (off)' : ''}</option>)}</select></Field>
       <Field><FieldLabel htmlFor="task-title">Title (optional)</FieldLabel><Input id="task-title" name="title" maxLength={200} /></Field>
       <Field><FieldLabel htmlFor="task-prompt">What should the agent do?</FieldLabel><Textarea id="task-prompt" name="prompt" required maxLength={16000} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} /></Field>
@@ -90,6 +93,7 @@ function CreateTaskForm() {
       </>}
       {create.isError && <ErrorNote title="Couldn’t create task">{create.error.message}</ErrorNote>}
       <Button type="submit" className="self-start" disabled={create.isPending}>{create.isPending && <Spinner />}{create.isPending ? 'Creating…' : 'Create task'}</Button>
+      </fieldset>
     </form>
   </CardContent></Card></Section>
 }

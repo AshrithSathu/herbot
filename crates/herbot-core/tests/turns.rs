@@ -933,3 +933,137 @@ async fn t3_cli_project_add_accepts_already_registered() {
         .unwrap_err();
     assert!(matches!(err, AgentError::Spawn(_)), "{err:?}");
 }
+
+#[tokio::test]
+async fn t3_cli_deadline_includes_a_blocked_stdin_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let slow = fake_t3(dir.path(), "exec sleep 30");
+    let input = "x".repeat(2 * 1024 * 1024);
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        cli(slow, Duration::from_secs(1)).send("t1", &input),
+    )
+    .await
+    .expect("stdin must be covered by the CLI deadline");
+    assert_eq!(result.unwrap_err(), AgentError::Timeout(1));
+}
+
+struct NoProjects;
+impl herbot_core::agent::ProjectCleaner for NoProjects {
+    fn project_of_thread<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> herbot_core::agent::BoxFuture<'a, Result<Option<String>, AgentError>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn threads_in_project<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> herbot_core::agent::BoxFuture<'a, Result<Vec<String>, AgentError>> {
+        Box::pin(async { Ok(vec![]) })
+    }
+    fn remove_project<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> herbot_core::agent::BoxFuture<'a, Result<(), AgentError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn wipes_overtake_running_turns_and_discard_queued_turns(pool: PgPool) {
+    use herbot_core::{
+        store,
+        wipe::{self, WipeKind},
+    };
+    for kind in [WipeKind::New, WipeKind::Forget] {
+        let runner = FakeRunner {
+            delay: Duration::from_millis(150),
+            ..Default::default()
+        };
+        // Use a fresh fixture for each kind without sharing conversation IDs.
+        if kind == WipeKind::Forget {
+            sqlx::query("TRUNCATE chats RESTART IDENTITY CASCADE")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let h = H::with_runner(pool.clone(), runner).await;
+        let api = h.deps.api.clone();
+        let runner = h.deps.runner.clone();
+        let dir = h.deps.agents_dir.clone();
+        let lanes = Arc::new(Lanes::new(h.deps));
+        let old = job(1, Some(7), 31, "queued before clean slate");
+        lanes.submit(job(1, Some(7), 30, "running"));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while runner.calls().len() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Ingress stores each message before its turn is queued, which moves
+        // the inbound boundary past it (store::store_message).
+        sqlx::query("UPDATE conversations SET last_inbound_message_id = 31 WHERE id = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // The agent is mid-run: the clean slate doesn't wait for it.
+        let status = store::conversation_status_by_id(&pool, 1).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wipe::run(&pool, &NoProjects, &dir, &status, kind),
+        )
+        .await
+        .expect("a wipe never waits for a running agent")
+        .unwrap();
+        // A previously accepted job (including crash replay) cannot recreate the thread.
+        lanes.submit(old);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while lanes.in_progress(1) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let messages: i64 = sqlx::query_scalar("SELECT count(*) FROM messages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let threads: i64 = sqlx::query_scalar("SELECT count(*) FROM agent_threads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!((messages, threads), (0, 0));
+        // The overtaken turn's reply belongs to the wiped history: never sent.
+        assert_eq!(api.texts().iter().filter(|s| s.as_str() == "ok").count(), 0);
+        assert_eq!(runner.calls().len(), 2);
+        if kind == WipeKind::New {
+            let mut fresh = job(1, Some(7), 9999, "a new message in the same second");
+            fresh.sent_at = sqlx::query_scalar(
+                "SELECT date_trunc('second',wiped_at) FROM conversations WHERE id=1",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            run_turn(
+                &TurnDeps {
+                    pool: pool.clone(),
+                    speaker: Arc::new(herbot_core::speech::NoSpeaker),
+                    api: api.clone(),
+                    runner: runner.clone(),
+                    agents_dir: dir.clone(),
+                    bot_user_id: BOT_ID,
+                    auto_effort: "medium".into(),
+                },
+                fresh,
+            )
+            .await;
+            assert_eq!(
+                runner.calls().len(),
+                4,
+                "newer Telegram IDs survive second-precision timestamps"
+            );
+        }
+    }
+}

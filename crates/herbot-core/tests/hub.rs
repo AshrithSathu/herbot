@@ -294,3 +294,49 @@ async fn personal_memories_are_global_but_require_a_caller(pool: PgPool) {
             .is_empty()
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn history_labels_include_disabled_topics_and_unnamed_topics(pool: PgPool) {
+    seed(&pool).await;
+    let general = caller(&pool, 1).await;
+    sqlx::query("UPDATE conversations SET enabled=false,name='' WHERE id=3")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let hits = hub::search(&pool, &general, "VPS", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        hits.iter()
+            .map(|line| line.topic.as_str())
+            .collect::<Vec<_>>(),
+        ["Herbot HQ › topic 9", "Herbot HQ › General"]
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn search_falls_back_to_literal_substrings(pool: PgPool) {
+    seed(&pool).await;
+    let general = caller(&pool, 1).await;
+    assert_eq!(
+        hub::search(&pool, &general, "aintain", None, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    sqlx::query("INSERT INTO messages(conversation_id,tg_message_id,from_tg_user_id,from_bot,body,sent_at) VALUES(2,90,111,false,'literal 50%_done',now())").execute(&pool).await.unwrap();
+    assert_eq!(
+        hub::search(&pool, &general, "%_", None, None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        hub::search(&pool, &general, "%missing_", None, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

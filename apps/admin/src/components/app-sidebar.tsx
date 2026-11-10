@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
 import { BrainIcon, SlidersHorizontalIcon, SearchIcon, PlugIcon, HashIcon, LayoutGridIcon, LogOutIcon, MessageCircleIcon, MessagesSquareIcon, ScrollTextIcon } from 'lucide-react'
 import { logout, type Topic } from '../api'
+import { ErrorNote } from '../ui'
 import { topicStatus, type TopicStatus } from '../format'
 import { topicsQuery } from '../queries'
 import {
@@ -171,6 +172,7 @@ function SignOut() {
           <span>{signOut.isPending ? 'Signing out…' : 'Sign out'}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
+      {signOut.isError && <ErrorNote title="Couldn’t sign out">{signOut.error.message} Try again.</ErrorNote>}
     </SidebarMenu>
   )
 }

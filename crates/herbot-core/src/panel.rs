@@ -38,7 +38,7 @@ pub struct Live {
 struct Panel {
     admin: Arc<AdminState>,
     live: Option<Live>,
-    processing: tokio::sync::Mutex<()>,
+    processing: std::sync::Mutex<std::collections::HashMap<i64, Arc<tokio::sync::Mutex<()>>>>,
     replies: std::sync::Mutex<std::collections::HashMap<i32, crate::turns::ReplySlot>>,
 }
 type Failure = (StatusCode, Json<Value>);
@@ -72,13 +72,26 @@ pub fn router(admin: Arc<AdminState>, live: Option<Live>) -> Router {
     let state = Arc::new(Panel {
         admin,
         live,
-        processing: tokio::sync::Mutex::new(()),
+        processing: Default::default(),
         replies: Default::default(),
     });
     if state.live.is_some() {
         let resume = state.clone();
         tokio::spawn(async move {
-            drain_inbox(resume).await;
+            match sqlx::query_scalar::<_, i64>("SELECT DISTINCT conversation_id FROM panel_inbox")
+                .fetch_all(&resume.admin.pool)
+                .await
+            {
+                Ok(ids) => {
+                    for id in ids {
+                        let s = resume.clone();
+                        tokio::spawn(async move {
+                            drain_inbox(s, id).await;
+                        });
+                    }
+                }
+                Err(e) => inbox_failure(&resume, None, &e.to_string()).await,
+            }
         });
     }
     Router::new()
@@ -93,10 +106,88 @@ pub fn router(admin: Arc<AdminState>, live: Option<Live>) -> Router {
         .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
+            idempotent,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             record_failure,
         ))
         .with_state(state)
 }
+async fn idempotent(
+    State(s): State<Arc<Panel>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path().to_owned();
+    if request.method() != axum::http::Method::POST
+        || !(path == "/admin/api/topics" || path.ends_with("/messages"))
+        || !admin::authorized(request.headers(), &s.admin.token)
+        || s.live.is_none()
+    {
+        return next.run(request).await;
+    }
+    idempotent_write(State(s), request, next).await
+}
+async fn idempotent_write(
+    State(s): State<Arc<Panel>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path().to_owned();
+    let Some(key) = request
+        .headers()
+        .get("idempotency-key")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty() && v.len() <= 128)
+        .map(str::to_owned)
+    else {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "Supply an Idempotency-Key for this action",
+        )
+        .into_response();
+    };
+    match sqlx::query("INSERT INTO panel_requests(key,scope) VALUES($1,$2) ON CONFLICT DO NOTHING")
+        .bind(&key)
+        .bind(&path)
+        .execute(&s.admin.pool)
+        .await
+    {
+        Ok(result) if result.rows_affected() == 0 => {
+            return match sqlx::query_as::<_, (String, Option<i32>, Option<Value>)>("SELECT scope,status,response FROM panel_requests WHERE key=$1")
+                .bind(&key).fetch_one(&s.admin.pool).await {
+                Ok((scope, Some(code), Some(body))) if scope == path =>
+                    (StatusCode::from_u16(code as u16).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), Json(body)).into_response(),
+                Ok(_) => fail(StatusCode::CONFLICT, "Action already pending or key used elsewhere. Check the topic before starting a new action.").into_response(),
+                Err(e) => io(e).into_response(),
+            };
+        }
+        Ok(_) => {}
+        Err(e) => return io(e).into_response(),
+    }
+    let response = next.run(request).await;
+    let status = response.status();
+    let body = match axum::body::to_bytes(response.into_body(), 1024 * 1024).await {
+        Ok(body) => body,
+        Err(e) => return io(e).into_response(),
+    };
+    let value: Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(e) => return io(e).into_response(),
+    };
+    if let Err(e) = sqlx::query("UPDATE panel_requests SET status=$2,response=$3 WHERE key=$1")
+        .bind(key)
+        .bind(i32::from(status.as_u16()))
+        .bind(&value)
+        .execute(&s.admin.pool)
+        .await
+    {
+        return io(e).into_response();
+    }
+    (status, Json(value)).into_response()
+}
+
 async fn record_failure(
     State(s): State<Arc<Panel>>,
     request: axum::extract::Request,
@@ -215,6 +306,9 @@ async fn send(
 ) -> Result<Json<Value>> {
     auth(&s, &h)?;
     let l = live(&s)?;
+    let lock = processing_lock(&s, id);
+    let processing = lock.lock().await;
+    let wipe_guard = crate::wipe::lock(&s.admin.pool, id).await;
     let st = status(&s, id).await?;
     if !st.enabled || l.rules.home_chat_id != Some(st.tg_chat_id) {
         return Err(fail(
@@ -346,13 +440,14 @@ async fn send(
             size: bytes.len() as u64,
         });
     }
+    sqlx::query("UPDATE conversations SET last_inbound_message_id=GREATEST(last_inbound_message_id,$2) WHERE id=$1")
+        .bind(id).bind(message_id).execute(&s.admin.pool).await.map_err(io)?;
     let queued = QueuedMessage {
         text,
         files: saved,
         style: style.map(|s| s.as_str().to_string()),
         sent_at: Utc::now(),
     };
-    let processing = s.processing.lock().await;
     sqlx::query(
         "INSERT INTO panel_inbox (conversation_id,tg_message_id,payload) VALUES ($1,$2,$3)",
     )
@@ -372,10 +467,11 @@ async fn send(
     } else {
         None
     };
+    drop(wipe_guard);
     drop(processing);
     let pending = s.clone();
     tokio::spawn(async move {
-        drain_inbox(pending).await;
+        drain_inbox(pending, id).await;
     });
     if let Some(answer) = answer {
         let outcome = tokio::time::timeout(std::time::Duration::from_secs(180), answer).await;
@@ -404,23 +500,26 @@ struct QueuedMessage {
     sent_at: chrono::DateTime<Utc>,
 }
 
-async fn drain_inbox(s: Arc<Panel>) {
-    let _guard = s.processing.lock().await;
+fn processing_lock(s: &Panel, id: i64) -> Arc<tokio::sync::Mutex<()>> {
+    s.processing
+        .lock()
+        .expect("panel lanes")
+        .entry(id)
+        .or_default()
+        .clone()
+}
+async fn drain_inbox(s: Arc<Panel>, conversation_id: i64) {
+    let lock = processing_lock(&s, conversation_id);
+    let _guard = lock.lock().await;
     let Some(l) = &s.live else {
         return;
     };
     loop {
-        let mut tx = match s.admin.pool.begin().await {
-            Ok(tx) => tx,
-            Err(e) => {
-                inbox_failure(&s, None, &e.to_string()).await;
-                return;
-            }
-        };
         let row: std::result::Result<Option<(i64, i64, i32, Value)>, _> = sqlx::query_as(
-            "SELECT id,conversation_id,tg_message_id,payload FROM panel_inbox ORDER BY id LIMIT 1 FOR UPDATE",
+            "SELECT id,conversation_id,tg_message_id,payload FROM panel_inbox WHERE conversation_id=$1 ORDER BY id LIMIT 1",
         )
-        .fetch_optional(&mut *tx)
+        .bind(conversation_id)
+        .fetch_optional(&s.admin.pool)
         .await;
         let (row_id, id, message_id, payload) = match row {
             Ok(Some(row)) => row,
@@ -436,13 +535,9 @@ async fn drain_inbox(s: Arc<Panel>) {
         // Failed turns are reported and consumed too: replay is for crashes, never an automatic retry.
         if let Err(e) = sqlx::query("DELETE FROM panel_inbox WHERE id=$1")
             .bind(row_id)
-            .execute(&mut *tx)
+            .execute(&s.admin.pool)
             .await
         {
-            inbox_failure(&s, None, &e.to_string()).await;
-            return;
-        }
-        if let Err(e) = tx.commit().await {
             inbox_failure(&s, None, &e.to_string()).await;
             return;
         }
@@ -869,5 +964,145 @@ mod tests {
                     .is_err()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod hardening_tests {
+    use super::*;
+    use crate::agent::{AgentError, BoxFuture, ProjectCleaner};
+    use tower::ServiceExt;
+    struct Cleaner;
+    impl ProjectCleaner for Cleaner {
+        fn project_of_thread<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> BoxFuture<'a, std::result::Result<Option<String>, AgentError>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn threads_in_project<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> BoxFuture<'a, std::result::Result<Vec<String>, AgentError>> {
+            Box::pin(async { Ok(vec![]) })
+        }
+        fn remove_project<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> BoxFuture<'a, std::result::Result<(), AgentError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+    fn state(pool: sqlx::PgPool) -> Arc<Panel> {
+        Arc::new(Panel {
+            admin: Arc::new(AdminState {
+                pool,
+                projects: Arc::new(Cleaner),
+                agents_dir: PathBuf::new(),
+                token: "test".into(),
+                agent_label: "test".into(),
+                bot_username: None,
+            }),
+            live: None,
+            processing: Default::default(),
+            replies: Default::default(),
+        })
+    }
+    #[sqlx::test(migrations = "./migrations")]
+    async fn topic_locks_preserve_order_without_blocking_other_topics(pool: sqlx::PgPool) {
+        let s = state(pool);
+        let first = processing_lock(&s, 1);
+        let _guard = first.lock().await;
+        let same = processing_lock(&s, 1);
+        let other = processing_lock(&s, 2);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), same.lock())
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), other.lock())
+                .await
+                .is_ok()
+        );
+    }
+    #[sqlx::test(migrations = "./migrations")]
+    async fn retries_and_double_submits_have_one_effect(pool: sqlx::PgPool) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let s = state(pool.clone());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let app = Router::new()
+            .route(
+                "/admin/api/topics",
+                post(move || {
+                    let counter = counter.clone();
+                    async move {
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        Json(json!({"id":42}))
+                    }
+                }),
+            )
+            .route(
+                "/admin/api/conversations/1/messages",
+                post(|| async { Json(json!({"message_id":7})) }),
+            )
+            .layer(axum::middleware::from_fn_with_state(s, idempotent_write));
+        let request = |path: &str, key: &str| {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("idempotency-key", key)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let (a, b) = tokio::join!(
+            app.clone().oneshot(request("/admin/api/topics", "one")),
+            app.clone().oneshot(request("/admin/api/topics", "one"))
+        );
+        assert!(a.unwrap().status().is_success());
+        assert!(matches!(
+            b.unwrap().status(),
+            StatusCode::OK | StatusCode::CONFLICT
+        ));
+        let replay = app
+            .clone()
+            .oneshot(request("/admin/api/topics", "one"))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::OK);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            app.clone()
+                .oneshot(request("/admin/api/conversations/1/messages", "one"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                app.clone()
+                    .oneshot(request("/admin/api/conversations/1/messages", "send"))
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::OK
+            );
+        }
+        // A crash leaves an uncertain action pending; retry cannot repeat it.
+        sqlx::query("INSERT INTO panel_requests(key,scope) VALUES('crashed','/admin/api/topics')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.oneshot(request("/admin/api/topics", "crashed"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

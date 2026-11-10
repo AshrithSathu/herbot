@@ -2,7 +2,7 @@
 //! it ends its reply with `[[file: path]]` lines and Herbot sends each one
 //! with the right Telegram type.
 //!
-//! Only files inside the agents folder or Codex's generated-images folder can
+//! Only files inside the current topic folder or Codex's generated-images folder can
 //! be sent, and never secret-looking ones (`.env`, `auth.json`, keys), so a
 //! confused agent can't leak credentials into the chat (invariant 5).
 
@@ -157,18 +157,21 @@ pub async fn resolve(
     let agents_real = tokio::fs::canonicalize(agents_dir)
         .await
         .unwrap_or_else(|_| agents_dir.to_path_buf());
-    let in_agents = real.starts_with(&agents_real);
+    let topic_real = tokio::fs::canonicalize(&topic_dir)
+        .await
+        .map_err(|_| RefuseReason::Outside(shown.clone()))?;
+    let in_topic = real.starts_with(&topic_real);
     let images = match codex_images_dir() {
         Some(dir) => tokio::fs::canonicalize(&dir).await.ok(),
         None => None,
     };
     let in_images = images.as_ref().is_some_and(|dir| real.starts_with(dir));
-    if !in_agents && !in_images {
+    if !in_topic && !in_images {
         return Err(RefuseReason::Outside(shown));
     }
 
     // Keep a copy of generated images with the topic.
-    let real = if in_agents {
+    let real = if in_topic {
         real
     } else {
         let sent = topic_dir.join("files").join("sent");
@@ -259,6 +262,55 @@ pub fn mime_of(path: &Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn resolution_is_limited_to_current_topic_including_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let topic = Path::new("chat/topic_1");
+        let own = root.path().join(topic).join("files");
+        let other = root.path().join("chat/topic_2/files");
+        tokio::fs::create_dir_all(&own).await.unwrap();
+        tokio::fs::create_dir_all(&other).await.unwrap();
+        tokio::fs::write(own.join("notes.txt"), "own")
+            .await
+            .unwrap();
+        tokio::fs::write(other.join("notes.txt"), "private")
+            .await
+            .unwrap();
+        let reference = |path: &str| FileRef {
+            path: path.into(),
+            caption: None,
+        };
+        assert!(
+            resolve(root.path(), topic, &reference("files/notes.txt"))
+                .await
+                .is_ok()
+        );
+        for path in ["../topic_2/files/notes.txt", "../../PERSONAL.md"] {
+            if path.ends_with("PERSONAL.md") {
+                tokio::fs::write(root.path().join("PERSONAL.md"), "shared")
+                    .await
+                    .unwrap();
+            }
+            assert!(matches!(
+                resolve(root.path(), topic, &reference(path)).await,
+                Err(RefuseReason::Outside(_))
+            ));
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(other.join("notes.txt"), own.join("link.txt")).unwrap();
+            assert!(matches!(
+                resolve(root.path(), topic, &reference("files/link.txt")).await,
+                Err(RefuseReason::Outside(_))
+            ));
+        }
+        tokio::fs::write(own.join(".env"), "secret").await.unwrap();
+        assert!(matches!(
+            resolve(root.path(), topic, &reference("files/.env")).await,
+            Err(RefuseReason::Secret(_))
+        ));
+    }
 
     #[test]
     fn file_lines_come_out_with_captions() {

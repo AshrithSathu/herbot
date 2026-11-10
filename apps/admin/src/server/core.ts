@@ -11,13 +11,14 @@ export class CoreError extends Error {
   }
 }
 
-export async function core<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function core<T>(path: string, init: { method?: string; body?: unknown; idempotencyKey?: string } = {}): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${env.coreUrl()}/admin/api${path}`, {
       method: init.method ?? 'GET',
       headers: {
         authorization: `Bearer ${env.adminToken()}`,
+        ...(init.idempotencyKey ? { "idempotency-key": init.idempotencyKey } : {}),
         ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
       },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),

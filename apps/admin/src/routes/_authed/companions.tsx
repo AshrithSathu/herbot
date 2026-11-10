@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useReducer, useRef, useState } from 'react'
 import {
   ArrowLeftIcon,
   MicIcon,
@@ -22,6 +22,15 @@ export const Route = createFileRoute('/_authed/companions')({
 })
 type Exchange = { role: 'you' | 'companion'; text: string }
 type Session = { id: number; fallback: boolean }
+type Connection =
+  | { status: 'opening' }
+  | { status: 'ready'; session: Session }
+  | { status: 'failed' }
+function transitionConnection(state: Connection, next: Connection): Connection {
+  if (next.status === 'opening' || state.status === 'opening') return next
+  return state
+}
+
 const LABELS: Record<VoicePhase, string> = {
   idle: 'Ready when you are',
   connecting: 'Opening conversation…',
@@ -113,7 +122,9 @@ function VoiceConversation({
   onBack: () => void
 }) {
   const [phase, setPhase] = useState<VoicePhase>('connecting')
-  const [session, setSession] = useState<Session | null>(null)
+  const [connection, setConnection] = useReducer(transitionConnection, { status: 'opening' })
+  const [attempt, setAttempt] = useState(0)
+  const session = connection.status === 'ready' ? connection.session : null
   const [messages, setMessages] = useState<Exchange[]>([])
   const [draft, setDraft] = useState('')
   const [error, setError] = useState('')
@@ -133,10 +144,16 @@ function VoiceConversation({
   const active = useRef(true)
   const busy = useRef(false)
   const generation = useRef(0)
+  const sendAction = useRef<{ text: string; key: string } | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
   function stopPlayback() {
     const m = media.current
-    m.audio?.pause()
+    if (m.audio) {
+      m.audio.onplay = null
+      m.audio.onended = null
+      m.audio.onerror = null
+      m.audio.pause()
+    }
     m.audio = undefined
     if (m.url) URL.revokeObjectURL(m.url)
     m.url = undefined
@@ -155,17 +172,20 @@ function VoiceConversation({
   }
   useEffect(() => {
     active.current = true
+    let disposed = false
+    setConnection({ status: 'opening' })
+    setPhase('connecting')
+    setError('')
     // Setup is shared across StrictMode remounts and rapid visits, preventing duplicate topics.
     void openCompanion(c)
       .then(async (value) => {
-        if (!active.current) return
-        setSession(value)
+        if (disposed) return
         setNotice(value.fallback ? (value.reason ?? '') : '')
         if (!value.fallback) {
           const history = await getMessages({
             data: { id: value.id, limit: 30 },
           })
-          if (!active.current) return
+          if (disposed) return
           setMessages(
             history.messages.map((m) => ({
               role: m.from_bot ? 'companion' : 'you',
@@ -173,50 +193,63 @@ function VoiceConversation({
             })),
           )
         }
+        setConnection({ status: 'ready', session: value })
         setPhase('idle')
       })
       .catch((e) => {
-        if (active.current) {
+        if (!disposed) {
+          setConnection({ status: 'failed' })
           setError(String(e))
           setPhase('idle')
         }
       })
     return () => {
+      disposed = true
       active.current = false
       generation.current++
       const m = media.current
       clearTimeout(m.timer)
-      if (m.recorder) m.recorder.onstop = null
+      if (m.recorder) { m.recorder.onstop = null; m.recorder.onerror = null; m.recorder.ondataavailable = null }
       if (m.recorder?.state === 'recording') m.recorder.stop()
       m.stream?.getTracks().forEach((t) => t.stop())
-      m.audio?.pause()
+      if (m.audio) {
+        m.audio.onplay = null
+        m.audio.onended = null
+        m.audio.onerror = null
+        m.audio.pause()
+      }
       if (m.url) URL.revokeObjectURL(m.url)
       void m.context?.close()
     }
-  }, [c])
+  }, [c, attempt])
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: 'nearest' })
   }, [messages])
-  async function send(text: string) {
-    if (!text.trim() || !session || busy.current) return
+  async function send(text: string, transcribed = false) {
+    if (!text.trim() || !session || busy.current || (!transcribed && (phase === 'listening' || phase === 'connecting' || phase === 'transcribing'))) return
     busy.current = true
     const turn = ++generation.current
     setError('')
-    setDraft('')
     stopPlayback()
     setMessages((old) => [...old, { role: 'you', text }])
     setPhase('thinking')
+    if (sendAction.current?.text !== text) sendAction.current = { text, key: crypto.randomUUID() }
+    let replied = false
     try {
       const context = unlockAudio()
       const reply = await companionReply({
         data: {
           id: session.id,
+          idempotencyKey: sendAction.current.key,
           text: session.fallback
             ? `[Companion voice conversation: ${c.name}. For this reply only: ${c.purpose}]\n\n${text}`
             : text,
         },
       })
       if (!active.current || turn !== generation.current) return
+      replied = true
+      sendAction.current = null
+      if (!transcribed) setDraft('')
       setMessages((old) => [...old, { role: 'companion', text: reply }])
       const response = await voiceRequest(
         'speak',
@@ -254,6 +287,7 @@ function VoiceConversation({
     } catch (e) {
       if (active.current && turn === generation.current) {
         setError(String(e))
+        if (!replied) setDraft(text)
         if (!media.current.audio) stopPlayback()
         setPhase('idle')
       }
@@ -263,6 +297,9 @@ function VoiceConversation({
   }
   async function microphone() {
     if (phase === 'listening') {
+      if (busy.current) return
+      busy.current = true
+      setPhase('transcribing')
       if (media.current.recorder?.state === 'recording')
         media.current.recorder.stop()
       return
@@ -304,12 +341,15 @@ function VoiceConversation({
           recorder.stop()
       }
       recorder.onerror = () => {
+        recorder.onstop = null
+        clearTimeout(media.current.timer)
         stream.getTracks().forEach((t) => t.stop())
         busy.current = false
         setError('Recording failed. Try again or type below.')
         setPhase('idle')
       }
       recorder.onstop = () => {
+        busy.current = true
         clearTimeout(media.current.timer)
         stream.getTracks().forEach((t) => t.stop())
         setPhase('transcribing')
@@ -322,7 +362,7 @@ function VoiceConversation({
             if (!active.current) return
             if (!data.text.trim())
               throw new Error('No speech heard. Try again or type below.')
-            return send(data.text)
+            return send(data.text, true)
           })
           .catch((e) => {
             busy.current = false
@@ -382,7 +422,7 @@ function VoiceConversation({
         >
           {!session && phase === 'idle'
             ? 'Conversation unavailable'
-            : LABELS[phase]}
+            : phase === 'connecting' && session ? 'Opening microphone…' : LABELS[phase]}
         </p>
         <Button
           disabled={waiting || !session}
@@ -447,6 +487,7 @@ function VoiceConversation({
           className="rounded-xl border border-destructive/40 p-4 text-sm text-destructive"
         >
           {error}
+          {connection.status === 'failed' && <Button variant="link" onClick={() => setAttempt((n) => n + 1)}>Retry connection</Button>}
         </p>
       )}
       <section
@@ -507,6 +548,7 @@ function VoiceConversation({
 }
 // Topic purpose and name identify companion ownership across devices; never repurpose another topic.
 const opening = new Map<string, Promise<Session & { reason?: string }>>()
+const creationKeys = new Map<string, string>()
 function openCompanion(c: Companion): Promise<Session & { reason?: string }> {
   const existing = opening.get(c.name)
   if (existing) return existing
@@ -526,7 +568,9 @@ function openCompanion(c: Companion): Promise<Session & { reason?: string }> {
       return { id: found.id, fallback: false }
     }
     try {
-      const topic = await createTopic({ data: { name, purpose: c.purpose } })
+      if (!creationKeys.has(c.name)) creationKeys.set(c.name, crypto.randomUUID())
+      const topic = await createTopic({ data: { name, purpose: c.purpose, idempotencyKey: creationKeys.get(c.name)! } })
+      creationKeys.delete(c.name)
       return { id: topic.id, fallback: false }
     } catch (e) {
       const general = topics.find(

@@ -1,34 +1,74 @@
-import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useReducer, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { createTopic } from '../api'
 import { keys } from '../queries'
+import { isSignedOut } from '../session'
 import { ErrorNote } from '../ui'
 import { Button } from './ui/button'
 import { Textarea } from './ui/textarea'
+type Creation =
+  | { status: 'closed' | 'editing' }
+  | { status: 'creating' }
+  | { status: 'failed'; error: string }
+  | { status: 'created'; id: number; error?: string }
+function transitionCreation(state: Creation, next: Creation): Creation {
+  const allowed: Record<Creation['status'], Creation['status'][]> = {
+    closed: ['editing'],
+    editing: ['closed', 'creating'],
+    creating: ['created', 'failed'],
+    failed: ['closed', 'creating', 'editing'],
+    created: ['created'],
+  }
+  return allowed[state.status].includes(next.status) ? next : state
+}
 export function NewAgent() {
-  const [open, setOpen] = useState(false),
-    [name, setName] = useState(''),
+  const [state, setState] = useReducer(transitionCreation, { status: 'closed' })
+  const open = state.status !== 'closed'
+  const busy = useRef(false)
+  const action = useRef<{ draft: string; key: string } | null>(null)
+  const [name, setName] = useState(''),
     [purpose, setPurpose] = useState('')
   const client = useQueryClient(),
     navigate = useNavigate()
-  const create = useMutation({
-    mutationFn: () => createTopic({ data: { name, purpose } }),
-    onSuccess: async ({ id }) => {
+  async function continueToTopic(id: number) {
+    try {
       await client.invalidateQueries({ queryKey: keys.topics })
       await navigate({ to: '/topics/$id', params: { id } })
-    },
-  })
+    } catch (error) {
+      setState({ status: 'created', id, error: String(error) })
+    }
+  }
+  async function submit() {
+    if (busy.current || state.status === 'created') return
+    busy.current = true
+    setState({ status: 'creating' })
+    try {
+      const draft = JSON.stringify([name, purpose])
+      if (action.current?.draft !== draft) action.current = { draft, key: crypto.randomUUID() }
+      const { id } = await createTopic({ data: { name, purpose, idempotencyKey: action.current.key } })
+      setState({ status: 'created', id })
+      await continueToTopic(id)
+    } catch (error) {
+      if (isSignedOut(error)) {
+        client.clear()
+        await navigate({ to: '/login', ignoreBlocker: true })
+      }
+      setState({ status: 'failed', error: String(error) })
+    } finally {
+      busy.current = false
+    }
+  }
   return (
     <div>
-      <Button onClick={() => setOpen(!open)} aria-expanded={open}>
+      <Button disabled={state.status === 'creating' || state.status === 'created'} onClick={() => setState({ status: open ? 'closed' : 'editing' })} aria-expanded={open}>
         New agent
       </Button>
       {open && (
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            if (!create.isPending) create.mutate()
+            void submit()
           }}
           className="mt-4 flex max-w-xl flex-col gap-3 rounded-xl border bg-card p-5"
         >
@@ -37,6 +77,7 @@ export function NewAgent() {
           </label>
           <input
             id="agent-name"
+            disabled={state.status === 'creating' || state.status === 'created'}
             required
             maxLength={128}
             value={name}
@@ -48,6 +89,7 @@ export function NewAgent() {
           </label>
           <Textarea
             id="agent-purpose"
+            disabled={state.status === 'creating' || state.status === 'created'}
             required
             maxLength={12000}
             value={purpose}
@@ -55,14 +97,15 @@ export function NewAgent() {
             placeholder="Give it a purpose in at least three words."
           />
           <div className="flex gap-2">
-            <Button disabled={create.isPending} type="submit">
-              {create.isPending ? 'Creating…' : 'Create agent'}
+            <Button disabled={(state.status === 'creating' || state.status === 'created')} type="submit">
+              {state.status === 'creating' ? 'Creating…' : state.status === 'created' ? 'Created' : 'Create agent'}
             </Button>
-            <Button variant="ghost" type="button" disabled={create.isPending} onClick={() => setOpen(false)}>
+            <Button variant="ghost" type="button" disabled={(state.status === 'creating' || state.status === 'created')} onClick={() => setState({ status: 'closed' })}>
               Cancel
             </Button>
           </div>
-          {create.isError && <ErrorNote title="Couldn’t create agent">{create.error.message}</ErrorNote>}
+          {state.status === 'failed' && <ErrorNote title="Couldn’t create agent">{state.error}</ErrorNote>}
+          {state.status === 'created' && <p role="status">Agent created. {state.error}<Button type="button" variant="link" onClick={() => void continueToTopic(state.id)}>Open agent</Button></p>}
         </form>
       )}
     </div>

@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
+use crate::errors;
 use crate::hub::{self, HubError};
 use crate::outgoing;
 use crate::poller::TelegramApi;
@@ -146,6 +147,12 @@ async fn ask_topic<A: TelegramApi + 'static>(
         Err(reply) => return reply,
     };
 
+    // Only a set-up, switched-on topic has an agent to ask; anything else
+    // would skip its purpose setup or wake a disabled topic.
+    if let Err(why) = &target.askable {
+        return fail(StatusCode::CONFLICT, why.clone());
+    }
+
     let shown = format!("📨 General asks:\n\n{}", outgoing::scrub(message));
     let asked_in = match say(&state, &target, None, &shown).await {
         Ok(id) => id,
@@ -196,6 +203,8 @@ struct Target {
     tg_chat_id: i64,
     topic_id: Option<i32>,
     place: String,
+    /// Switched on and set up (has a purpose), so its agent can be asked.
+    askable: Result<(), String>,
 }
 
 async fn target(pool: &PgPool, caller: &str, topic: &str) -> Result<Target, Reply> {
@@ -206,11 +215,22 @@ async fn target(pool: &PgPool, caller: &str, topic: &str) -> Result<Target, Repl
     let status = store::conversation_status_by_id(pool, conversation_id)
         .await
         .map_err(|e| hub_fail(e.into()))?;
+    let place = status.place();
+    let askable = if !status.enabled {
+        Err(format!("{place} is switched off in the admin panel"))
+    } else if status.setup_state != store::SetupState::Ready {
+        Err(format!(
+            "{place} isn't set up yet (it has no purpose); Ashrith sets it up by messaging that topic first"
+        ))
+    } else {
+        Ok(())
+    };
     Ok(Target {
         conversation_id,
         tg_chat_id: status.tg_chat_id,
         topic_id: status.tg_topic_id,
-        place: status.place(),
+        place,
+        askable,
     })
 }
 
@@ -221,12 +241,23 @@ async fn say<A: TelegramApi>(
     reply_to: Option<i32>,
     text: &str,
 ) -> Result<i32, Reply> {
-    let id = state
+    let id = match state
         .api
         .send_text(target.tg_chat_id, target.topic_id, reply_to, text)
         .await
-        .map_err(|e| fail(StatusCode::BAD_GATEWAY, e.to_string()))?;
-    store::store_bot_message(
+    {
+        Ok(id) => id,
+        Err(e) => {
+            return Err(failed(
+                state,
+                target,
+                "internal.send",
+                &format!("couldn't send to {}: {e}", target.place),
+            )
+            .await);
+        }
+    };
+    if let Err(e) = store::store_bot_message(
         &state.pool,
         target.conversation_id,
         id,
@@ -234,6 +265,35 @@ async fn say<A: TelegramApi>(
         text,
     )
     .await
-    .map_err(|e| hub_fail(e.into()))?;
+    {
+        return Err(failed(
+            state,
+            target,
+            "internal.store",
+            &format!("sent to {} but couldn't save it: {e}", target.place),
+        )
+        .await);
+    }
     Ok(id)
+}
+
+/// Fail loud: records the failure, logs it with its E-id, and returns the
+/// reason with that id so General's agent can tell Ashrith.
+async fn failed<A: TelegramApi>(
+    state: &InternalState<A>,
+    target: &Target,
+    kind: &str,
+    reason: &str,
+) -> Reply {
+    let context = json!({ "conversation_id": target.conversation_id });
+    match errors::record(&state.pool, kind, reason, context).await {
+        Ok(id) => {
+            tracing::error!(error_id = %id, reason, "General's action failed");
+            fail(StatusCode::BAD_GATEWAY, format!("Failed ({id}): {reason}"))
+        }
+        Err(db) => {
+            tracing::error!(reason, %db, "General's action failed and couldn't be recorded");
+            fail(StatusCode::BAD_GATEWAY, reason.to_string())
+        }
+    }
 }

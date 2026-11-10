@@ -142,7 +142,7 @@ function TopicPage() {
       </div>
       <div hidden={tab !== 'chat'}>
         <div role="tabpanel" id="view-chat" aria-labelledby="tab-chat" className="flex min-w-0 flex-col gap-3">
-          <ChatLog topicId={t.id} total={t.messages} targetMessage={message} />
+          <ChatLog key={t.id} topicId={t.id} total={t.messages} targetMessage={message} />
           <Composer key={t.id} id={t.id} enabled={t.enabled} />
         </div>
       </div>
@@ -151,8 +151,8 @@ function TopicPage() {
           <TopicFiles id={t.id} />
         </div>
       )}
-      {tab === 'settings' && (
-        <div role="tabpanel" id="view-settings" aria-labelledby="tab-settings" className="flex flex-col gap-8">
+      <div hidden={tab !== 'settings'}>
+        <div key={t.id} role="tabpanel" id="view-settings" aria-labelledby="tab-settings" className="flex flex-col gap-8">
           <Answering topic={t} />
           <Purpose key={t.id} topic={t} />
           <Voice topic={t} />
@@ -184,7 +184,7 @@ function TopicPage() {
 
           <CleanSlate topic={t} />
         </div>
-      )}
+      </div>
     </>
   )
 }
@@ -219,6 +219,7 @@ function Answering({ topic }: { topic: Topic }) {
     mutationFn: (value: string) => saveMode({ data: { id: topic.id, mode: value } }),
     onSuccess: () => cache.refresh(),
   })
+  const toggling = useRef(false)
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => setEnabled({ data: { id: topic.id, enabled } }),
     onMutate: async (enabled) => {
@@ -231,7 +232,9 @@ function Answering({ topic }: { topic: Topic }) {
       if (saved) cache.patch((t) => ({ ...t, enabled: saved.before }))
     },
     onSuccess: (updated) => cache.patch(() => updated),
-    onSettled: () => cache.refresh(),
+    onSettled: async () => {
+      try { await cache.refresh() } finally { toggling.current = false }
+    },
   })
 
   return (
@@ -268,7 +271,12 @@ function Answering({ topic }: { topic: Topic }) {
             aria-labelledby="answering-title"
             aria-describedby="answering-help"
             checked={topic.enabled}
-            onCheckedChange={(on) => toggle.mutate(on)}
+            disabled={toggle.isPending}
+            onCheckedChange={(on) => {
+              if (toggling.current) return
+              toggling.current = true
+              toggle.mutate(on)
+            }}
           />
         </Field>
       </FieldLabel>
@@ -346,6 +354,7 @@ function Purpose({ topic }: { topic: Topic }) {
               </FieldDescription>
               <Textarea
                 id="purpose"
+                disabled={save.isPending}
                 value={value}
                 className="field-sizing-fixed max-h-[60dvh] min-h-40 resize-y leading-relaxed wrap-anywhere"
                 aria-invalid={invalid || undefined}

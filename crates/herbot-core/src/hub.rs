@@ -190,13 +190,13 @@ pub async fn search(
     }
     let target = allowed_target(pool, caller, topic).await?;
     let limit = limit.unwrap_or(20).clamp(1, MAX_SEARCH_RESULTS);
-    let rows: Vec<(i64, DateTime<Utc>, bool, String)> = sqlx::query_as(
+    let mut rows: Vec<(i64, DateTime<Utc>, bool, String)> = sqlx::query_as(
         "SELECT m.conversation_id, m.sent_at, m.from_bot, m.body
          FROM messages m JOIN conversations v ON v.id = m.conversation_id
          WHERE v.chat_id = $1
            AND NOT v.private_mode
            AND ($2::bigint IS NULL OR m.conversation_id = $2)
-           AND (m.search @@ websearch_to_tsquery('simple', $3) OR m.body ILIKE '%' || $3 || '%')
+           AND m.search @@ websearch_to_tsquery('simple', $3)
          ORDER BY m.sent_at DESC, m.id DESC
          LIMIT $4",
     )
@@ -206,6 +206,22 @@ pub async fn search(
     .bind(limit)
     .fetch_all(pool)
     .await?;
+    if rows.is_empty() {
+        rows = sqlx::query_as(
+            "SELECT m.conversation_id,m.sent_at,m.from_bot,m.body FROM messages m
+             JOIN conversations v ON v.id=m.conversation_id
+             WHERE v.chat_id=$1 AND NOT v.private_mode
+             AND ($2::bigint IS NULL OR m.conversation_id=$2)
+             AND strpos(lower(m.body),lower($3))>0
+             ORDER BY m.sent_at DESC,m.id DESC LIMIT $4",
+        )
+        .bind(caller.chat_row_id)
+        .bind(target)
+        .bind(query)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    }
     lines(pool, rows).await
 }
 
@@ -242,18 +258,22 @@ async fn lines(
     pool: &PgPool,
     rows: Vec<(i64, DateTime<Utc>, bool, String)>,
 ) -> Result<Vec<Line>, HubError> {
-    let mut names = std::collections::HashMap::new();
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<i64> = rows.iter().map(|row| row.0).collect();
+    let names: std::collections::HashMap<_, _> = store::conversation_statuses_by_id(pool, &ids)
+        .await?
+        .into_iter()
+        .map(|status| (status.conversation_id, status.place()))
+        .collect();
     let mut out = Vec::with_capacity(rows.len());
     for (conversation_id, sent_at, from_bot, body) in rows {
-        if let std::collections::hash_map::Entry::Vacant(e) = names.entry(conversation_id) {
-            e.insert(
-                store::conversation_status_by_id(pool, conversation_id)
-                    .await?
-                    .place(),
-            );
-        }
+        let topic = names
+            .get(&conversation_id)
+            .ok_or(sqlx::Error::RowNotFound)?;
         out.push(Line {
-            topic: names[&conversation_id].clone(),
+            topic: topic.clone(),
             sent_at,
             from: speaker(from_bot),
             text: body,
