@@ -104,6 +104,7 @@ make run               # run herbot-core with pretty logs on 127.0.0.1:8787
 make check             # fmt + clippy (warnings are errors) + tests
 make test-voice        # real OpenAI transcription of generated speech (fractions of a cent)
 make db-down           # stop Postgres (make db-reset also deletes data)
+make admin-stress      # admin panel on 127.0.0.1:3310 against worst-case data (separate database)
 make admin             # admin panel on 127.0.0.1:3300 (needs [Bun](https://bun.sh) and the admin settings above)
 ```
 
