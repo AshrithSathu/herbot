@@ -80,6 +80,7 @@ function CreateTaskForm() {
       busy.current = true
       create.mutate({ conversation_id: Number(data.get('topic')), prompt: String(data.get('prompt')), title: String(data.get('title')) || undefined, ...(mode === 'once' ? { when: new Date(when).toISOString() } : { cron, timezone: String(data.get('timezone')) || undefined }) })
     }}>
+      <fieldset disabled={create.isPending} className="contents">
       <Field><FieldLabel htmlFor="task-topic">Topic</FieldLabel><select className={selectClass} id="task-topic" name="topic" required><option value="">Choose a topic</option>{topics.map(t => <option key={t.id} value={t.id}>{t.place}{!t.enabled ? ' (off)' : ''}</option>)}</select></Field>
       <Field><FieldLabel htmlFor="task-title">Title (optional)</FieldLabel><Input id="task-title" name="title" maxLength={200} /></Field>
       <Field><FieldLabel htmlFor="task-prompt">What should the agent do?</FieldLabel><Textarea id="task-prompt" name="prompt" required maxLength={16000} onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }} /></Field>
@@ -90,6 +91,7 @@ function CreateTaskForm() {
       </>}
       {create.isError && <ErrorNote title="Couldn’t create task">{create.error.message}</ErrorNote>}
       <Button type="submit" className="self-start" disabled={create.isPending}>{create.isPending && <Spinner />}{create.isPending ? 'Creating…' : 'Create task'}</Button>
+      </fieldset>
     </form>
   </CardContent></Card></Section>
 }

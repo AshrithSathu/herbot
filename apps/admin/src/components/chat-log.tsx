@@ -364,33 +364,44 @@ function useNewMessages(topicId: number, total: number, newestId: number | undef
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (total === known.current) return
-    const before = known.current
-    known.current = total
-    if (total < before || newestId === undefined) {
-      void queryClient.invalidateQueries({ queryKey: keys.messages(topicId) })
-      return
-    }
-    getMessages({ data: { id: topicId, after: newestId, limit: 100 } })
-      .then((page) => {
-        setError(null)
-        if (page.has_more) {
-          void queryClient.invalidateQueries({ queryKey: keys.messages(topicId) })
-          return
+    let disposed = false
+    let fetching = false
+    async function refresh() {
+      if (total === known.current || fetching) return
+      fetching = true
+      try {
+        if (total < known.current || newestId === undefined) {
+          await queryClient.invalidateQueries({ queryKey: keys.messages(topicId) })
+        } else {
+          const page = await getMessages({ data: { id: topicId, after: newestId, limit: 100 } })
+          if (disposed) return
+          if (page.has_more) {
+            await queryClient.invalidateQueries({ queryKey: keys.messages(topicId) })
+          } else {
+            queryClient.setQueryData<InfiniteData<MessagePage, number | null>>(keys.messages(topicId), (old) => {
+              if (!old || old.pages.length === 0) return old
+              const [newest, ...older] = old.pages
+              const have = new Set(old.pages.flatMap((p) => p.messages.map((m) => m.id)))
+              const fresh = page.messages.filter((m) => !have.has(m.id))
+              return { ...old, pages: [{ ...newest!, messages: [...newest!.messages, ...fresh] }, ...older] }
+            })
+          }
         }
-        queryClient.setQueryData<InfiniteData<MessagePage, number | null>>(keys.messages(topicId), (old) => {
-          if (!old || old.pages.length === 0) return old
-          const [newest, ...older] = old.pages
-          const have = new Set(newest!.messages.map((m) => m.id))
-          const fresh = page.messages.filter((m) => !have.has(m.id))
-          return { ...old, pages: [{ ...newest!, messages: [...newest!.messages, ...fresh] }, ...older] }
-        })
-      })
-      .catch((e: unknown) => {
-        known.current = before // try again on the next refresh
-        setError(e instanceof Error ? e.message : String(e))
-      })
-  }, [total]) // eslint-disable-line react-hooks/exhaustive-deps
+        if (!disposed) {
+          known.current = total
+          setError(null)
+        }
+      } catch (e) {
+        if (!disposed) setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        fetching = false
+      }
+    }
+    void refresh()
+    // A failed delta must retry even when the server's count hasn't changed.
+    const timer = setInterval(() => void refresh(), 2000)
+    return () => { disposed = true; clearInterval(timer) }
+  }, [topicId, total, newestId, queryClient])
 
   return error
 }

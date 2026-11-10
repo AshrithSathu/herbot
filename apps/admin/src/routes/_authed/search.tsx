@@ -16,12 +16,14 @@ function SearchPage() {
     navigate = Route.useNavigate()
   const q = searchQ ?? ''
   const [draft, setDraft] = useState(q)
+  useEffect(() => setDraft(q), [q])
   useEffect(() => {
+    if (draft === q) return
     const timer = setTimeout(() => {
       void navigate({ search: { q: draft }, replace: true })
     }, 300)
     return () => clearTimeout(timer)
-  }, [draft, navigate])
+  }, [draft, q, navigate])
   const query = useInfiniteQuery({
     queryKey: ['search', q],
     queryFn: ({ pageParam }) => searchMessages({ data: { q, before: pageParam } }),
@@ -45,7 +47,7 @@ function SearchPage() {
         placeholder="Search all conversations…"
         className="min-h-12 rounded-xl border bg-card px-4 text-base"
       />
-      {query.isError && <ErrorNote title="Search failed">{query.error.message}</ErrorNote>}
+      {query.isError && <ErrorNote title="Search failed">{query.error.message} <Button variant="link" onClick={() => void query.refetch()}>Retry</Button></ErrorNote>}
       {q && query.isFetching && <p role="status">Searching…</p>}
       {query.data && query.data.pages.flat().length === 0 && (
         <EmptyState title="No matching messages">Try a different word or phrase.</EmptyState>

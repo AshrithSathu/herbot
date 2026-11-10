@@ -96,6 +96,8 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - Done when: a fresh VPS comes up from the README alone.
 
 ## Step 11: Hardening
+- [x] Panel state inventory and request recovery: explicit creation/copy states, preserved settings drafts, guarded optimistic switch, retryable history deltas and read failures (see `STATE_MACHINES.md`; device/browser behavior remains a manual check)
+- [x] Companion connection lifecycle and recorder handoff: retry failed setup, reject stale setup callbacks, guard transcription, retain failed-turn text and detach media callbacks on teardown
 - [ ] Rate limits, retention job, health alerts to the admin
 - Done when: a week runs with no manual restarts.
 
