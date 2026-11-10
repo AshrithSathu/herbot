@@ -113,6 +113,7 @@ make admin             # admin panel on 127.0.0.1:3300 (needs [Bun](https://bun.
 - **Search**: full-text search across every topic, with highlighted snippets that jump to the message.
 - **Tasks**, **Memory**, **Personalize**: scheduled prompts (create with presets or cron), shared memories, and custom instructions with about-you.
 - **Connectors**: the MCP servers Codex has (names and commands only, never secrets) and Herbot's own tools.
+- **Companions**: four original animated characters (Luma, Flint, Pip, Orbit) to talk to by voice or text. Hold the mic, speak, and the companion answers out loud while its avatar talks; tap while it speaks to interrupt. Each has its own agent topic with memory, or runs in General (labelled) if the bot can't create topics.
 
 Data goes through TanStack Query: route loaders fill the cache on the server, so pages arrive rendered, hovering a link prefetches its page, the on/off switch updates optimistically and rolls back if herbot-core refuses, and a failed background refresh keeps the last data on screen with a warning. Every part is [shadcn/ui](https://ui.shadcn.com) on Tailwind v4: the Sidebar (lists every agent with its status, collapses to icons with ⌘B, becomes a sheet on phones, remembers its state in a cookie read on the server), Breadcrumb, Card, Table, Field, InputGroup, Item, Empty, Alert, AlertDialog, Switch, Badge, Kbd, Spinner, Skeleton and Sonner toasts. The palette is OKLCH: blue for actions, green, amber and red for status only, and light and dark modes that follow the system.
 

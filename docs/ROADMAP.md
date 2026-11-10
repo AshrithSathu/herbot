@@ -84,8 +84,10 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - [x] W3 shared memory (200 × 500 chars, `remember`/`recall`/`forget`, `/memory`) and custom instructions plus about-you (`/customize`, `/aboutme`, panel pages), in `agents/PERSONAL.md`
 - [x] W4 the panel as a chat app: web chat with attachments and per-message modes, rich rendering, new agents, topic mode, files, search, connectors
 - [x] W5 `/retry` and 🔄, edited messages re-asked, `/export` (Markdown + HTML), `/search`, `/private`, reaction feedback, a progress timer for long turns
-- [x] W6 `/imagine`, `/video` (Grok Imagine via `XAI_API_KEY`), `/sticker`, `/summary`
-- Done when: ✅ every row in GROK_PARITY.md is ✅, 🔑 or ⛔ with a reason; ✅ each ✅ feature ran once through the live bot with simulated messages (2026-11-10); 🔑 video generation runs once an `XAI_API_KEY` is added. ⏳ Ashrith tries it end to end in Telegram and the panel.
+- [x] W6 `/imagine`, `/video` (Grok Imagine with `XAI_API_KEY`, else storyboard videos from OpenAI images), `/sticker`, `/summary`
+- [x] W7 animated companions with voice chat in the panel
+- [x] Lead: `/x` (+ `search_x` with `X_BEARER_TOKEN`), `/wiki` (Grokipedia), `/language`
+- Done when: ✅ every row in GROK_PARITY.md is ✅, 🔑 or ⛔ with a reason; ✅ each ✅ feature ran once through the live bot with simulated messages (2026-11-10); ⏳ Ashrith tries it end to end in Telegram and the panel.
 
 ## Step 10: Isolated bots-T3 and VPS deploy
 - [ ] bots-T3 container: separate user, no host mounts except `bots/`, resource limits, rebuildable

@@ -165,6 +165,14 @@ Memories: added (`remember`, panel; near-duplicates and secrets refused; ≤ 200
 
 Composer: `draft → sending → accepted | error → retry`. Accepted messages are posted to Telegram first, saved in `panel_inbox` (migration 0015), then go through the same setup/turn path and are deleted; anything left is replayed at startup, and a wipe clears it. The chat shows "thinking…" while the conversation's lane has turns queued.
 
+### 19. Companion voice conversation (`/companions`, `panel_voice.rs`)
+
+`connecting → idle → listening → transcribing → thinking → speaking → idle`. Typed text skips listening and transcribing. Tapping the mic while it speaks stops playback and starts listening. A failure returns to idle with the error shown; if the browser blocks autoplay, a "Play reply" button appears. Leaving the page releases the microphone and audio. A reply timeout (180 s) doesn't cancel or retry the agent's turn.
+
+### 20. Topic language: `conversations.language`
+
+English by default; `/language <name>` sets any language, `/language english` goes back. Its voice notes and video soundtracks are transcribed in it (auto-detected if the name isn't known), the agent's header says to reply in it, and spoken replies follow the text.
+
 ## Admin panel (apps/admin)
 
 These states live in the browser and are kept explicit where they matter.

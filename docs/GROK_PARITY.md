@@ -2,7 +2,7 @@
 
 Everything Grok does (grok.com, the apps, Grok in Telegram), and how Herbot does it. Herbot's surfaces are the Telegram group (every topic an agent) and the admin panel (the web app). The agent is Codex in T3 on the Codex subscription. Codex has its own image generation, image viewing, web search, multi-agent and memories.
 
-Status: ✅ built and run once for real (simulated messages through the live bot, 2026-11-10) · 🔨 being built
+Status: ✅ built and run once for real (simulated messages through the live bot, 2026-11-10)
 
 | # | Grok feature | Herbot | Owner | Status |
 |---|---|---|---|---|
@@ -36,7 +36,7 @@ Status: ✅ built and run once for real (simulated messages through the live bot
 | 28 | Real-time X (Twitter) analysis | `/x <topic>` and the agents' `search_x` tool (X API v2 recent search: posts, authors, dates, engagement, links) with `X_BEARER_TOKEN`; without it, live web search of x.com plus X's public post endpoint (verified) for reading posts | lead | ✅ (full real-time search with `X_BEARER_TOKEN`) |
 | 29 | Grokipedia | `/wiki <topic>`: an encyclopedia article from Grokipedia (grokipedia.com), Wikipedia and primary sources, noting where they disagree; agents use Grokipedia for lookups | lead | ✅ |
 | 30 | Many languages | English by default (your rule); `/language <name>` makes a topic answer in any language, with its voice notes and video soundtracks transcribed in it and spoken replies following it. Ran live in Spanish | lead | ✅ |
-| 31 | Animated companions and live voice chat | Panel **Companions** page: original animated characters (idle, listening, thinking, talking with lip movement from the audio) you talk to by voice, each backed by its own agent with memory | W7 | 🔨 |
+| 31 | Animated companions and live voice chat | Panel **Companions** page: four original animated characters (Luma, Flint, Pip, Orbit; SVG, idle/listening/thinking/talking with mouths driven by the reply's audio, calmer under reduced motion) you talk to by voice or text, each backed by its own agent topic with memory (General, clearly labelled, until the bot can create topics). Ran live: speech → transcription → agent reply → spoken reply | W7 | ✅ |
 
 ## How it was checked
 
