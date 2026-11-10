@@ -28,22 +28,24 @@ export function SiteHeader() {
   })
 
   return (
-    <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background pr-[max(0.75rem,env(safe-area-inset-right))] pl-[max(0.75rem,env(safe-area-inset-left))] md:rounded-t-xl md:px-4">
+    <header className="sticky top-0 z-10 flex h-14 min-w-0 shrink-0 items-center gap-2 border-b bg-background pr-[max(0.75rem,env(safe-area-inset-right))] pl-[max(0.75rem,env(safe-area-inset-left))] md:rounded-t-xl md:px-4">
       <SidebarTrigger className="size-9 text-muted-foreground" />
       <Separator orientation="vertical" className="mx-1 data-[orientation=vertical]:h-4" />
-      <Breadcrumb>
+      <Breadcrumb className="min-w-0">
         <BreadcrumbList>
           {crumbs.map((c, i) => (
             <Fragment key={c.id}>
               {i > 0 && <BreadcrumbSeparator className="hidden sm:flex" />}
               <BreadcrumbItem className={i < crumbs.length - 1 ? 'hidden sm:inline-flex' : undefined}>
                 {i === crumbs.length - 1 ? (
-                  <BreadcrumbPage className="block max-w-[min(32ch,55vw)] truncate" title={c.label}>
-                    {c.label}
+                  <BreadcrumbPage dir="auto" className="user-text block max-w-[min(40ch,60vw)] truncate" title={c.label}>
+                    {c.label.trim() || 'Untitled'}
                   </BreadcrumbPage>
                 ) : (
-                  <BreadcrumbLink asChild className="max-w-[20ch] truncate">
-                    <Link to={c.path}>{c.label}</Link>
+                  <BreadcrumbLink asChild className="user-text block max-w-[20ch] truncate">
+                    <Link to={c.path} dir="auto" title={c.label}>
+                      {c.label}
+                    </Link>
                   </BreadcrumbLink>
                 )}
               </BreadcrumbItem>
