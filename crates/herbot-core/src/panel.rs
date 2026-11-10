@@ -888,7 +888,7 @@ async fn connectors(State(s): State<Arc<Panel>>, h: HeaderMap) -> Result<Json<Va
         }
     }
     Ok(Json(
-        json!({"servers":found,"tools":["list_topics","search_messages","read_topic","ask_topic (General only)","post_to_topic (General only)"]}),
+        json!({"servers":found,"tools":crate::hub::TOOLS.iter().map(|(name, scope)| json!({"name":name,"scope":scope})).collect::<Vec<_>>()}),
     ))
 }
 

@@ -102,16 +102,14 @@ function ConnectorsPage() {
             <p className="text-sm text-muted-foreground">Built in, through the herbot MCP server.</p>
           </div>
           <ul className="grid gap-x-6 gap-y-2 rounded-xl border bg-card p-4 sm:grid-cols-2 sm:px-5">
-            {query.data.tools.map((tool) => {
-              // "ask_topic (General only)" → name plus a note.
-              const [, name = tool, note] = tool.match(/^(\S+)(?:\s+\((.+)\))?$/) ?? []
-              return (
-                <li key={tool} className="flex min-w-0 items-baseline gap-2">
-                  <code className="truncate font-mono text-sm">{name}</code>
-                  {note && <span className="shrink-0 text-xs text-muted-foreground">{note}</span>}
-                </li>
-              )
-            })}
+            {query.data.tools.map((tool) => (
+              <li key={tool.name} className="flex min-w-0 items-baseline gap-2">
+                <code className="truncate font-mono text-sm">{tool.name}</code>
+                {tool.scope !== 'every topic' && (
+                  <span className="shrink-0 text-xs text-muted-foreground">{tool.scope}</span>
+                )}
+              </li>
+            ))}
           </ul>
         </section>
       )}

@@ -316,7 +316,8 @@ export const getConnectors = createServerFn({ method: 'GET' }).handler(async () 
       command: string | null
       url: string | null
     }[]
-    tools: string[]
+    /** Herbot's own MCP tools and who may use them (hub::TOOLS). */
+    tools: { name: string; scope: string }[]
   }>('/connectors'),
 )
 export const sendMessage = createServerFn({ method: 'POST' })

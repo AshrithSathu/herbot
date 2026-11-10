@@ -110,11 +110,19 @@ function ErrorPage() {
   )
 }
 
-/** Step to the error recorded just before or after this one (ids are
- * consecutive; a missing one, if any, shows the page's not-found state). */
+/** Step to the error recorded just before or after this one. The neighbour
+ * is looked up (and so preloaded); when there is none, as after the newest
+ * error, the arrow is disabled instead of leading to a not-found page. */
 function Neighbour({ id, label, newer = false }: { id: number; label: string; newer?: boolean }) {
-  if (id < 1) return null
+  const neighbour = useQuery({ ...errorQuery(`E-${id}`), enabled: id >= 1, retry: false })
   const Icon = newer ? ChevronRightIcon : ChevronLeftIcon
+  if (id < 1 || neighbour.isError) {
+    return (
+      <Button variant="ghost" size="icon" disabled aria-label={`${label} (none)`} className="size-11 md:size-9">
+        <Icon aria-hidden />
+      </Button>
+    )
+  }
   return (
     <Button variant="ghost" size="icon" asChild className="size-11 text-muted-foreground md:size-9">
       <Link to="/logs/$id" params={{ id: `E-${id}` }} aria-label={label} title={label}>

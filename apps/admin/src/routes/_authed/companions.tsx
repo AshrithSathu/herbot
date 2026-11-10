@@ -139,8 +139,22 @@ function VoiceConversation({ companion: c, onBack }: { companion: Companion; onB
   const transcript = useRef<HTMLOListElement>(null)
   const composer = useRef<HTMLTextAreaElement>(null)
 
-  // Known from an earlier try this session; don't make them fail again to learn it.
-  useEffect(() => setVoiceOff(voiceKnownOff()), [])
+  // Ask the server up front; fall back to what an earlier try this session learned.
+  useEffect(() => {
+    setVoiceOff(voiceKnownOff())
+    let live = true
+    fetch('/api/voice/status')
+      .then((r) => (r.ok ? (r.json() as Promise<{ transcribe: boolean; speak: boolean }>) : null))
+      .then((s) => {
+        if (live && s) setVoiceOff(!s.transcribe || !s.speak)
+      })
+      .catch(() => {
+        /* unknown: the first speech request will tell */
+      })
+    return () => {
+      live = false
+    }
+  }, [])
 
   function fail(e: unknown) {
     if (e instanceof VoiceOff) {

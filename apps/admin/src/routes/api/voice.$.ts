@@ -4,6 +4,19 @@ import { env } from '../../server/env'
 export const Route = createFileRoute('/api/voice/$')({
   server: {
     handlers: {
+      // Whether the server can hear and speak (OPENAI_API_KEY), asked once
+      // by Companions so it can say so before you try.
+      GET: async ({ params }) => {
+        requireSignIn()
+        if (params._splat !== 'status') return new Response('Not found', { status: 404 })
+        const response = await fetch(`${env.coreUrl()}/admin/api/voice/status`, {
+          headers: { authorization: `Bearer ${env.adminToken()}` },
+        })
+        return new Response(response.body, {
+          status: response.status,
+          headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+        })
+      },
       POST: async ({ params, request }) => {
         requireSignIn()
         if (request.headers.get('origin') !== new URL(request.url).origin)

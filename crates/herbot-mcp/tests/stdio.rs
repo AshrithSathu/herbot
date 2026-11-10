@@ -175,6 +175,12 @@ async fn lists_all_tools_with_caller_required(pool: PgPool) {
             "search_messages"
         ]
     );
+    // The panel's Connectors page lists hub::TOOLS; keep it in step.
+    let mut listed: Vec<&str> = herbot_core::hub::TOOLS.iter().map(|(n, _)| *n).collect();
+    listed.sort_unstable();
+    let mut registered = names.clone();
+    registered.sort_unstable();
+    assert_eq!(listed, registered, "update herbot_core::hub::TOOLS");
     for tool in &tools {
         let required = tool["inputSchema"]["required"].as_array().unwrap();
         assert!(
