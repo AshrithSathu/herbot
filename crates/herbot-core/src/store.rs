@@ -339,6 +339,18 @@ pub async fn conversation_status_by_id(
     Ok(row.into())
 }
 
+/// Statuses for a bounded set of history results, including disabled topics.
+pub async fn conversation_statuses_by_id(
+    pool: &PgPool,
+    ids: &[i64],
+) -> Result<Vec<ConversationStatus>, sqlx::Error> {
+    let rows: Vec<StatusRow> = sqlx::query_as(status_select!("WHERE v.id = ANY($1)"))
+        .bind(ids)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
 /// Every conversation the admin panel lists (chats the bot hasn't left), in
 /// one query: each chat's General first, then its topics in order.
 pub async fn listed_conversations(pool: &PgPool) -> Result<Vec<ConversationStatus>, sqlx::Error> {

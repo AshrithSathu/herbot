@@ -294,3 +294,22 @@ async fn personal_memories_are_global_but_require_a_caller(pool: PgPool) {
             .is_empty()
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn history_labels_include_disabled_topics_and_unnamed_topics(pool: PgPool) {
+    seed(&pool).await;
+    let general = caller(&pool, 1).await;
+    sqlx::query("UPDATE conversations SET enabled=false,name='' WHERE id=3")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let hits = hub::search(&pool, &general, "VPS", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        hits.iter()
+            .map(|line| line.topic.as_str())
+            .collect::<Vec<_>>(),
+        ["Herbot HQ › topic 9", "Herbot HQ › General"]
+    );
+}

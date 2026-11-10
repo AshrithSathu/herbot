@@ -271,23 +271,45 @@ mod tests {
         let other = root.path().join("chat/topic_2/files");
         tokio::fs::create_dir_all(&own).await.unwrap();
         tokio::fs::create_dir_all(&other).await.unwrap();
-        tokio::fs::write(own.join("notes.txt"), "own").await.unwrap();
-        tokio::fs::write(other.join("notes.txt"), "private").await.unwrap();
-        let reference = |path: &str| FileRef { path: path.into(), caption: None };
-        assert!(resolve(root.path(), topic, &reference("files/notes.txt")).await.is_ok());
+        tokio::fs::write(own.join("notes.txt"), "own")
+            .await
+            .unwrap();
+        tokio::fs::write(other.join("notes.txt"), "private")
+            .await
+            .unwrap();
+        let reference = |path: &str| FileRef {
+            path: path.into(),
+            caption: None,
+        };
+        assert!(
+            resolve(root.path(), topic, &reference("files/notes.txt"))
+                .await
+                .is_ok()
+        );
         for path in ["../topic_2/files/notes.txt", "../../PERSONAL.md"] {
             if path.ends_with("PERSONAL.md") {
-                tokio::fs::write(root.path().join("PERSONAL.md"), "shared").await.unwrap();
+                tokio::fs::write(root.path().join("PERSONAL.md"), "shared")
+                    .await
+                    .unwrap();
             }
-            assert!(matches!(resolve(root.path(), topic, &reference(path)).await, Err(RefuseReason::Outside(_))));
+            assert!(matches!(
+                resolve(root.path(), topic, &reference(path)).await,
+                Err(RefuseReason::Outside(_))
+            ));
         }
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(other.join("notes.txt"), own.join("link.txt")).unwrap();
-            assert!(matches!(resolve(root.path(), topic, &reference("files/link.txt")).await, Err(RefuseReason::Outside(_))));
+            assert!(matches!(
+                resolve(root.path(), topic, &reference("files/link.txt")).await,
+                Err(RefuseReason::Outside(_))
+            ));
         }
         tokio::fs::write(own.join(".env"), "secret").await.unwrap();
-        assert!(matches!(resolve(root.path(), topic, &reference("files/.env")).await, Err(RefuseReason::Secret(_))));
+        assert!(matches!(
+            resolve(root.path(), topic, &reference("files/.env")).await,
+            Err(RefuseReason::Secret(_))
+        ));
     }
 
     #[test]
