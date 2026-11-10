@@ -971,7 +971,7 @@ impl herbot_core::agent::ProjectCleaner for NoProjects {
 }
 
 #[sqlx::test(migrations = "./migrations")]
-async fn wipes_wait_for_running_turns_and_discard_queued_turns(pool: PgPool) {
+async fn wipes_overtake_running_turns_and_discard_queued_turns(pool: PgPool) {
     use herbot_core::{
         store,
         wipe::{self, WipeKind},
@@ -1002,10 +1002,21 @@ async fn wipes_wait_for_running_turns_and_discard_queued_turns(pool: PgPool) {
         })
         .await
         .unwrap();
-        let status = store::conversation_status_by_id(&pool, 1).await.unwrap();
-        wipe::run(&pool, &NoProjects, &dir, &status, kind)
+        // Ingress stores each message before its turn is queued, which moves
+        // the inbound boundary past it (store::store_message).
+        sqlx::query("UPDATE conversations SET last_inbound_message_id = 31 WHERE id = 1")
+            .execute(&pool)
             .await
             .unwrap();
+        // The agent is mid-run: the clean slate doesn't wait for it.
+        let status = store::conversation_status_by_id(&pool, 1).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            wipe::run(&pool, &NoProjects, &dir, &status, kind),
+        )
+        .await
+        .expect("a wipe never waits for a running agent")
+        .unwrap();
         // A previously accepted job (including crash replay) cannot recreate the thread.
         lanes.submit(old);
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -1024,7 +1035,8 @@ async fn wipes_wait_for_running_turns_and_discard_queued_turns(pool: PgPool) {
             .await
             .unwrap();
         assert_eq!((messages, threads), (0, 0));
-        assert_eq!(api.texts().iter().filter(|s| s.as_str() == "ok").count(), 1);
+        // The overtaken turn's reply belongs to the wiped history: never sent.
+        assert_eq!(api.texts().iter().filter(|s| s.as_str() == "ok").count(), 0);
         assert_eq!(runner.calls().len(), 2);
         if kind == WipeKind::New {
             let mut fresh = job(1, Some(7), 9999, "a new message in the same second");

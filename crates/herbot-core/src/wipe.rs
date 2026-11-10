@@ -151,6 +151,18 @@ pub(crate) async fn lock(pool: &PgPool, id: i64) -> tokio::sync::OwnedMutexGuard
     lock.lock_owned().await
 }
 
+/// When the conversation was last wiped (`None`: never). A turn compares it
+/// before and after its agent run to tell whether a clean slate overtook it.
+pub(crate) async fn epoch(
+    pool: &PgPool,
+    id: i64,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, sqlx::Error> {
+    sqlx::query_scalar("SELECT wiped_at FROM conversations WHERE id=$1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+}
+
 pub(crate) async fn predates_wipe(
     pool: &PgPool,
     id: i64,

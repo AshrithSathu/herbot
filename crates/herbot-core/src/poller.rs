@@ -989,7 +989,7 @@ pub(crate) async fn store_and_continue<A: TelegramApi, T: Transcriber>(
     let _guard = lock.lock().await;
     let existing: Option<i64> = sqlx::query_scalar("SELECT c.id FROM conversations c JOIN chats h ON h.id=c.chat_id WHERE h.tg_chat_id=$1 AND c.tg_topic_id IS NOT DISTINCT FROM $2")
         .bind(msg.chat.tg_chat_id).bind(msg.topic_id).fetch_optional(ctx.pool).await?;
-    let _wipe_guard = if let Some(id) = existing {
+    let wipe_guard = if let Some(id) = existing {
         let guard = wipe::lock(ctx.pool, id).await;
         let stale: bool = sqlx::query_scalar("SELECT wiped_at IS NOT NULL AND $2<=wiped_through_inbound_id FROM conversations WHERE id=$1")
             .bind(id).bind(msg.message_id).fetch_one(ctx.pool).await?;
@@ -1000,7 +1000,11 @@ pub(crate) async fn store_and_continue<A: TelegramApi, T: Transcriber>(
     } else {
         None
     };
-    match store::store_message(ctx.pool, msg).await? {
+    let stored = store::store_message(ctx.pool, msg).await?;
+    // Only storing must exclude a clean slate: a turn started from this
+    // message rechecks the wipe boundary itself.
+    drop(wipe_guard);
+    match stored {
         StoreOutcome::Stored {
             conversation_id,
             message_row_id,

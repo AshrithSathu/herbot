@@ -150,6 +150,10 @@ pub enum TurnError {
     RunFailed(String),
     #[error("could not write the topic's Codex settings: {0}")]
     Settings(#[from] std::io::Error),
+    /// A clean slate (`/new`, `/forget`, the panel) happened before or during
+    /// this turn: its work belongs to the wiped history, so it's dropped.
+    #[error("discarded by a clean slate")]
+    Discarded,
 }
 
 impl TurnError {
@@ -163,6 +167,7 @@ impl TurnError {
             TurnError::Agent(AgentError::BadOutput { .. }) => "agent.bad_output",
             TurnError::RunFailed(_) => "agent.run_failed",
             TurnError::Settings(_) => "agent.settings",
+            TurnError::Discarded => "turn.discarded",
         }
     }
 
@@ -180,6 +185,7 @@ impl TurnError {
             TurnError::Agent(AgentError::BadOutput { .. }) => "unexpected answer from T3".into(),
             TurnError::RunFailed(_) => "the agent run failed".into(),
             TurnError::Settings(_) => "couldn't set this topic's mode".into(),
+            TurnError::Discarded => "discarded by a clean slate".into(),
         }
     }
 }
@@ -189,48 +195,6 @@ pub async fn run_turn<A: TelegramApi + 'static, R: AgentRunner>(
     deps: &TurnDeps<A, R>,
     job: TurnJob,
 ) {
-    let _guard = crate::wipe::lock(&deps.pool, job.conversation_id).await;
-    // Use the persisted boundary too, so crash-replayed ingress cannot resurrect a wiped turn.
-    match crate::wipe::predates_wipe(&deps.pool, job.conversation_id, job.sent_at, job.reply_to)
-        .await
-    {
-        Ok(true) => {
-            if let Some(slot) = &job.reply {
-                slot.deliver(Err("Turn discarded by clean slate".into()));
-            }
-            return;
-        }
-        Ok(false) => {}
-        Err(e) => {
-            let reason = e.to_string();
-            match errors::record(
-                &deps.pool,
-                "turn.wipe_boundary",
-                &reason,
-                json!({"conversation_id":job.conversation_id}),
-            )
-            .await
-            {
-                Ok(id) => {
-                    let text =
-                        format!("❌ Failed ({id}): could not check clean slate. Check logs.");
-                    tracing::error!(error_id=%id, error=%e, "wipe boundary failed");
-                    if let Some(slot) = &job.reply {
-                        slot.deliver(Err(text.clone()));
-                    }
-                    if let Err(e) = deps
-                        .api
-                        .send_text(job.tg_chat_id, job.topic_id, None, &text)
-                        .await
-                    {
-                        tracing::error!(error=%e, "could not report boundary failure");
-                    }
-                }
-                Err(e) => tracing::error!(error=%e, "could not record boundary failure"),
-            }
-            return;
-        }
-    }
     let typing = spawn_typing(deps.api.clone(), job.tg_chat_id, job.topic_id);
     let started = tokio::time::Instant::now();
     let mut progress = None;
@@ -263,6 +227,18 @@ pub async fn run_turn<A: TelegramApi + 'static, R: AgentRunner>(
         Ok(said) => {
             if let Some(slot) = &job.reply {
                 slot.deliver(Ok(said));
+            }
+            return;
+        }
+        Err(TurnError::Discarded) => {
+            // The topic was wiped: nothing from before it may come back, and
+            // there's nothing to report in a clean slate.
+            tracing::info!(
+                conversation_id = job.conversation_id,
+                "turn discarded by a clean slate"
+            );
+            if let Some(slot) = &job.reply {
+                slot.deliver(Err("discarded by a clean slate".into()));
             }
             return;
         }
@@ -299,6 +275,20 @@ pub async fn run_turn<A: TelegramApi + 'static, R: AgentRunner>(
     }
 }
 
+/// Takes the topic's clean-slate lock and checks no wipe happened since
+/// `epoch` (the turn's start). Returns the guard, held while writing back.
+async fn still_current<A: TelegramApi, R: AgentRunner>(
+    deps: &TurnDeps<A, R>,
+    conversation_id: i64,
+    epoch: Option<DateTime<Utc>>,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, TurnError> {
+    let guard = crate::wipe::lock(&deps.pool, conversation_id).await;
+    if crate::wipe::epoch(&deps.pool, conversation_id).await? != epoch {
+        return Err(TurnError::Discarded);
+    }
+    Ok(guard)
+}
+
 /// Shows "typing…" in the topic until aborted.
 fn spawn_typing<A: TelegramApi + 'static>(
     api: Arc<A>,
@@ -321,6 +311,17 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
     deps: &TurnDeps<A, R>,
     job: &TurnJob,
 ) -> Result<String, TurnError> {
+    // Clean slates and turns exclude each other only around database writes,
+    // never across the agent run (minutes), so a long turn never holds up
+    // the topic's other messages, /new, the panel or scheduled tasks.
+    let setup_guard = crate::wipe::lock(&deps.pool, job.conversation_id).await;
+    // The persisted boundary also covers crash-replayed ingress.
+    if crate::wipe::predates_wipe(&deps.pool, job.conversation_id, job.sent_at, job.reply_to)
+        .await?
+    {
+        return Err(TurnError::Discarded);
+    }
+    let epoch = crate::wipe::epoch(&deps.pool, job.conversation_id).await?;
     let status = store::conversation_status_by_id(&deps.pool, job.conversation_id).await?;
     let place = status.place();
     let folder = deps
@@ -403,14 +404,20 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
         &job.text,
     );
 
-    let result: TurnResult = match &active {
+    drop(setup_guard);
+
+    // From here on, write back only if no clean slate happened meanwhile;
+    // the guard is held until the reply is delivered and stored.
+    let (result, _write_guard): (TurnResult, _) = match &active {
         Some(thread) => {
             let result = deps.runner.send(&thread.t3_thread_id, &message).await;
+            let guard = still_current(deps, job.conversation_id, epoch).await?;
             store::touch_thread(&deps.pool, thread.id).await?;
-            result?
+            (result?, guard)
         }
         None => match deps.runner.start(&folder, &place, &message).await {
             Ok(result) => {
+                let guard = still_current(deps, job.conversation_id, epoch).await?;
                 let link = thread_link(deps, &folder, &result.thread_id).await;
                 store::insert_thread(
                     &deps.pool,
@@ -420,15 +427,21 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
                 )
                 .await?;
                 tracing::info!(conversation_id = job.conversation_id, thread = %result.thread_id, "started agent thread");
-                result
+                (result, guard)
             }
             Err(AgentError::Timeout(secs)) => {
+                let _guard = still_current(deps, job.conversation_id, epoch).await?;
                 // The run keeps going in T3; remember its thread so the next
                 // message continues it instead of starting another.
                 recover_thread(deps, job.conversation_id, &folder, &place).await;
                 return Err(AgentError::Timeout(secs).into());
             }
-            Err(other) => return Err(other.into()),
+            Err(other) => {
+                // A wipe deletes the T3 project, which can fail the run: that
+                // is the clean slate, not an error to report.
+                still_current(deps, job.conversation_id, epoch).await?;
+                return Err(other.into());
+            }
         },
     };
 
