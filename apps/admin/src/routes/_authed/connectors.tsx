@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
+import { Button } from '../../components/ui/button'
 import { getConnectors } from '../../api'
 import { EmptyState, ErrorNote, PageHeader } from '../../ui'
 export const Route = createFileRoute('/_authed/connectors')({
@@ -17,7 +18,7 @@ function ConnectorsPage() {
         title="Connectors"
         description="The tools available to your agents through Codex. Configuration is read-only here."
       />
-      {query.isError && <ErrorNote title="Couldn’t read connectors">{query.error.message}</ErrorNote>}
+      {query.isError && <ErrorNote title="Couldn’t read connectors">{query.error.message} <Button variant="link" onClick={() => void query.refetch()}>Retry</Button></ErrorNote>}
       {query.isPending && <p role="status">Reading connectors…</p>}
       <div className="grid gap-3 sm:grid-cols-2">
         {query.data?.servers.map((s, i) => (

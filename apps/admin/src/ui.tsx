@@ -126,7 +126,7 @@ export function notify(message: string) {
 }
 
 export function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false)
+  const [copy, setCopy] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(timer.current), [])
   return (
@@ -135,15 +135,21 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
       variant="ghost"
       size="sm"
       className="min-h-11 min-w-11 text-muted-foreground"
+      disabled={copy === 'copying'}
       onClick={async () => {
-        await navigator.clipboard.writeText(text)
-        setCopied(true)
         clearTimeout(timer.current)
-        timer.current = setTimeout(() => setCopied(false), 1500)
+        setCopy('copying')
+        try {
+          await navigator.clipboard.writeText(text)
+          setCopy('copied')
+          timer.current = setTimeout(() => setCopy('idle'), 1500)
+        } catch {
+          setCopy('failed')
+        }
       }}
     >
-      {copied ? <CheckIcon className="text-success" aria-hidden /> : <CopyIcon aria-hidden />}
-      <span aria-live="polite">{copied ? 'Copied' : label}</span>
+      {copy === 'copied' ? <CheckIcon className="text-success" aria-hidden /> : <CopyIcon aria-hidden />}
+      <span aria-live="polite">{copy === 'copied' ? 'Copied' : copy === 'failed' ? 'Copy failed. Retry' : label}</span>
     </Button>
   )
 }

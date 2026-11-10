@@ -11,8 +11,7 @@ export function Composer({ id, enabled }: { id: number; enabled: boolean }) {
   const [text, setText] = useState(''),
     [files, setFiles] = useState<File[]>([]),
     [style, setStyle] = useState('auto')
-  const [pending, setPending] = useState<string | null>(null),
-    [fileError, setFileError] = useState<string | null>(null)
+  const [fileError, setFileError] = useState<string | null>(null)
   const picker = useRef<HTMLInputElement>(null),
     locked = useRef(false)
   const activity = useQuery({
@@ -25,7 +24,7 @@ export function Composer({ id, enabled }: { id: number; enabled: boolean }) {
     onSuccess: async () => {
       setText('')
       setFiles([])
-      setPending(null)
+      await client.invalidateQueries({ queryKey: keys.messages(id) })
       await client.invalidateQueries({ queryKey: keys.topics })
       await client.invalidateQueries({ queryKey: ['activity', id] })
     },
@@ -34,6 +33,7 @@ export function Composer({ id, enabled }: { id: number; enabled: boolean }) {
     },
   })
   function add(incoming: File[]) {
+    if (locked.current || !enabled) return
     if (
       files.length + incoming.length > 10 ||
       incoming.some((f) => f.size > 20 * 1024 * 1024) ||
@@ -48,7 +48,6 @@ export function Composer({ id, enabled }: { id: number; enabled: boolean }) {
   function submit() {
     if (locked.current || !enabled || (!text.trim() && !files.length)) return
     locked.current = true
-    setPending(text || files.map((f) => f.name).join(', '))
     const data = new FormData()
     data.set('id', String(id))
     data.set('text', text)
@@ -56,6 +55,10 @@ export function Composer({ id, enabled }: { id: number; enabled: boolean }) {
     files.forEach((f) => data.append('files', f))
     send.mutate(data)
   }
+  // TanStack's mutation status owns the request and its submitted snapshot.
+  const pending = (send.isPending || send.isError) && send.variables
+    ? String(send.variables.get('text') || send.variables.getAll('files').map((f) => (f as File).name).join(', '))
+    : null
   return (
     <div className="flex flex-col gap-3">
       {pending && (
@@ -98,7 +101,6 @@ export function Composer({ id, enabled }: { id: number; enabled: boolean }) {
           onChange={(e) => {
             setText(e.target.value)
             send.reset()
-            setPending(null)
           }}
           onPaste={(e) => {
             if (e.clipboardData.files.length) {
