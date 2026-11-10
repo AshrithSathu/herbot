@@ -248,3 +248,38 @@
 :root [data-sonner-toaster][data-sonner-toaster] {
   z-index: 60 !important;
 }
+
+.chat-markdown { line-height: 1.75; }
+.chat-markdown > :first-child { margin-top: 0; }
+.chat-markdown > :last-child { margin-bottom: 0; }
+.chat-markdown p, .chat-markdown ul, .chat-markdown ol, .chat-markdown blockquote { margin-block: .65em; }
+.chat-markdown h1, .chat-markdown h2, .chat-markdown h3, .chat-markdown h4 { margin-block: 1em .4em; font-weight: 600; line-height: 1.3; }
+.chat-markdown h1 { font-size: 1.4em; }
+.chat-markdown h2 { font-size: 1.2em; }
+.chat-markdown ul { list-style: disc; padding-left: 1.5em; }
+.chat-markdown ol { list-style: decimal; padding-left: 1.5em; }
+.chat-markdown a { text-decoration: underline; text-underline-offset: 3px; }
+.chat-markdown blockquote { border-left: 3px solid var(--border); padding-left: 1em; color: var(--muted-foreground); }
+.chat-markdown th, .chat-markdown td { border: 1px solid var(--border); padding: .5em .75em; text-align: left; }
+.chat-markdown :not(pre) > code { background: var(--muted); border-radius: .3em; padding: .1em .3em; font-size: .9em; }
+.hljs-keyword, .hljs-selector-tag, .hljs-title { color: var(--primary); font-weight: 600; }
+.hljs-string, .hljs-number, .hljs-literal { color: var(--success); }
+.hljs-comment { color: var(--muted-foreground); font-style: italic; }
+[data-highlight='true'] { outline: 2px solid var(--ring); outline-offset: 3px; }
+
+/* Original companion illustrations share the panel's perceptual palette. */
+.companion-avatar { width: 100%; height: 100%; overflow: visible; }
+.companion-face { fill: oklch(82% .09 var(--companion-hue)); stroke: oklch(40% .06 var(--companion-hue)); stroke-width: 2; }
+.companion-wings { fill: oklch(76% .13 var(--companion-hue)); stroke: oklch(50% .09 var(--companion-hue)); stroke-width: 2; }
+.companion-shadow { fill: var(--foreground); opacity: .07; }
+.companion-eyes, .companion-mouth { fill: oklch(26% .03 var(--companion-hue)); }
+.companion-cheeks { stroke: oklch(60% .14 var(--companion-hue)); stroke-width: 5; stroke-linecap: round; }
+.companion-lines { fill: none; stroke: oklch(40% .06 var(--companion-hue)); stroke-width: 2; stroke-linecap: round; }
+.companion-body { transform-origin: 120px 180px; animation: companion-breathe 4s ease-in-out infinite; }
+.companion-eyes { transform-origin: 120px 122px; animation: companion-blink 6s infinite; }
+.is-listening .companion-body { transform: rotate(-5deg); animation-duration: 2s; }
+.is-thinking .companion-body, .is-transcribing .companion-body { animation: companion-think 2s ease-in-out infinite; }
+@keyframes companion-breathe { 50% { transform: translateY(-4px) scale(1.015); } }
+@keyframes companion-blink { 0%, 43%, 47%, 100% { transform: scaleY(1); } 45% { transform: scaleY(.08); } }
+@keyframes companion-think { 50% { transform: rotate(5deg) translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .companion-body, .companion-eyes { animation: none !important; transform: none !important; } }

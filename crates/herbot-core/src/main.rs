@@ -23,13 +23,21 @@ async fn main() -> anyhow::Result<()> {
         .context("database migration failed")?;
     tracing::info!("database ready, migrations applied");
 
+    herbot_core::personal::write_file(&pool, &absolute_agents_dir(&config.agents_dir)?)
+        .await
+        .context("could not write PERSONAL.md")?;
+
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Telegram is optional for local work, but when a token is set it must
     // work: a bad token stops startup instead of running half-broken.
     let mut telegram_username = None;
     let mut internal_router: Option<axum::Router> = None;
+    let mut simulate_router: Option<axum::Router> = None;
     let mut poller_task = None;
+    let mut scheduler_task = None;
+    herbot_core::tasks::default_timezone().context("invalid HERBOT_TIMEZONE")?;
+    let mut panel_live = None;
     match &config.telegram {
         None => tracing::warn!("TELEGRAM_BOT_TOKEN not set; Telegram is disabled"),
         Some(tg) => {
@@ -52,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
                 home_chat = ?tg.home_chat_id,
                 "telegram connected"
             );
-            let transcriber = match &config.openai {
+            let transcriber = Arc::new(match &config.openai {
                 Some(openai) => {
                     tracing::info!(model = %openai.transcribe_model, "voice notes on (OpenAI, English)");
                     voice::AnyTranscriber::OpenAi(voice::OpenAiTranscriber::new(
@@ -64,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
                     tracing::warn!("OPENAI_API_KEY not set; voice notes will fail with an error");
                     voice::AnyTranscriber::Off(voice::NoTranscriber)
                 }
-            };
+            });
             let agents_dir = absolute_agents_dir(&config.agents_dir)?;
             check_t3_cli(&config.t3_bin).await?;
             let refreshed = agents_md::refresh_outdated(&pool, &agents_dir)
@@ -77,6 +85,9 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             warn_if_codex_effort_differs(&config.agent_effort);
+            herbot_core::modes::write_shared_config(&agents_dir)
+                .await
+                .context("could not write the agents' shared Codex settings")?;
             let runner = agent::T3Cli {
                 bin: config.t3_bin.clone(),
                 provider: "codex".to_string(),
@@ -91,14 +102,28 @@ async fn main() -> anyhow::Result<()> {
             );
             let projects: Arc<dyn agent::ProjectCleaner> = Arc::new(runner.clone());
             let api = Arc::new(poller::BotApi(bot.clone()));
+            let speaker = herbot_core::speech::configured(config.openai.as_ref());
             let lanes = Arc::new(turns::Lanes::new(turns::TurnDeps {
                 pool: pool.clone(),
+                speaker: speaker.clone(),
                 api: api.clone(),
                 runner: Arc::new(runner),
                 agents_dir: agents_dir.clone(),
                 bot_user_id: me.id.0,
+                auto_effort: config.agent_effort.clone(),
             }));
             let shared_turns: Arc<dyn turns::TurnQueue> = lanes;
+            scheduler_task = Some(tokio::spawn(
+                herbot_core::tasks::Scheduler {
+                    pool: pool.clone(),
+                    api: api.clone(),
+                    turns: shared_turns.clone(),
+                    admin_user_id: tg.admin_user_id,
+                    bot_user_id: me.id.0,
+                    home_chat_id: tg.home_chat_id,
+                }
+                .run(shutdown_rx.clone()),
+            ));
             match &config.internal_token {
                 Some(token) => {
                     internal_router = Some(internal::router(Arc::new(internal::InternalState {
@@ -116,21 +141,74 @@ async fn main() -> anyhow::Result<()> {
                     "HERBOT_INTERNAL_TOKEN not set; General can't post to or ask topics"
                 ),
             }
+            panel_live = Some(herbot_core::panel::Live {
+                api: api.clone(),
+                turns: shared_turns.clone(),
+                rules,
+                username: username.clone(),
+                bot_user_id: me.id.0,
+                transcriber: transcriber.clone(),
+                speaker: speaker.clone(),
+            });
             let settings = poller::RunSettings {
+                speaker,
                 rules,
                 bot_username: username.clone(),
                 transcriber,
                 agents_dir,
                 agent_label: format!("{} · {}", config.agent_model, config.agent_effort),
-                api,
+                api: api.clone(),
                 turns: shared_turns,
                 projects,
             };
+            // Simulated admin messages for offline runs (HERBOT_SIMULATE=1).
+            let mut inject = None;
+            if std::env::var("HERBOT_SIMULATE").is_ok_and(|v| v == "1") {
+                match (&config.internal_token, tg.home_chat_id) {
+                    (Some(token), Some(home)) => {
+                        let chat = bot
+                            .get_chat(teloxide::types::ChatId(home))
+                            .await
+                            .context("simulate: could not read the home group")?;
+                        let admin = bot
+                            .get_chat_member(
+                                teloxide::types::ChatId(home),
+                                teloxide::types::UserId(tg.admin_user_id),
+                            )
+                            .await
+                            .context("simulate: could not read the admin's name")?;
+                        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                        inject = Some(rx);
+                        simulate_router = Some(herbot_core::simulate::router(Arc::new(
+                            herbot_core::simulate::SimulateState {
+                                api: api.clone(),
+                                inject: tx,
+                                token: token.clone(),
+                                admin_user_id: tg.admin_user_id,
+                                admin_name: admin.user.first_name.clone(),
+                                home_chat_id: home,
+                                home_title: chat.title().unwrap_or_default().to_string(),
+                                next_update_id: std::sync::atomic::AtomicU32::new(
+                                    4_000_000_000
+                                        + (chrono::Utc::now().timestamp() % 100_000_000) as u32,
+                                ),
+                            },
+                        )));
+                        tracing::warn!(
+                            "HERBOT_SIMULATE=1: POST /internal/simulate injects admin messages (never turn this on in production)"
+                        );
+                    }
+                    _ => tracing::warn!(
+                        "HERBOT_SIMULATE=1 needs HERBOT_INTERNAL_TOKEN and HERBOT_HOME_CHAT_ID; simulation is off"
+                    ),
+                }
+            }
             poller_task = Some(tokio::spawn(poller::run(
                 bot,
                 pool.clone(),
                 settings,
                 shutdown_rx.clone(),
+                inject,
             )));
             telegram_username = Some(username);
         }
@@ -158,7 +236,15 @@ async fn main() -> anyhow::Result<()> {
                 bot_username: telegram_username.clone(),
             };
             tracing::info!("admin API on");
-            Some(admin::router(Arc::new(state)))
+            let state = Arc::new(state);
+            Some(
+                admin::router(state.clone())
+                    .merge(herbot_core::panel_voice::router(
+                        state.clone(),
+                        config.openai.as_ref(),
+                    ))
+                    .merge(herbot_core::panel::router(state, panel_live)),
+            )
         }
         None => {
             tracing::warn!("HERBOT_ADMIN_TOKEN not set; the admin panel can't connect");
@@ -173,6 +259,9 @@ async fn main() -> anyhow::Result<()> {
     let mut router = app::router(state);
     if let Some(internal) = internal_router {
         router = router.merge(internal);
+    }
+    if let Some(simulate) = simulate_router {
+        router = router.merge(simulate);
     }
     if let Some(admin) = admin_router {
         router = router.merge(admin);
@@ -193,6 +282,14 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("telegram poller did not stop within 15s");
     }
 
+    if let Some(mut task) = scheduler_task
+        && tokio::time::timeout(Duration::from_secs(15), &mut task)
+            .await
+            .is_err()
+    {
+        task.abort();
+        tracing::warn!("scheduler stopped after shutdown timeout");
+    }
     tracing::info!("herbot-core stopped");
     Ok(())
 }

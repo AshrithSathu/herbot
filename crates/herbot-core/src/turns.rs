@@ -18,7 +18,11 @@ use tokio::sync::{mpsc, oneshot};
 use crate::agent::{AgentError, AgentRunner, TurnOutcome, TurnResult};
 use crate::agents_md;
 use crate::errors;
+use crate::format;
+use crate::media::{Activity, FileKind};
 use crate::meta::{self, Meta};
+use crate::modes::Style;
+use crate::outbound_files;
 use crate::outgoing;
 use crate::poller::{ApiError, TelegramApi};
 use crate::store;
@@ -40,7 +44,15 @@ pub struct TurnJob {
     /// Set when someone is waiting for this turn's outcome (General's
     /// `ask_topic`): gets the reply text, or the failure.
     pub reply: Option<ReplySlot>,
+    /// `/fast`, `/think`, `/heavy` or `/deepsearch`: this one message's mode.
+    pub style: Option<Style>,
+    /// An album's id: its photos and files arrive as separate messages and
+    /// become one turn (see [`ALBUM_WAIT`]).
+    pub album: Option<String>,
 }
+
+/// How long a lane waits for the rest of an album before running its turn.
+pub const ALBUM_WAIT: Duration = Duration::from_secs(4);
 
 /// A one-shot channel for a turn's outcome, shareable so `TurnJob` stays
 /// `Clone`. Only the first send is delivered.
@@ -82,17 +94,23 @@ impl Eq for ReplySlot {}
 /// recorder in tests.
 pub trait TurnQueue: Send + Sync {
     fn submit(&self, job: TurnJob);
+    fn in_progress(&self, _id: i64) -> bool {
+        false
+    }
 }
 
 /// Everything a turn needs; shared by all lanes.
 pub struct TurnDeps<A: TelegramApi, R: AgentRunner> {
     pub pool: PgPool,
+    pub speaker: Arc<dyn crate::speech::Speaker>,
     pub api: Arc<A>,
     pub runner: Arc<R>,
     /// Absolute root of the conversation folders.
     pub agents_dir: PathBuf,
     /// The bot's own Telegram user id, for storing its replies.
     pub bot_user_id: u64,
+    /// Reasoning effort for Auto mode (`HERBOT_AGENT_EFFORT`).
+    pub auto_effort: String,
 }
 
 pub const TYPING_EVERY: Duration = Duration::from_secs(4);
@@ -130,6 +148,8 @@ pub enum TurnError {
     Agent(#[from] AgentError),
     #[error("agent run failed: {0}")]
     RunFailed(String),
+    #[error("could not write the topic's Codex settings: {0}")]
+    Settings(#[from] std::io::Error),
 }
 
 impl TurnError {
@@ -142,6 +162,7 @@ impl TurnError {
             TurnError::Agent(AgentError::Project(_)) => "agent.project",
             TurnError::Agent(AgentError::BadOutput { .. }) => "agent.bad_output",
             TurnError::RunFailed(_) => "agent.run_failed",
+            TurnError::Settings(_) => "agent.settings",
         }
     }
 
@@ -158,6 +179,7 @@ impl TurnError {
             TurnError::Agent(AgentError::Project(_)) => "couldn't add this topic to T3".into(),
             TurnError::Agent(AgentError::BadOutput { .. }) => "unexpected answer from T3".into(),
             TurnError::RunFailed(_) => "the agent run failed".into(),
+            TurnError::Settings(_) => "couldn't set this topic's mode".into(),
         }
     }
 }
@@ -168,7 +190,31 @@ pub async fn run_turn<A: TelegramApi + 'static, R: AgentRunner>(
     job: TurnJob,
 ) {
     let typing = spawn_typing(deps.api.clone(), job.tg_chat_id, job.topic_id);
-    let result = turn(deps, &job).await;
+    let started = tokio::time::Instant::now();
+    let mut progress = None;
+    let work = turn(deps, &job);
+    tokio::pin!(work);
+    let mut next = tokio::time::Instant::now() + Duration::from_secs(8);
+    let result = loop {
+        tokio::select! {
+            result=&mut work=>break result,
+            _=tokio::time::sleep_until(next)=>{
+                let seconds=started.elapsed().as_secs();
+                let text=format!("Working on it… {}:{:02}",seconds/60,seconds%60);
+                let update=match progress {
+                    Some(id)=>deps.api.edit_text(job.tg_chat_id,id,&text).await,
+                    None=>match deps.api.send_text(job.tg_chat_id,job.topic_id,None,&text).await {Ok(id)=>{progress=Some(id);Ok(())},Err(e)=>Err(e)},
+                };
+                if let Err(e)=update {tracing::warn!(error=%e,"progress update failed");}
+                next=tokio::time::Instant::now()+Duration::from_secs(5);
+            }
+        }
+    };
+    if let Some(id) = progress
+        && let Err(e) = deps.api.delete_message(job.tg_chat_id, id).await
+    {
+        tracing::warn!(error=%e,"progress cleanup failed");
+    }
     typing.abort();
 
     let err = match result {
@@ -244,7 +290,59 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
         store::mark_project_registered(&deps.pool, job.conversation_id).await?;
     }
 
+    // The effort this message needs: its own mode (/think, …) or the topic's.
+    let effort = match job.style {
+        Some(style) => style.effort(&deps.auto_effort),
+        None => status.mode.effort(&deps.auto_effort),
+    };
+    crate::modes::set_topic_effort(
+        &deps.agents_dir,
+        &agents_md::relative_dir(job.tg_chat_id, job.topic_id),
+        effort,
+    )
+    .await?;
+    let mut extra = Vec::new();
+    if store::is_private(&deps.pool, job.conversation_id).await? {
+        extra.push((
+            "private",
+            "on; do not store memories or use memory tools; Telegram and T3 retain this thread"
+                .into(),
+        ));
+    } else {
+        extra.push(("private", "off".into()));
+    }
+    let missed:bool=sqlx::query_scalar("WITH previous AS MATERIALIZED (SELECT negative_feedback FROM conversations WHERE id=$1 FOR UPDATE) UPDATE conversations SET negative_feedback=false FROM previous WHERE id=$1 RETURNING previous.negative_feedback").bind(job.conversation_id).fetch_one(&deps.pool).await?;
+    if missed {
+        extra.push((
+            "feedback",
+            "Ashrith gave a thumbs-down: the last answer missed; improve your next answer".into(),
+        ));
+    }
+    match (job.style, status.mode.instruction()) {
+        (Some(style), _) => extra.push(("mode", style.instruction().to_string())),
+        (None, Some(instruction)) => extra.push(("mode", instruction.to_string())),
+        (None, None) => {}
+    }
+
+    if status.language != "English" {
+        extra.push((
+            "language",
+            format!(
+                "reply in {} (Ashrith set this topic's language)",
+                status.language
+            ),
+        ));
+    }
     let active = store::active_thread(&deps.pool, job.conversation_id).await?;
+    // Custom instructions or memories changed since this thread last ran.
+    if let (Some(thread), Some(changed)) = (&active, crate::personal::updated_at(&deps.pool).await?)
+        && changed > thread.last_turn_at.unwrap_or(thread.created_at)
+    {
+        extra.push((
+            "note",
+            "PERSONAL.md (custom instructions, about-you, memories) changed since your last turn; reread ../../PERSONAL.md".to_string(),
+        ));
+    }
     let agents_md_changed = match (&active, status.agents_md_updated_at) {
         (Some(thread), Some(updated)) => updated > thread.last_turn_at.unwrap_or(thread.created_at),
         _ => false,
@@ -258,6 +356,7 @@ async fn turn<A: TelegramApi, R: AgentRunner>(
             sent_at: job.sent_at,
             agents_md_changed,
             caller_token: &crate::hub::caller_token(&deps.pool, job.conversation_id).await?,
+            extra,
         },
         &job.text,
     );
@@ -330,18 +429,49 @@ async fn deliver<A: TelegramApi, R: AgentRunner>(
         );
     }
     let (body, choices) = outgoing::extract_choices(&clean);
-    let parts = outgoing::split(&body, outgoing::MAX_MESSAGE_CHARS);
+    let (body, file_refs) = outbound_files::extract(&body);
+    let mut parts = outgoing::split_markdown(&body, outgoing::MAX_MESSAGE_CHARS);
+    if parts.is_empty() && choices.is_some() {
+        parts.push("Pick one:".to_string());
+    }
     let last = parts.len().saturating_sub(1);
     for (i, part) in parts.iter().enumerate() {
         let reply_to = (i == 0).then_some(job.reply_to);
+        // Markdown rendered for Telegram; plain text if it would run long.
+        let html = format::to_html(part);
+        let html = if format::visible_len(&html) <= format::TELEGRAM_MAX_CHARS {
+            html
+        } else {
+            format::escape(part)
+        };
         let sent_id = match (&choices, i == last) {
-            (Some(options), true) => send_with_choices(deps, job, reply_to, part, options).await?,
+            (Some(options), true) => {
+                send_with_choices(deps, job, reply_to, part, &html, options).await?
+            }
+            (None, true) => {
+                deps.api
+                    .send_rich_buttons(
+                        job.tg_chat_id,
+                        job.topic_id,
+                        reply_to,
+                        &html,
+                        part,
+                        &[vec![(
+                            "🔄".into(),
+                            format!("retry:{}", job.conversation_id),
+                        )]],
+                    )
+                    .await?
+            }
             _ => {
                 deps.api
-                    .send_text(job.tg_chat_id, job.topic_id, reply_to, part)
+                    .send_rich(job.tg_chat_id, job.topic_id, reply_to, &html, part)
                     .await?
             }
         };
+        if i == last {
+            set_retry(deps, job, sent_id).await?;
+        }
         store::store_bot_message(
             &deps.pool,
             job.conversation_id,
@@ -351,12 +481,153 @@ async fn deliver<A: TelegramApi, R: AgentRunner>(
         )
         .await?;
     }
+
+    let sent_files = send_files(deps, job, &file_refs, parts.is_empty()).await?;
+    crate::speech::after_reply(&deps.pool, &*deps.api, &*deps.speaker, job, &body).await;
     // What the caller of `ask_topic` gets back: the reply as sent, with the
-    // options listed (they were buttons in Telegram).
-    Ok(match choices {
+    // options listed (they were buttons in Telegram) and the files named.
+    let mut said = match choices {
         Some(options) => format!("{body}\n\n(Options offered: {})", options.join(" | ")),
         None => body,
-    })
+    };
+    if !sent_files.is_empty() {
+        said.push_str(&format!("\n\n(Files sent: {})", sent_files.join(", ")));
+    }
+    Ok(said)
+}
+
+/// Sends the files a reply named with `[[file: …]]`, after its text. A file
+/// that can't be sent is reported in the chat with an error id; the others
+/// still go. Returns the names of the files sent.
+async fn send_files<A: TelegramApi, R: AgentRunner>(
+    deps: &TurnDeps<A, R>,
+    job: &TurnJob,
+    file_refs: &[outbound_files::FileRef],
+    reply_to_first: bool,
+) -> Result<Vec<String>, TurnError> {
+    let folder = agents_md::relative_dir(job.tg_chat_id, job.topic_id);
+    let mut sent = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut last_message = None;
+    for (i, wanted) in file_refs.iter().enumerate() {
+        let reply_to = (reply_to_first && i == 0).then_some(job.reply_to);
+        let mut resolved = match outbound_files::resolve(&deps.agents_dir, &folder, wanted).await {
+            Ok(resolved) => resolved,
+            Err(why) => {
+                let context = json!({
+                    "conversation_id": job.conversation_id,
+                    "path": wanted.path,
+                    "error": why.to_string(),
+                });
+                let id =
+                    errors::record(&deps.pool, "agent.file", &why.to_string(), context).await?;
+                tracing::warn!(error_id = %id, path = %wanted.path, "agent named a file that can't be sent");
+                deps.api
+                    .send_text(
+                        job.tg_chat_id,
+                        job.topic_id,
+                        reply_to,
+                        &format!("⚠️ Couldn't send a file ({id}): {why}."),
+                    )
+                    .await?;
+                continue;
+            }
+        };
+        if !seen.insert(resolved.file.path.clone()) {
+            continue; // the same file named twice ([[file]] and an image link)
+        }
+        if job.style == Some(Style::Sticker) {
+            if resolved.file.kind != FileKind::Photo {
+                return Err(TurnError::RunFailed(
+                    "sticker source must be a JPG, PNG or WebP image".into(),
+                ));
+            }
+            let destination = deps
+                .agents_dir
+                .join(&folder)
+                .join("files/out")
+                .join(format!("sticker-{}-{i}.webp", job.reply_to));
+            crate::imagine::sticker(&resolved.file.path, &destination)
+                .await
+                .map_err(|e| TurnError::RunFailed(e.to_string()))?;
+            resolved.file.path = destination.clone();
+            resolved.file.kind = FileKind::Sticker;
+            resolved.file.caption = None;
+            resolved.saved.kind = "sticker".into();
+            resolved.saved.name = destination
+                .file_name()
+                .expect("sticker filename")
+                .to_string_lossy()
+                .into_owned();
+            resolved.saved.path = destination
+                .strip_prefix(&deps.agents_dir)
+                .expect("inside agents")
+                .display()
+                .to_string();
+            resolved.saved.mime = Some("image/webp".into());
+            resolved.saved.size = tokio::fs::metadata(&destination).await?.len();
+        }
+        let _ = deps
+            .api
+            .activity(
+                job.tg_chat_id,
+                job.topic_id,
+                Activity::sending(resolved.file.kind),
+            )
+            .await;
+        let mut file = resolved.file.clone();
+        let sent_id = match deps
+            .api
+            .send_file(job.tg_chat_id, job.topic_id, reply_to, &file)
+            .await
+        {
+            Ok(id) => id,
+            // Telegram refuses some images as photos (odd sizes, ratios);
+            // they still arrive, as a file.
+            Err(_) if file.kind == FileKind::Photo => {
+                file.kind = FileKind::Document;
+                deps.api
+                    .send_file(job.tg_chat_id, job.topic_id, reply_to, &file)
+                    .await?
+            }
+            Err(err) => return Err(err.into()),
+        };
+        let body = wanted
+            .caption
+            .clone()
+            .unwrap_or_else(|| format!("[{}: {}]", resolved.saved.kind, resolved.saved.name));
+        store::store_bot_file(
+            &deps.pool,
+            job.conversation_id,
+            sent_id,
+            deps.bot_user_id,
+            &body,
+            &resolved.saved,
+        )
+        .await?;
+        tracing::info!(
+            conversation_id = job.conversation_id,
+            kind = resolved.saved.kind,
+            name = %resolved.saved.name,
+            "sent a file"
+        );
+        last_message = Some(sent_id);
+        sent.push(resolved.saved.name);
+    }
+    if let Some(id) = last_message {
+        deps.api
+            .set_buttons(
+                job.tg_chat_id,
+                id,
+                &[vec![(
+                    "🔄".into(),
+                    format!("retry:{}", job.conversation_id),
+                )]],
+            )
+            .await?;
+        set_retry(deps, job, id).await?;
+    }
+    Ok(sent)
 }
 
 /// Sends the last part of a reply with one button per option, and opens a
@@ -366,6 +637,7 @@ async fn send_with_choices<A: TelegramApi, R: AgentRunner>(
     job: &TurnJob,
     reply_to: Option<i32>,
     text: &str,
+    html: &str,
     options: &[String],
 ) -> Result<i32, TurnError> {
     let thread = store::active_thread(&deps.pool, job.conversation_id)
@@ -374,14 +646,18 @@ async fn send_with_choices<A: TelegramApi, R: AgentRunner>(
             TurnError::RunFailed("reply offered choices but the thread is gone".into())
         })?;
     let question_id = store::create_question(&deps.pool, thread.id, text, options).await?;
-    let rows: Vec<Vec<(String, String)>> = options
+    let mut rows: Vec<Vec<(String, String)>> = options
         .iter()
         .enumerate()
         .map(|(i, option)| vec![(option.clone(), answer_button_data(question_id, i))])
         .collect();
+    rows.push(vec![(
+        "🔄".into(),
+        format!("retry:{}", job.conversation_id),
+    )]);
     let sent_id = deps
         .api
-        .send_buttons(job.tg_chat_id, job.topic_id, reply_to, text, &rows)
+        .send_rich_buttons(job.tg_chat_id, job.topic_id, reply_to, html, text, &rows)
         .await?;
     store::set_question_message(&deps.pool, question_id, sent_id).await?;
     tracing::info!(
@@ -435,6 +711,7 @@ async fn recover_thread<A: TelegramApi, R: AgentRunner>(
 /// One worker per conversation, created on first use.
 pub struct Lanes<A: TelegramApi + 'static, R: AgentRunner> {
     deps: Arc<TurnDeps<A, R>>,
+    pending: Arc<Mutex<HashMap<i64, usize>>>,
     senders: Mutex<HashMap<i64, mpsc::UnboundedSender<TurnJob>>>,
 }
 
@@ -442,6 +719,7 @@ impl<A: TelegramApi + Send + 'static, R: AgentRunner> Lanes<A, R> {
     pub fn new(deps: TurnDeps<A, R>) -> Self {
         Self {
             deps: Arc::new(deps),
+            pending: Arc::default(),
             senders: Mutex::new(HashMap::new()),
         }
     }
@@ -449,9 +727,48 @@ impl<A: TelegramApi + Send + 'static, R: AgentRunner> Lanes<A, R> {
     fn spawn_lane(&self) -> mpsc::UnboundedSender<TurnJob> {
         let (tx, mut rx) = mpsc::unbounded_channel::<TurnJob>();
         let deps = self.deps.clone();
+        let pending = self.pending.clone();
         tokio::spawn(async move {
-            while let Some(job) = rx.recv().await {
+            let mut next: Option<TurnJob> = None;
+            loop {
+                let job = match next.take() {
+                    Some(job) => job,
+                    None => match rx.recv().await {
+                        Some(job) => job,
+                        None => break,
+                    },
+                };
+                let id = job.conversation_id;
+                // Each queued job counts once in `pending`; an album's parts
+                // become one turn, so all of them are counted off after it.
+                let mut parts = 1;
+                // An album: gather its other parts into one turn.
+                let job = match job.album.clone() {
+                    None => job,
+                    Some(album) => {
+                        let mut merged = job;
+                        loop {
+                            match tokio::time::timeout(ALBUM_WAIT, rx.recv()).await {
+                                Ok(Some(part)) if part.album.as_deref() == Some(album.as_str()) => {
+                                    merged.text.push_str("\n\n");
+                                    merged.text.push_str(&part.text);
+                                    parts += 1;
+                                }
+                                Ok(Some(other)) => {
+                                    next = Some(other);
+                                    break;
+                                }
+                                _ => break,
+                            }
+                        }
+                        merged
+                    }
+                };
                 run_turn(&deps, job).await;
+                let mut counts = pending.lock().expect("pending lock");
+                if let Some(count) = counts.get_mut(&id) {
+                    *count = count.saturating_sub(parts);
+                }
             }
         });
         tx
@@ -459,7 +776,22 @@ impl<A: TelegramApi + Send + 'static, R: AgentRunner> Lanes<A, R> {
 }
 
 impl<A: TelegramApi + Send + 'static, R: AgentRunner> TurnQueue for Lanes<A, R> {
+    fn in_progress(&self, id: i64) -> bool {
+        self.pending
+            .lock()
+            .expect("pending lock")
+            .get(&id)
+            .copied()
+            .unwrap_or(0)
+            > 0
+    }
     fn submit(&self, job: TurnJob) {
+        *self
+            .pending
+            .lock()
+            .expect("pending lock")
+            .entry(job.conversation_id)
+            .or_default() += 1;
         let mut senders = self.senders.lock().expect("lanes lock");
         let id = job.conversation_id;
         let sender = senders.entry(id).or_insert_with(|| self.spawn_lane());
@@ -470,4 +802,25 @@ impl<A: TelegramApi + Send + 'static, R: AgentRunner> TurnQueue for Lanes<A, R> 
             senders.insert(id, fresh);
         }
     }
+}
+
+async fn set_retry<A: TelegramApi, R: AgentRunner>(
+    deps: &TurnDeps<A, R>,
+    job: &TurnJob,
+    id: i32,
+) -> Result<(), TurnError> {
+    let previous: Option<i32> =
+        sqlx::query_scalar("SELECT retry_message_id FROM conversations WHERE id=$1")
+            .bind(job.conversation_id)
+            .fetch_one(&deps.pool)
+            .await?;
+    if let Some(old) = previous {
+        deps.api.remove_buttons(job.tg_chat_id, old).await?;
+    }
+    sqlx::query("UPDATE conversations SET retry_message_id=$2 WHERE id=$1")
+        .bind(job.conversation_id)
+        .bind(id)
+        .execute(&deps.pool)
+        .await?;
+    Ok(())
 }

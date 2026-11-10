@@ -151,7 +151,7 @@ async fn seed(pool: &PgPool) -> (String, String) {
 }
 
 #[sqlx::test(migrations = "../herbot-core/migrations")]
-async fn lists_all_five_tools_with_caller_required(pool: PgPool) {
+async fn lists_all_tools_with_caller_required(pool: PgPool) {
     let mut mcp = Mcp::start(&url_for(&pool)).await;
     let tools = mcp.request("tools/list", json!({})).await;
     let tools = tools["result"]["tools"].as_array().unwrap().clone();
@@ -161,9 +161,17 @@ async fn lists_all_five_tools_with_caller_required(pool: PgPool) {
         names,
         [
             "ask_topic",
+            "cancel_task",
+            "forget",
+            "list_tasks",
             "list_topics",
+            "pause_task",
             "post_to_topic",
             "read_topic",
+            "recall",
+            "remember",
+            "resume_task",
+            "schedule_task",
             "search_messages"
         ]
     );

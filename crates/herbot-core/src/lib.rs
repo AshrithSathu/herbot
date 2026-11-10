@@ -14,6 +14,7 @@
 //! - `admin`: the admin panel's API
 //! - `app`: `/health` and `/ready`
 
+pub mod actions;
 pub mod admin;
 pub mod agent;
 pub mod agents_md;
@@ -21,16 +22,30 @@ pub mod app;
 pub mod config;
 pub mod db;
 pub mod errors;
+pub mod format;
 pub mod hub;
+pub mod imagine;
+pub mod inbound_files;
 pub mod internal;
+pub mod media;
 pub mod meta;
+pub mod modes;
+pub mod outbound_files;
 pub mod outgoing;
+pub mod personal;
 pub mod policy;
 pub mod poller;
 pub mod setup;
+pub mod simulate;
+pub mod speech;
 pub mod store;
 pub mod telegram;
 pub mod telemetry;
 pub mod turns;
 pub mod voice;
 pub mod wipe;
+
+pub mod panel;
+pub mod tasks;
+
+pub mod panel_voice;

@@ -13,6 +13,8 @@ pub enum StoreOutcome {
         conversation_id: i64,
         message_row_id: i64,
     },
+    /// Forwarded without retaining history.
+    Private { conversation_id: i64 },
     /// Telegram re-delivered an update we already have.
     Duplicate { conversation_id: i64 },
     /// The admin turned this chat or conversation off in the admin panel.
@@ -31,6 +33,8 @@ pub struct ConversationStatus {
     pub topic_name: Option<String>,
     /// Switched off in the admin panel: messages there are ignored.
     pub enabled: bool,
+    pub voice_replies: bool,
+    pub voice: String,
     pub message_count: i64,
     /// When the newest stored message was sent.
     pub last_message_at: Option<DateTime<Utc>>,
@@ -44,6 +48,10 @@ pub struct ConversationStatus {
     pub t3_project_registered: bool,
     /// Opens the active thread in the T3 Code app.
     pub thread_link: Option<String>,
+    /// Fast, Auto, Expert or Heavy (`/mode`).
+    pub mode: crate::modes::Mode,
+    /// The language it answers in (`/language`; English by default).
+    pub language: String,
 }
 
 impl ConversationStatus {
@@ -202,10 +210,13 @@ pub async fn store_message(
         return Ok(StoreOutcome::Disabled);
     }
 
+    if is_private(pool, conversation_id).await? {
+        return Ok(StoreOutcome::Private { conversation_id });
+    }
     let inserted: Option<i64> = sqlx::query_scalar(
         "INSERT INTO messages
-             (conversation_id, tg_message_id, from_tg_user_id, body, reply_to_tg_message_id, sent_at, is_voice)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+             (conversation_id, tg_message_id, from_tg_user_id, body, reply_to_tg_message_id, sent_at, is_voice, attachments)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (conversation_id, tg_message_id) DO NOTHING
          RETURNING id",
     )
@@ -216,6 +227,7 @@ pub async fn store_message(
     .bind(msg.reply_to_message_id)
     .bind(msg.sent_at)
     .bind(msg.voice.is_some())
+    .bind(json!(msg.files))
     .fetch_optional(pool)
     .await?;
 
@@ -252,6 +264,8 @@ struct StatusRow {
     tg_topic_id: Option<i32>,
     name: String,
     enabled: bool,
+    voice_replies: bool,
+    voice: String,
     message_count: i64,
     last_message_at: Option<DateTime<Utc>>,
     bot_name: Option<String>,
@@ -262,6 +276,8 @@ struct StatusRow {
     agents_md_path: Option<String>,
     agents_md_updated_at: Option<DateTime<Utc>>,
     t3_project_registered: bool,
+    mode: String,
+    language: String,
 }
 
 /// The status query with `$rest` (a WHERE / ORDER BY literal) appended, as
@@ -271,9 +287,9 @@ macro_rules! status_select {
     ($rest:literal) => {
         concat!(
             "SELECT v.id, c.tg_chat_id, c.title, c.kind, c.is_forum, v.tg_topic_id,
-            v.name, v.enabled, v.message_count, v.last_message_at, b.name AS bot_name,
+            v.name, v.enabled, v.voice_replies, v.voice, v.message_count, v.last_message_at, b.name AS bot_name,
             t.t3_thread_id, t.t3_link, v.purpose, v.setup_state, v.agents_md_path,
-            v.agents_md_updated_at, v.t3_project_registered
+            v.agents_md_updated_at, v.t3_project_registered, v.mode, v.language
      FROM conversations v
      JOIN chats c ON c.id = v.chat_id
      LEFT JOIN bots b ON b.id = v.bot_id
@@ -294,6 +310,8 @@ impl From<StatusRow> for ConversationStatus {
             tg_topic_id: row.tg_topic_id,
             topic_name: row.tg_topic_id.map(|_| row.name).filter(|n| !n.is_empty()),
             enabled: row.enabled,
+            voice_replies: row.voice_replies,
+            voice: row.voice,
             message_count: row.message_count,
             last_message_at: row.last_message_at,
             bot_name: row.bot_name,
@@ -304,6 +322,8 @@ impl From<StatusRow> for ConversationStatus {
             agents_md_updated_at: row.agents_md_updated_at,
             t3_project_registered: row.t3_project_registered,
             thread_link: row.t3_link,
+            mode: crate::modes::Mode::parse(&row.mode).unwrap_or(crate::modes::Mode::Auto),
+            language: row.language,
         }
     }
 }
@@ -384,6 +404,52 @@ pub async fn begin_setup(
     .fetch_optional(pool)
     .await?;
     Ok(old.flatten())
+}
+
+/// Sets the language a conversation answers in (`/language`).
+pub async fn set_language(
+    pool: &PgPool,
+    conversation_id: i64,
+    language: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE conversations SET language = $2 WHERE id = $1")
+        .bind(conversation_id)
+        .bind(language)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+/// The language of the conversation at (chat, topic), English if it doesn't
+/// exist yet: voice notes are transcribed in it.
+pub async fn language_at(
+    pool: &PgPool,
+    tg_chat_id: i64,
+    topic_id: Option<i32>,
+) -> Result<String, sqlx::Error> {
+    let found: Option<String> = sqlx::query_scalar(
+        "SELECT v.language FROM conversations v JOIN chats c ON c.id = v.chat_id
+         WHERE c.tg_chat_id = $1 AND v.tg_topic_id IS NOT DISTINCT FROM $2",
+    )
+    .bind(tg_chat_id)
+    .bind(topic_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(found.unwrap_or_else(|| "English".into()))
+}
+
+/// Sets a conversation's mode (`/mode`, the admin panel).
+pub async fn set_mode(
+    pool: &PgPool,
+    conversation_id: i64,
+    mode: crate::modes::Mode,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query("UPDATE conversations SET mode = $2 WHERE id = $1")
+        .bind(conversation_id)
+        .bind(mode.as_str())
+        .execute(pool)
+        .await
+        .map(|r| r.rows_affected() == 1)
 }
 
 /// "Keep the current purpose" after `/setup`: back to Ready with the purpose
@@ -501,6 +567,20 @@ pub async fn inbox_save(
     tx.commit().await
 }
 
+/// Saves one update without moving the poll offset (simulated messages).
+pub async fn inbox_insert(
+    pool: &PgPool,
+    update_id: i64,
+    body: &serde_json::Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO inbox (update_id, body) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+        .bind(update_id)
+        .bind(body)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
 /// Updates saved but not yet handled, oldest first.
 pub async fn inbox_pending(pool: &PgPool) -> Result<Vec<(i64, serde_json::Value)>, sqlx::Error> {
     sqlx::query_as("SELECT update_id, body FROM inbox ORDER BY update_id")
@@ -580,6 +660,30 @@ pub async fn mark_project_registered(
 }
 
 /// Stores one of the bot's own replies, so history search sees both sides.
+/// Stores a file the bot sent (an agent's image, document, voice reply…).
+pub async fn store_bot_file(
+    pool: &PgPool,
+    conversation_id: i64,
+    tg_message_id: i32,
+    bot_user_id: u64,
+    body: &str,
+    file: &crate::media::SavedFile,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO messages (conversation_id, tg_message_id, from_tg_user_id, from_bot, body, sent_at, attachments)
+         VALUES ($1, $2, $3, true, $4, now(), $5)
+         ON CONFLICT (conversation_id, tg_message_id) DO NOTHING",
+    )
+    .bind(conversation_id)
+    .bind(tg_message_id)
+    .bind(bot_user_id as i64)
+    .bind(body)
+    .bind(json!([file]))
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
 pub async fn store_bot_message(
     pool: &PgPool,
     conversation_id: i64,
@@ -740,11 +844,21 @@ pub struct Wiped {
 /// folder must be re-added to T3 on the next turn.
 pub async fn wipe_conversation(pool: &PgPool, conversation_id: i64) -> Result<Wiped, sqlx::Error> {
     let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM panel_inbox WHERE conversation_id=$1")
+        .bind(conversation_id)
+        .execute(&mut *tx)
+        .await?;
     let messages = sqlx::query("DELETE FROM messages WHERE conversation_id = $1")
         .bind(conversation_id)
         .execute(&mut *tx)
         .await?
         .rows_affected();
+    sqlx::query(
+        "UPDATE conversations SET retry_message_id=NULL,negative_feedback=false WHERE id=$1",
+    )
+    .bind(conversation_id)
+    .execute(&mut *tx)
+    .await?;
     // pending_questions go with their threads (ON DELETE CASCADE).
     let threads = sqlx::query("DELETE FROM agent_threads WHERE conversation_id = $1")
         .bind(conversation_id)
@@ -790,4 +904,12 @@ pub async fn all_thread_ids(
     .bind(conversation_id)
     .fetch_all(pool)
     .await
+}
+
+/// Shared privacy gate for memory/history tools. Database failures must propagate.
+pub async fn is_private(pool: &PgPool, conversation_id: i64) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT private_mode FROM conversations WHERE id=$1")
+        .bind(conversation_id)
+        .fetch_one(pool)
+        .await
 }

@@ -1,12 +1,24 @@
+import { Composer } from '../../../components/composer'
+import { TopicFiles } from '../../../components/topic-files'
 import { useRef, useState } from 'react'
 import { useMutation, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { createFileRoute, notFound, useBlocker } from '@tanstack/react-router'
 import { BrushCleaningIcon, ExternalLinkIcon, FileTextIcon, Trash2Icon } from 'lucide-react'
-import { savePurpose, setEnabled, wipeTopic, type Topic, type TopicDetail } from '../../../api'
+import { saveMode, saveVoice, savePurpose, setEnabled, wipeTopic, type Topic, type TopicDetail } from '../../../api'
 import { PURPOSE_MAX, charCount, plural, purposeProblem } from '../../../format'
 import { keys, messagesQuery, topicQuery } from '../../../queries'
 import { ChatLog } from '@/components/chat-log'
-import { CopyButton, EmptyState, ErrorNote, PageHeader, Section, StaleWarning, Time, TopicState, notify } from '../../../ui'
+import {
+  CopyButton,
+  EmptyState,
+  ErrorNote,
+  PageHeader,
+  Section,
+  StaleWarning,
+  Time,
+  TopicState,
+  notify,
+} from '../../../ui'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,6 +50,9 @@ import { useModifierKey } from '@/hooks/use-client'
 import { cn } from '@/lib/utils'
 
 export const Route = createFileRoute('/_authed/topics/$id')({
+  validateSearch: (s: Record<string, unknown>): { message?: number } => ({
+    message: Number.isSafeInteger(Number(s.message)) && Number(s.message) > 0 ? Number(s.message) : undefined,
+  }),
   params: {
     parse: ({ id }) => {
       const n = Number(id)
@@ -67,6 +82,8 @@ function TopicPage() {
   const { id } = Route.useParams()
   const { data: detail, error } = useSuspenseQuery(topicQuery(id))
   const t = detail.conversation
+  const { message } = Route.useSearch()
+  const [tab, setTab] = useState<'chat' | 'files' | 'settings'>('chat')
   return (
     <>
       <PageHeader title={t.place}>
@@ -87,42 +104,87 @@ function TopicPage() {
       </PageHeader>
       <StaleWarning error={error} />
 
-      <Answering topic={t} />
-      <Purpose key={t.id} topic={t} />
+      <div role="tablist" aria-label="Topic views" className="flex gap-1 border-b">
+        {(['chat', 'files', 'settings'] as const).map((v) => (
+          <Button
+            key={v}
+            id={`tab-${v}`}
+            role="tab"
+            tabIndex={tab === v ? 0 : -1}
+            onKeyDown={(e) => {
+              const views = ['chat', 'files', 'settings'] as const
+              const index = views.indexOf(v)
+              const next =
+                e.key === 'ArrowRight'
+                  ? views[(index + 1) % 3]
+                  : e.key === 'ArrowLeft'
+                    ? views[(index + 2) % 3]
+                    : e.key === 'Home'
+                      ? views[0]
+                      : e.key === 'End'
+                        ? views[2]
+                        : undefined
+              if (next) {
+                e.preventDefault()
+                setTab(next)
+                document.getElementById(`tab-${next}`)?.focus()
+              }
+            }}
+            aria-selected={tab === v}
+            aria-controls={`view-${v}`}
+            variant={tab === v ? 'secondary' : 'ghost'}
+            className="min-h-11 capitalize"
+            onClick={() => setTab(v)}
+          >
+            {v}
+          </Button>
+        ))}
+      </div>
+      <div hidden={tab !== 'chat'}>
+        <div role="tabpanel" id="view-chat" aria-labelledby="tab-chat" className="flex min-w-0 flex-col gap-3">
+          <ChatLog topicId={t.id} total={t.messages} targetMessage={message} />
+          <Composer key={t.id} id={t.id} enabled={t.enabled} />
+        </div>
+      </div>
+      {tab === 'files' && (
+        <div role="tabpanel" id="view-files" aria-labelledby="tab-files">
+          <TopicFiles id={t.id} />
+        </div>
+      )}
+      {tab === 'settings' && (
+        <div role="tabpanel" id="view-settings" aria-labelledby="tab-settings" className="flex flex-col gap-8">
+          <Answering topic={t} />
+          <Purpose key={t.id} topic={t} />
+          <Voice topic={t} />
 
-      <Section
-        id="agents-md"
-        title="AGENTS.md"
-        action={detail.agents_md && <CopyButton text={detail.agents_md} label="Copy" />}
-      >
-        {detail.agents_md ? (
-          <>
-            <pre
-              tabIndex={0}
-              aria-label="AGENTS.md contents"
-              className="scroller max-h-[28rem] overflow-auto rounded-xl border bg-muted/50 px-4 py-3.5 font-mono text-[13px] leading-relaxed break-words whitespace-pre-wrap"
-            >
-              {detail.agents_md}
-            </pre>
-            {detail.agents_md_path && (
-              <p className="font-mono text-xs text-muted-foreground">agents/{detail.agents_md_path}</p>
+          <Section
+            id="agents-md"
+            title="AGENTS.md"
+            action={detail.agents_md && <CopyButton text={detail.agents_md} label="Copy" />}
+          >
+            {detail.agents_md ? (
+              <>
+                <pre
+                  tabIndex={0}
+                  aria-label="AGENTS.md contents"
+                  className="scroller max-h-[28rem] overflow-auto rounded-xl border bg-muted/50 px-4 py-3.5 font-mono text-[13px] leading-relaxed break-words whitespace-pre-wrap"
+                >
+                  {detail.agents_md}
+                </pre>
+                {detail.agents_md_path && (
+                  <p className="font-mono text-xs text-muted-foreground">agents/{detail.agents_md_path}</p>
+                )}
+              </>
+            ) : (
+              <EmptyState icon={FileTextIcon} title="Not written yet">
+                It’s created when this topic gets its purpose.
+              </EmptyState>
             )}
-          </>
-        ) : (
-          <EmptyState icon={FileTextIcon} title="Not written yet">
-            It’s created when this topic gets its purpose.
-          </EmptyState>
-        )}
-      </Section>
+          </Section>
 
-      <Section
-        id="messages"
-        title="Messages"
-        action={<span className="text-sm text-muted-foreground tabular-nums">{plural(t.messages, 'message')} stored</span>}
-      >
-        <ChatLog topicId={t.id} total={t.messages} />
-      </Section>
-      <CleanSlate topic={t} />
+          <CleanSlate topic={t} />
+        </div>
+      )}
     </>
   )
 }
@@ -153,6 +215,10 @@ function useTopicCache(id: number) {
  * and flips back if herbot-core refuses. */
 function Answering({ topic }: { topic: Topic }) {
   const cache = useTopicCache(topic.id)
+  const mode = useMutation({
+    mutationFn: (value: string) => saveMode({ data: { id: topic.id, mode: value } }),
+    onSuccess: () => cache.refresh(),
+  })
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => setEnabled({ data: { id: topic.id, enabled } }),
     onMutate: async (enabled) => {
@@ -170,6 +236,23 @@ function Answering({ topic }: { topic: Topic }) {
 
   return (
     <div className="flex flex-col gap-3">
+      <label className="flex flex-wrap items-center gap-3 text-sm font-medium">
+        Default mode
+        <select
+          aria-label="Default mode"
+          value={topic.mode}
+          disabled={mode.isPending}
+          onChange={(e) => mode.mutate(e.target.value)}
+          className="min-h-11 rounded-lg border bg-card px-3"
+        >
+          {['fast', 'auto', 'expert', 'heavy'].map((m) => (
+            <option key={m} value={m}>
+              {m[0]!.toUpperCase() + m.slice(1)}
+            </option>
+          ))}
+        </select>
+      </label>
+      {mode.isError && <ErrorNote title="Couldn’t change mode">{mode.error.message}</ErrorNote>}
       <FieldLabel htmlFor="answering" className="bg-card shadow-xs">
         <Field orientation="horizontal">
           <FieldContent>
@@ -377,7 +460,8 @@ function CleanSlate({ topic }: { topic: Topic }) {
                 </ItemMedia>
                 <ItemContent>
                   <ItemTitle>
-                    {WIPE[kind].title} <span className="font-mono text-xs font-normal text-muted-foreground">/{kind}</span>
+                    {WIPE[kind].title}{' '}
+                    <span className="font-mono text-xs font-normal text-muted-foreground">/{kind}</span>
                   </ItemTitle>
                   <ItemDescription className="line-clamp-none max-w-[60ch]">{WIPE[kind].what}</ItemDescription>
                 </ItemContent>
@@ -419,6 +503,72 @@ function CleanSlate({ topic }: { topic: Topic }) {
         })}
       </ul>
       {wipe.isError && <ErrorNote title="Nothing was wiped">{wipe.error.message}</ErrorNote>}
+    </Section>
+  )
+}
+
+const VOICES = [
+  ['alloy', 'Balanced'], ['ash', 'Grounded'], ['ballad', 'Expressive'],
+  ['coral', 'Warm'], ['echo', 'Clear'], ['fable', 'Storytelling'],
+  ['onyx', 'Deep'], ['nova', 'Bright'], ['sage', 'Calm'],
+  ['shimmer', 'Gentle'], ['verse', 'Versatile'], ['marin', 'Conversational'], ['cedar', 'Steady'],
+] as const
+
+function Voice({ topic }: { topic: Topic }) {
+  const cache = useTopicCache(topic.id)
+  const saving = useRef(false)
+  const save = useMutation({
+    mutationFn: (settings: { voice_replies: boolean; voice: string }) =>
+      saveVoice({ data: { id: topic.id, ...settings } }),
+    onSuccess: (updated) => cache.patch(() => updated),
+    onSettled: () => {
+      saving.current = false
+      return cache.queryClient.invalidateQueries({ queryKey: keys.topics })
+    },
+  })
+  const update = (settings: { voice_replies: boolean; voice: string }) => {
+    if (saving.current) return
+    saving.current = true
+    save.mutate(settings)
+  }
+  return (
+    <Section id="voice" title="Voice">
+      <Card>
+        <CardContent className="flex flex-col gap-5 pt-6" aria-busy={save.isPending}>
+          <FieldLabel htmlFor="voice-replies">
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldTitle>Spoken replies</FieldTitle>
+                <FieldDescription id="voice-help">
+                  Read agent replies aloud with an AI-generated voice, after the text arrives.
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                id="voice-replies"
+                aria-describedby="voice-help"
+                checked={topic.voice_replies}
+                disabled={save.isPending}
+                onCheckedChange={(voice_replies) => update({ voice_replies, voice: topic.voice })}
+              />
+            </Field>
+          </FieldLabel>
+          <Field>
+            <FieldLabel htmlFor="voice-choice">Voice</FieldLabel>
+            <select
+              id="voice-choice"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-base shadow-xs outline-none pointer-coarse:h-11 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50"
+              value={topic.voice}
+              disabled={save.isPending}
+              onChange={(event) => update({ voice_replies: topic.voice_replies, voice: event.target.value })}
+            >
+              {VOICES.map(([name, description]) => <option key={name} value={name}>{name} · {description}</option>)}
+            </select>
+            <FieldDescription>Also used by /speak when spoken replies are off.</FieldDescription>
+          </Field>
+          {save.isPending && <span role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />Saving voice…</span>}
+          {save.isError && <ErrorNote title="Couldn’t save voice">{save.error.message}</ErrorNote>}
+        </CardContent>
+      </Card>
     </Section>
   )
 }

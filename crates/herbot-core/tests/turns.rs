@@ -79,6 +79,12 @@ impl TelegramApi for FakeApi {
         text: &str,
         rows: &[Vec<(String, String)>],
     ) -> Result<i32, ApiError> {
+        if rows.len() == 1 && rows[0][0].1.starts_with("retry:") {
+            self.sent
+                .lock()
+                .unwrap()
+                .push((chat, topic, reply_to, text.to_string()));
+        }
         self.with_buttons.lock().unwrap().push((
             chat,
             topic,
@@ -92,7 +98,7 @@ impl TelegramApi for FakeApi {
         unreachable!()
     }
     async fn remove_buttons(&self, _: i64, _: i32) -> Result<(), ApiError> {
-        unreachable!()
+        Ok(())
     }
     async fn answer_button(&self, _: &str, _: Option<&str>) -> Result<(), ApiError> {
         unreachable!()
@@ -233,11 +239,13 @@ impl H {
         let agents = tempfile::tempdir().unwrap();
         Self {
             deps: TurnDeps {
+                speaker: std::sync::Arc::new(herbot_core::speech::NoSpeaker),
                 pool,
                 api: Arc::new(FakeApi::default()),
                 runner: Arc::new(runner),
                 agents_dir: agents.path().to_path_buf(),
                 bot_user_id: BOT_ID,
+                auto_effort: "medium".into(),
             },
             _agents: agents,
         }
@@ -267,6 +275,8 @@ fn job(conversation_id: i64, topic: Option<i32>, reply_to: i32, text: &str) -> T
         sender_id: 1221260701,
         sent_at: Utc::now(),
         reply: None,
+        style: None,
+        album: None,
     }
 }
 
@@ -634,6 +644,7 @@ async fn an_ask_line_becomes_buttons_and_an_open_question(pool: PgPool) {
                 answer_button_data(question_id, 1)
             )],
             vec![("Keep them".to_string(), answer_button_data(question_id, 2))],
+            vec![("🔄".to_string(), "retry:1".to_string())],
         ]
     );
     let body: String = sqlx::query_scalar("SELECT body FROM messages WHERE from_bot")
@@ -670,11 +681,13 @@ async fn lanes_run_one_turn_at_a_time_per_conversation_and_in_parallel_across(po
     let api = h.deps.api.clone();
     let runner = h.deps.runner.clone();
     let lanes = Lanes::new(TurnDeps {
+        speaker: std::sync::Arc::new(herbot_core::speech::NoSpeaker),
         pool: h.deps.pool.clone(),
         api: api.clone(),
         runner: runner.clone(),
         agents_dir: h.deps.agents_dir.clone(),
         bot_user_id: BOT_ID,
+        auto_effort: "medium".into(),
     });
 
     lanes.submit(job(1, Some(7), 30, "topic-first"));

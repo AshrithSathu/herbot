@@ -43,12 +43,29 @@ pub struct AdminState {
 
 pub fn router(state: Arc<AdminState>) -> Router {
     Router::new()
+        .route(
+            "/admin/api/memories",
+            get(list_memories).post(add_memory).delete(delete_memories),
+        )
+        .route(
+            "/admin/api/memories/{id}",
+            put(edit_memory).delete(delete_memory),
+        )
+        .route(
+            "/admin/api/preferences",
+            get(get_preferences).put(save_preferences),
+        )
+        .route("/admin/api/tasks", get(task_list).post(task_create))
+        .route("/admin/api/tasks/{id}/{action}", post(task_change))
         .route("/admin/api/overview", get(overview))
         .route("/admin/api/conversations", get(conversations))
         .route("/admin/api/conversations/{id}", get(conversation))
         .route("/admin/api/conversations/{id}/messages", get(messages))
+        .route("/admin/api/conversations/{id}/export", get(export))
+        .route("/admin/api/conversations/{id}/feedback", get(feedback))
         .route("/admin/api/conversations/{id}/purpose", put(set_purpose))
         .route("/admin/api/conversations/{id}/enabled", put(set_enabled))
+        .route("/admin/api/conversations/{id}/voice", put(set_voice))
         .route(
             "/admin/api/conversations/{id}/wipe",
             post(wipe_conversation),
@@ -73,7 +90,7 @@ fn db_fail(err: impl std::fmt::Display) -> Reply {
     fail(StatusCode::INTERNAL_SERVER_ERROR, "database error")
 }
 
-fn authorized(headers: &HeaderMap, token: &str) -> bool {
+pub(crate) fn authorized(headers: &HeaderMap, token: &str) -> bool {
     let Some(given) = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -149,9 +166,12 @@ struct ConversationSummary {
     purpose: Option<String>,
     setup_state: &'static str,
     enabled: bool,
+    voice_replies: bool,
+    voice: String,
     messages: i64,
     last_activity: Option<DateTime<Utc>>,
     thread_link: Option<String>,
+    mode: String,
 }
 
 impl ConversationSummary {
@@ -168,9 +188,12 @@ impl ConversationSummary {
             }),
             setup_state: status.setup_state.as_str(),
             enabled: status.enabled,
+            voice_replies: status.voice_replies,
+            voice: status.voice.clone(),
             messages: status.message_count,
             last_activity: status.last_message_at,
             thread_link: status.thread_link.clone(),
+            mode: status.mode.as_str().into(),
         }
     }
 }
@@ -212,6 +235,7 @@ struct MessageRow {
     from_bot: bool,
     is_voice: bool,
     body: String,
+    attachments: Value,
 }
 
 async fn conversation(
@@ -273,7 +297,7 @@ async fn messages(
     let rows: Result<Vec<MessageRow>, _> = match query.after {
         Some(after) => {
             sqlx::query_as(
-                "SELECT id, sent_at, from_bot, is_voice, body FROM messages
+                "SELECT id, sent_at, from_bot, is_voice, body, attachments FROM messages
                  WHERE conversation_id = $1 AND id > $2 ORDER BY id ASC LIMIT $3",
             )
             .bind(id)
@@ -284,7 +308,7 @@ async fn messages(
         }
         None => {
             sqlx::query_as(
-                "SELECT id, sent_at, from_bot, is_voice, body FROM messages
+                "SELECT id, sent_at, from_bot, is_voice, body, attachments FROM messages
                  WHERE conversation_id = $1 AND ($2::bigint IS NULL OR id < $2)
                  ORDER BY id DESC LIMIT $3",
             )
@@ -577,4 +601,235 @@ async fn error(
         },
         Err(e) => db_fail(e),
     }
+}
+
+async fn personal_fail(state: &AdminState, err: crate::personal::PersonalError) -> Reply {
+    use crate::personal::PersonalError;
+    match err {
+        PersonalError::Invalid(message) => fail(StatusCode::BAD_REQUEST, message),
+        PersonalError::NotFound => fail(StatusCode::NOT_FOUND, "memory not found"),
+        err => {
+            let id =
+                crate::errors::record(&state.pool, "personal.admin", &err.to_string(), json!({}))
+                    .await;
+            tracing::error!(error = %err, error_id = ?id, "personalisation failed");
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Personalisation failed ({}); check logs",
+                    id.map(|id| id.to_string())
+                        .unwrap_or_else(|_| "unrecorded".into())
+                ),
+            )
+        }
+    }
+}
+#[derive(Deserialize)]
+struct MemoryBody {
+    content: String,
+}
+#[derive(Deserialize)]
+struct MemoryQuery {
+    q: Option<String>,
+}
+async fn list_memories(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Query(query): Query<MemoryQuery>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::personal::recall(&state.pool, query.q.as_deref()).await {
+        Ok(rows) => ok(rows),
+        Err(e) => personal_fail(&state, e.into()).await,
+    }
+}
+async fn add_memory(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(body): Json<MemoryBody>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::personal::remember(&state.pool, &state.agents_dir, &body.content, None, None).await
+    {
+        Ok(row) => ok(row),
+        Err(e) => personal_fail(&state, e).await,
+    }
+}
+async fn edit_memory(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<MemoryBody>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::personal::remember(
+        &state.pool,
+        &state.agents_dir,
+        &body.content,
+        None,
+        Some(id),
+    )
+    .await
+    {
+        Ok(row) => ok(row),
+        Err(e) => personal_fail(&state, e).await,
+    }
+}
+async fn delete_memory(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::personal::forget(&state.pool, &state.agents_dir, Some(id)).await {
+        Ok(count) => ok(json!({"deleted": count})),
+        Err(e) => personal_fail(&state, e).await,
+    }
+}
+async fn delete_memories(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
+    guard!(headers, state);
+    match crate::personal::forget(&state.pool, &state.agents_dir, None).await {
+        Ok(count) => ok(json!({"deleted": count})),
+        Err(e) => personal_fail(&state, e).await,
+    }
+}
+async fn get_preferences(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
+    guard!(headers, state);
+    match crate::personal::preferences(&state.pool).await {
+        Ok(prefs) => ok(prefs),
+        Err(e) => personal_fail(&state, e.into()).await,
+    }
+}
+async fn save_preferences(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(prefs): Json<crate::personal::Preferences>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::personal::set_preferences(&state.pool, &state.agents_dir, &prefs).await {
+        Ok(()) => ok(prefs),
+        Err(e) => personal_fail(&state, e).await,
+    }
+}
+
+#[derive(Deserialize)]
+struct VoiceBody {
+    voice_replies: bool,
+    voice: String,
+}
+async fn set_voice(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<VoiceBody>,
+) -> Reply {
+    guard!(headers, state);
+    if !crate::speech::valid_voice(&body.voice) {
+        return fail(StatusCode::BAD_REQUEST, "unknown voice");
+    }
+    match crate::speech::set_voice(&state.pool, id, body.voice_replies, &body.voice).await {
+        Ok(()) => match summary(&state.pool, id).await {
+            Ok((s, _)) => ok(s),
+            Err(e) => db_fail(e),
+        },
+        Err(crate::speech::SpeechError::Db(sqlx::Error::RowNotFound)) => {
+            fail(StatusCode::NOT_FOUND, "no such conversation")
+        }
+        Err(crate::speech::SpeechError::Db(e)) => db_fail(e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn task_list(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
+    guard!(headers, state);
+    match crate::tasks::list(&state.pool, None).await {
+        Ok(t) => ok(t),
+        Err(e) => task_fail(e),
+    }
+}
+async fn task_create(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Json(req): Json<crate::tasks::CreateTask>,
+) -> Reply {
+    guard!(headers, state);
+    match crate::tasks::create(&state.pool, req).await {
+        Ok(t) => ok(t),
+        Err(e) => task_fail(e),
+    }
+}
+async fn task_change(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path((id, action)): Path<(i64, String)>,
+) -> Reply {
+    guard!(headers, state);
+    if action == "run" && state.bot_username.is_none() {
+        return fail(StatusCode::SERVICE_UNAVAILABLE, "Telegram scheduler is off");
+    }
+    match crate::tasks::change(&state.pool, id, &action).await {
+        Ok(t) => ok(t),
+        Err(e) => task_fail(e),
+    }
+}
+fn task_fail(e: crate::tasks::TaskError) -> Reply {
+    match e {
+        crate::tasks::TaskError::Db(e) => db_fail(e),
+        other => fail(StatusCode::BAD_REQUEST, other.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct ExportQuery {
+    format: Option<String>,
+}
+async fn export(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Query(query): Query<ExportQuery>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !authorized(&headers, &state.token) {
+        return fail(StatusCode::UNAUTHORIZED, "bad admin token").into_response();
+    }
+    let html = match query.format.as_deref().unwrap_or("md") {
+        "md" => false,
+        "html" => true,
+        _ => return fail(StatusCode::BAD_REQUEST, "format must be md or html").into_response(),
+    };
+    match crate::actions::export(&state.pool, id, html).await {
+        Ok(body) => {
+            let (mime, file) = if html {
+                (
+                    "text/html; charset=utf-8",
+                    "attachment; filename=conversation.html",
+                )
+            } else {
+                (
+                    "text/markdown; charset=utf-8",
+                    "attachment; filename=conversation.md",
+                )
+            };
+            (
+                [("content-type", mime), ("content-disposition", file)],
+                body,
+            )
+                .into_response()
+        }
+        Err(sqlx::Error::RowNotFound) => {
+            fail(StatusCode::NOT_FOUND, "no such conversation").into_response()
+        }
+        Err(e) => db_fail(e).into_response(),
+    }
+}
+async fn feedback(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Reply {
+    guard!(headers, state);
+    type FeedbackRow = (i64, i32, Value, DateTime<Utc>);
+    let rows: Result<Vec<FeedbackRow>, _> = sqlx::query_as("SELECT m.id,m.tg_message_id,f.reactions,f.updated_at FROM feedback f JOIN messages m ON m.id=f.message_id WHERE m.conversation_id=$1 ORDER BY f.updated_at DESC").bind(id).fetch_all(&state.pool).await;
+    match rows {Ok(rows)=>ok(rows.into_iter().map(|(id,tg,reactions,updated)|json!({"message_id":id,"tg_message_id":tg,"reactions":reactions,"updated_at":updated})).collect::<Vec<_>>()),Err(e)=>db_fail(e)}
 }

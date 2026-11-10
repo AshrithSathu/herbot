@@ -17,6 +17,8 @@ pub struct Meta<'a> {
     pub agents_md_changed: bool,
     /// Secret that identifies this conversation to herbot-mcp's tools.
     pub caller_token: &'a str,
+    /// More `key: value` lines Herbot adds (the mode for this message, …).
+    pub extra: Vec<(&'static str, String)>,
 }
 
 /// Builds the message: header, blank line, then the (sanitised) text.
@@ -38,6 +40,9 @@ pub fn wrap(meta: &Meta<'_>, text: &str) -> String {
         header.push_str(
             "note: your AGENTS.md was rewritten since your last turn; reread it before answering\n",
         );
+    }
+    for (key, value) in &meta.extra {
+        header.push_str(&format!("{key}: {}\n", value.replace('\n', " ")));
     }
     header.push_str("</herbot-meta>\n\n");
     header + &defuse(text)
@@ -82,6 +87,7 @@ mod tests {
             sent_at: Utc.with_ymd_and_hms(2026, 11, 8, 18, 30, 0).unwrap(),
             agents_md_changed: false,
             caller_token: "hb_test",
+            extra: Vec::new(),
         }
     }
 

@@ -31,6 +31,28 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 | `/help` | Lists commands |
 | `/new` | Clean slate: deletes this topic's T3 threads and its stored history, and keeps its purpose. Confirm with the **🧹 Yes** button (expires after 10 minutes) or **Cancel** |
 | `/forget` | Same, and also clears the purpose, so the topic sets up again. Same Yes / Cancel buttons |
+| `/mode` | This topic's mode: ⚡ Fast, ✨ Auto, 🧠 Expert or 🏋️ Heavy (sub-agents in parallel), as buttons, or `/mode fast` |
+| `/fast`, `/think`, `/heavy` + question | One message in that mode |
+| `/deepsearch` + question | Researches it across the live web and replies with a cited report, plus the report as a file |
+| `/imagine` + prompt | An image (Codex's built-in image generation); reply to a photo to edit it |
+| `/x` + topic | What people on X are saying, from the live web |
+| `/wiki` + topic | An encyclopedia article from Grokipedia, Wikipedia and sources |
+| `/language` + name | The language this topic answers in (English by default); voice notes and spoken replies follow it |
+| `/sticker` | A Telegram sticker from a photo you reply to, or from a prompt (drawn by Codex's image generation) |
+| `/voice` | Spoken replies on or off and the voice (13 OpenAI voices); `/voice on`, `/voice off`, `/voice marin` |
+| `/speak` | Reply to a bot message to hear it once |
+| `/persona` | Original ready-made purposes (Coach, Tutor, Storyteller, …) with matching voices; asks before replacing the purpose |
+| `/retry` | Answer your last message again (also the 🔄 button under the latest reply). Editing a message re-asks it |
+| `/search` + words | Search this topic's history (General: every topic), with links to the messages |
+| `/summary [count\|today]` | Summarise recent history, or the message or document you reply to |
+| `/export` | This topic as a Markdown and a styled HTML transcript |
+| `/private on\|off` | While on, nothing from this topic is stored and memory tools are off (Telegram and T3 keep their own copies) |
+| `/tasks` | This topic's scheduled and recurring prompts (pause, resume, delete). Ask any agent "remind me…" or "every morning…" to make one |
+| `/memory` | What Herbot remembers about you, shared by every topic, with Forget buttons |
+| `/customize [text\|clear]` | How you want every answer (custom instructions) |
+| `/aboutme <text\|clear>` | What Herbot should know about you |
+
+Send photos, documents, videos, GIFs, audio and albums too: they're saved in the topic's folder, and the agent looks at images, reads documents, and gets video as stills plus a transcript of its sound. Agents search the live web and cite it, generate and edit images, and send back files (images, PDFs, DOCX, charts, voice notes). Replies render as Telegram formatting. Thumbs up or down on a reply is recorded (a 👎 tells the agent its last answer missed). Long turns show a "Working on it…" timer. See [docs/GROK_PARITY.md](docs/GROK_PARITY.md) for everything Herbot does that Grok does.
 
 ## Setup
 
@@ -86,6 +108,11 @@ make admin             # admin panel on 127.0.0.1:3300 (needs [Bun](https://bun.
 - **Overview**: topics answering, active T3 threads, messages, errors in the last 24 hours, the last error. Refreshes every 15 seconds.
 - **Topics**: each topic's purpose (saving rewrites its `AGENTS.md`, like `/setup`), an on/off switch, its `AGENTS.md`, its history, and the same clean slates as `/new` and `/forget`, behind a confirm dialog. The history is a fixed-height, virtualized chat log (only the messages on screen are in the page, however far back you go): it opens at the newest message, loads 30 older ones at a time as you scroll up (keeping your place), groups by day, cuts long messages to 12 lines with Show more, and picks up new messages live (following them if you're at the bottom, or showing "N new messages" if you scrolled up).
 - **Logs**: search failures by `E-1042`, kind or words, as you type, 50 at a time with "Load older errors". Each error shows its full message and context JSON.
+- **Chat** (each topic's Chat tab): talk to any agent from the web, like grok.com. Attach files (button, drag and drop, paste), pick a mode for the message (Auto, Fast, Think, Heavy, DeepSearch), and see it posted in Telegram as "🖥️ from the panel", a thinking indicator while the agent works, and the reply rendered with code highlighting, tables, images, players and file cards. **New agent** creates a forum topic with its purpose (the bot needs the "Manage topics" right). **Files** lists everything in the topic's folder; **Settings** has on/off, mode, voice, purpose and clean slates.
+- **Search**: full-text search across every topic, with highlighted snippets that jump to the message.
+- **Tasks**, **Memory**, **Personalize**: scheduled prompts (create with presets or cron), shared memories, and custom instructions with about-you.
+- **Connectors**: the MCP servers Codex has (names and commands only, never secrets) and Herbot's own tools.
+- **Companions**: four original animated characters (Luma, Flint, Pip, Orbit) to talk to by voice or text. Hold the mic, speak, and the companion answers out loud while its avatar talks; tap while it speaks to interrupt. Each has its own agent topic with memory, or runs in General (labelled) if the bot can't create topics.
 
 Data goes through TanStack Query: route loaders fill the cache on the server, so pages arrive rendered, hovering a link prefetches its page, the on/off switch updates optimistically and rolls back if herbot-core refuses, and a failed background refresh keeps the last data on screen with a warning. Every part is [shadcn/ui](https://ui.shadcn.com) on Tailwind v4: the Sidebar (lists every agent with its status, collapses to icons with ⌘B, becomes a sheet on phones, remembers its state in a cookie read on the server), Breadcrumb, Card, Table, Field, InputGroup, Item, Empty, Alert, AlertDialog, Switch, Badge, Kbd, Spinner, Skeleton and Sonner toasts. The palette is OKLCH: blue for actions, green, amber and red for status only, and light and dark modes that follow the system.
 

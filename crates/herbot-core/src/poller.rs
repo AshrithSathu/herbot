@@ -16,18 +16,21 @@ use teloxide::net::Download;
 use teloxide::prelude::*;
 use teloxide::types::{
     AllowedUpdate, BotCommand, BotCommandScope, CallbackQueryId, ChatAction, ChatId as TgChatId,
-    FileId, InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ReactionType, ReplyParameters,
-    ThreadId,
+    FileId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, LinkPreviewOptions, MessageId,
+    ParseMode, ReactionType, ReplyParameters, ThreadId,
 };
 use tokio::sync::{mpsc, watch};
 
 use crate::agent::{AgentError, ProjectCleaner};
 use crate::agents_md;
 use crate::errors::{self, ErrorId};
+use crate::inbound_files;
+use crate::media::{Activity, FileKind, OutFile};
+use crate::modes::{self, Mode, Style};
 use crate::policy::{self, Action, Rules};
 use crate::setup;
 use crate::store::{self, ConversationStatus, SetupState, StoreOutcome};
-use crate::telegram::{self, ButtonPress, ChatKind, Command, Inbound, InboundMessage};
+use crate::telegram::{self, ButtonPress, ChatKind, Command, InboundMessage};
 use crate::turns::{self, TurnJob, TurnQueue};
 use crate::voice::{MAX_VOICE_SECONDS, Transcriber, VoiceError};
 use crate::wipe;
@@ -45,6 +48,25 @@ pub struct ApiError(pub String);
 /// The Telegram calls Herbot makes. Implemented by the real bot and by a fake
 /// in tests.
 pub trait TelegramApi: Send + Sync {
+    fn set_buttons(
+        &self,
+        chat: i64,
+        message: i32,
+        rows: &[Vec<(String, String)>],
+    ) -> impl Future<Output = Result<(), ApiError>> + Send {
+        let _ = (chat, message, rows);
+        async { Ok(()) }
+    }
+
+    fn delete_message(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send {
+        let _ = (chat_id, message_id);
+        async { Ok(()) }
+    }
+
     fn send_text(
         &self,
         chat_id: i64,
@@ -79,6 +101,16 @@ pub trait TelegramApi: Send + Sync {
         text: &str,
     ) -> impl Future<Output = Result<(), ApiError>> + Send;
 
+    fn edit_buttons(
+        &self,
+        chat: i64,
+        message: i32,
+        text: &str,
+        _rows: &[Vec<(String, String)>],
+    ) -> impl Future<Output = Result<(), ApiError>> + Send {
+        self.edit_text(chat, message, text)
+    }
+
     /// Removes the buttons under a bot message, keeping its text.
     fn remove_buttons(
         &self,
@@ -108,6 +140,80 @@ pub trait TelegramApi: Send + Sync {
         &self,
         file_id: &str,
     ) -> impl Future<Output = Result<Vec<u8>, ApiError>> + Send;
+
+    /// Sends formatted text (Telegram HTML). If Telegram can't parse it, the
+    /// plain version goes instead, so a reply is never lost to formatting.
+    fn send_rich(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        html: &str,
+        plain: &str,
+    ) -> impl Future<Output = Result<i32, ApiError>> + Send {
+        let _ = html;
+        self.send_text(chat_id, topic_id, reply_to, plain)
+    }
+
+    /// Formatted text with inline buttons (plain if it won't parse).
+    fn send_rich_buttons(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        html: &str,
+        plain: &str,
+        rows: &[Vec<(String, String)>],
+    ) -> impl Future<Output = Result<i32, ApiError>> + Send {
+        let _ = html;
+        self.send_buttons(chat_id, topic_id, reply_to, plain, rows)
+    }
+
+    /// Replaces a bot message with formatted text (plain if it won't parse).
+    fn edit_rich(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+        html: &str,
+        plain: &str,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send {
+        let _ = html;
+        self.edit_text(chat_id, message_id, plain)
+    }
+
+    /// Sends a file from this machine (photo, voice note, video, document…).
+    fn send_file(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        file: &OutFile,
+    ) -> impl Future<Output = Result<i32, ApiError>> + Send {
+        let _ = (chat_id, topic_id, reply_to, file);
+        async { Err(ApiError("sending files is not supported here".into())) }
+    }
+
+    /// Shows what the bot is doing ("sending a photo…") for a few seconds.
+    fn activity(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        activity: Activity,
+    ) -> impl Future<Output = Result<(), ApiError>> + Send {
+        let _ = activity;
+        self.typing(chat_id, topic_id)
+    }
+}
+
+/// Links stay links: no preview cards under replies.
+fn no_previews() -> LinkPreviewOptions {
+    LinkPreviewOptions {
+        is_disabled: true,
+        url: None,
+        prefer_small_media: false,
+        prefer_large_media: false,
+        show_above_text: false,
+    }
 }
 
 fn api_err(e: teloxide::RequestError) -> ApiError {
@@ -117,7 +223,111 @@ fn api_err(e: teloxide::RequestError) -> ApiError {
 /// The real Telegram API.
 pub struct BotApi(pub Bot);
 
+impl BotApi {
+    /// Sends a file with the request type its kind needs.
+    async fn send_any(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        file: &OutFile,
+    ) -> Result<Message, teloxide::RequestError> {
+        let input = InputFile::file(file.path.clone());
+        let chat = ChatId(chat_id);
+        let thread = topic_id.map(|t| ThreadId(MessageId(t)));
+        let reply =
+            reply_to.map(|r| ReplyParameters::new(MessageId(r)).allow_sending_without_reply());
+        let caption = file.caption.clone();
+        // Each kind is its own request type; set the same fields on each.
+        macro_rules! send {
+            ($req:expr) => {{
+                let mut req = $req;
+                if let Some(thread) = thread {
+                    req = req.message_thread_id(thread);
+                }
+                if let Some(reply) = reply.clone() {
+                    req = req.reply_parameters(reply);
+                }
+                if let Some(caption) = caption.clone() {
+                    req = req.caption(caption);
+                }
+                req.await
+            }};
+        }
+        match file.kind {
+            FileKind::Sticker => {
+                let mut req = self.0.send_sticker(chat, input);
+                if let Some(thread) = thread {
+                    req = req.message_thread_id(thread);
+                }
+                if let Some(reply) = reply {
+                    req = req.reply_parameters(reply);
+                }
+                req.await
+            }
+            FileKind::Photo => send!(self.0.send_photo(chat, input)),
+            FileKind::Voice => send!(self.0.send_voice(chat, input)),
+            FileKind::Audio => send!(self.0.send_audio(chat, input)),
+            FileKind::Video => send!(self.0.send_video(chat, input)),
+            FileKind::Animation => send!(self.0.send_animation(chat, input)),
+            FileKind::Document => send!(self.0.send_document(chat, input)),
+        }
+    }
+
+    /// Uploads a file and returns (message id, Telegram file id, size), for
+    /// simulated messages that need a real file to download.
+    pub async fn upload(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        file: &OutFile,
+    ) -> Result<(i32, String, u32), ApiError> {
+        let msg = self
+            .send_any(chat_id, topic_id, None, file)
+            .await
+            .map_err(api_err)?;
+        let meta = msg
+            .photo()
+            .and_then(|p| p.last())
+            .map(|p| &p.file)
+            .or(msg.document().map(|d| &d.file))
+            .or(msg.video().map(|v| &v.file))
+            .or(msg.audio().map(|a| &a.file))
+            .or(msg.voice().map(|v| &v.file))
+            .or(msg.animation().map(|a| &a.file))
+            .ok_or_else(|| ApiError("Telegram returned no file".into()))?;
+        Ok((msg.id.0, meta.id.0.clone(), meta.size))
+    }
+}
+
 impl TelegramApi for BotApi {
+    async fn set_buttons(
+        &self,
+        chat: i64,
+        message: i32,
+        rows: &[Vec<(String, String)>],
+    ) -> Result<(), ApiError> {
+        let keyboard = InlineKeyboardMarkup::new(rows.iter().map(|row| {
+            row.iter()
+                .map(|(label, data)| InlineKeyboardButton::callback(label.clone(), data.clone()))
+                .collect::<Vec<_>>()
+        }));
+        self.0
+            .edit_message_reply_markup(TgChatId(chat), MessageId(message))
+            .reply_markup(keyboard)
+            .await
+            .map(|_| ())
+            .map_err(api_err)
+    }
+
+    async fn delete_message(&self, chat_id: i64, message_id: i32) -> Result<(), ApiError> {
+        self.0
+            .delete_message(TgChatId(chat_id), MessageId(message_id))
+            .await
+            .map(|_| ())
+            .map_err(api_err)
+    }
+
     async fn send_text(
         &self,
         chat_id: i64,
@@ -181,6 +391,30 @@ impl TelegramApi for BotApi {
             .map_err(api_err)
     }
 
+    async fn edit_buttons(
+        &self,
+        chat: i64,
+        message: i32,
+        text: &str,
+        rows: &[Vec<(String, String)>],
+    ) -> Result<(), ApiError> {
+        let keyboard = InlineKeyboardMarkup::new(rows.iter().map(|row| {
+            row.iter()
+                .map(|(label, data)| InlineKeyboardButton::callback(label.clone(), data.clone()))
+                .collect::<Vec<_>>()
+        }));
+        match self
+            .0
+            .edit_message_text(ChatId(chat), MessageId(message), text)
+            .reply_markup(keyboard)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(teloxide::RequestError::Api(teloxide::ApiError::MessageNotModified)) => Ok(()),
+            Err(err) => Err(api_err(err)),
+        }
+    }
+
     async fn remove_buttons(&self, chat_id: i64, message_id: i32) -> Result<(), ApiError> {
         match self
             .0
@@ -223,6 +457,130 @@ impl TelegramApi for BotApi {
             .map_err(api_err)
     }
 
+    async fn send_rich(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        html: &str,
+        plain: &str,
+    ) -> Result<i32, ApiError> {
+        let mut req = self
+            .0
+            .send_message(ChatId(chat_id), html)
+            .parse_mode(ParseMode::Html)
+            .link_preview_options(no_previews());
+        if let Some(topic) = topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(topic)));
+        }
+        if let Some(reply) = reply_to {
+            req = req.reply_parameters(
+                ReplyParameters::new(MessageId(reply)).allow_sending_without_reply(),
+            );
+        }
+        match req.await {
+            Ok(m) => Ok(m.id.0),
+            Err(teloxide::RequestError::Api(teloxide::ApiError::CantParseEntities(why))) => {
+                tracing::warn!(%why, "Telegram couldn't parse the formatting; sending plain text");
+                self.send_text(chat_id, topic_id, reply_to, plain).await
+            }
+            Err(err) => Err(api_err(err)),
+        }
+    }
+
+    async fn send_rich_buttons(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        html: &str,
+        plain: &str,
+        rows: &[Vec<(String, String)>],
+    ) -> Result<i32, ApiError> {
+        let keyboard = InlineKeyboardMarkup::new(rows.iter().map(|row| {
+            row.iter()
+                .map(|(label, data)| InlineKeyboardButton::callback(label.clone(), data.clone()))
+                .collect::<Vec<_>>()
+        }));
+        let mut req = self
+            .0
+            .send_message(ChatId(chat_id), html)
+            .parse_mode(ParseMode::Html)
+            .link_preview_options(no_previews())
+            .reply_markup(keyboard);
+        if let Some(topic) = topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(topic)));
+        }
+        if let Some(reply) = reply_to {
+            req = req.reply_parameters(
+                ReplyParameters::new(MessageId(reply)).allow_sending_without_reply(),
+            );
+        }
+        match req.await {
+            Ok(m) => Ok(m.id.0),
+            Err(teloxide::RequestError::Api(teloxide::ApiError::CantParseEntities(_))) => {
+                self.send_buttons(chat_id, topic_id, reply_to, plain, rows)
+                    .await
+            }
+            Err(err) => Err(api_err(err)),
+        }
+    }
+
+    async fn edit_rich(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+        html: &str,
+        plain: &str,
+    ) -> Result<(), ApiError> {
+        let req = self
+            .0
+            .edit_message_text(ChatId(chat_id), MessageId(message_id), html)
+            .parse_mode(ParseMode::Html)
+            .link_preview_options(no_previews());
+        match req.await {
+            Ok(_) => Ok(()),
+            Err(teloxide::RequestError::Api(teloxide::ApiError::MessageNotModified)) => Ok(()),
+            Err(teloxide::RequestError::Api(teloxide::ApiError::CantParseEntities(_))) => {
+                self.edit_text(chat_id, message_id, plain).await
+            }
+            Err(err) => Err(api_err(err)),
+        }
+    }
+
+    async fn send_file(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        reply_to: Option<i32>,
+        file: &OutFile,
+    ) -> Result<i32, ApiError> {
+        self.send_any(chat_id, topic_id, reply_to, file)
+            .await
+            .map(|m| m.id.0)
+            .map_err(api_err)
+    }
+
+    async fn activity(
+        &self,
+        chat_id: i64,
+        topic_id: Option<i32>,
+        activity: Activity,
+    ) -> Result<(), ApiError> {
+        let action = match activity {
+            Activity::Typing => ChatAction::Typing,
+            Activity::UploadPhoto => ChatAction::UploadPhoto,
+            Activity::UploadVideo => ChatAction::UploadVideo,
+            Activity::UploadDocument => ChatAction::UploadDocument,
+            Activity::RecordVoice => ChatAction::RecordVoice,
+        };
+        let mut req = self.0.send_chat_action(ChatId(chat_id), action);
+        if let Some(topic) = topic_id {
+            req = req.message_thread_id(ThreadId(MessageId(topic)));
+        }
+        req.await.map(|_| ()).map_err(api_err)
+    }
+
     async fn download_file(&self, file_id: &str) -> Result<Vec<u8>, ApiError> {
         let file = self
             .0
@@ -241,6 +599,7 @@ impl TelegramApi for BotApi {
 /// Everything the handler needs.
 pub struct Ctx<'a, A: TelegramApi, T: Transcriber> {
     pub pool: &'a PgPool,
+    pub speaker: &'a dyn crate::speech::Speaker,
     pub api: &'a A,
     pub transcriber: &'a T,
     pub rules: Rules,
@@ -257,16 +616,24 @@ pub struct Ctx<'a, A: TelegramApi, T: Transcriber> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum HandleError {
+    #[error(transparent)]
+    Personal(#[from] crate::personal::PersonalError),
+    #[error(transparent)]
+    Task(#[from] crate::tasks::TaskError),
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
     #[error(transparent)]
     Api(#[from] ApiError),
     #[error(transparent)]
     Voice(#[from] VoiceError),
+    #[error(transparent)]
+    Speech(#[from] crate::speech::SpeechError),
     #[error("could not write AGENTS.md: {0}")]
     AgentsMd(#[from] std::io::Error),
     #[error(transparent)]
     T3(#[from] AgentError),
+    #[error("could not receive the file: {0}")]
+    Media(#[from] inbound_files::FileError),
 }
 
 impl From<wipe::WipeError> for HandleError {
@@ -282,11 +649,15 @@ impl From<wipe::WipeError> for HandleError {
 impl HandleError {
     fn kind(&self) -> &'static str {
         match self {
+            HandleError::Personal(_) => "personal.write",
+            HandleError::Task(_) => "task.telegram",
             HandleError::Db(_) => "telegram.handle_db",
             HandleError::Api(_) => "telegram.handle_api",
+            HandleError::Speech(_) => "speech.command",
             HandleError::Voice(_) => "voice.transcribe",
             HandleError::AgentsMd(_) => "agents_md.write",
             HandleError::T3(_) => "t3.project_remove",
+            HandleError::Media(_) => "media.receive",
         }
     }
 }
@@ -295,11 +666,38 @@ impl HandleError {
 pub const SEEN_REACTION: &str = "👀";
 
 pub const HELP_TEXT: &str = "Herbot: your private bot.\n\n\
-General is the everyday chat. Every other topic is its own agent with its own memory.\n\n\
-/setup: set what this conversation is for\n\
-/status: this conversation's details\n\
-/new: wipe this topic's chat and start fresh (keeps its purpose)\n\
-/forget: wipe this topic completely, purpose included\n\
+General is the everyday chat. Every other topic is its own agent with its own memory. \
+Send text, voice notes, photos, documents, video or audio.\n\n\
+Thinking\n\
+/mode: Fast, Auto, Expert or Heavy for this topic\n\
+/fast, /think, /heavy <question>: one answer in that mode\n\
+/deepsearch <question>: research across the web, with sources\n\
+/x <topic>: what people on X are saying\n\
+/wiki <topic>: an encyclopedia article (Grokipedia, Wikipedia, sources)\n\n\
+Making things\n\
+/imagine <prompt>: an image (or edit a photo you reply to)\n\
+/sticker: a sticker from a photo you reply to, or a prompt\n\n\
+Voice\n\
+/voice: spoken replies on or off, and the voice\n\
+/speak: reply to a bot message to hear it\n\
+/persona: a ready-made purpose with its own voice\n\n\
+Conversation\n\
+/retry: answer your last message again\n\
+/search <words>: search history\n\
+/summary [count|today]: summarise history, or a message you reply to\n\
+/export: this topic as Markdown and HTML\n\
+/private on|off: stop or resume storing this topic\n\
+/tasks: scheduled and recurring prompts\n\n\
+About you\n\
+/memory: what Herbot remembers (and forget it)\n\
+/customize [text|clear]: how you want every answer\n\
+/aboutme <text|clear>: what Herbot should know about you\n\
+/language <name>: the language this topic answers in (English by default)\n\n\
+This topic\n\
+/setup: set what it's for\n\
+/status: its details\n\
+/new: wipe its chat and start fresh (keeps its purpose)\n\
+/forget: wipe it completely, purpose included\n\
 /help: this list";
 
 pub const WELCOME_TEXT: &str = "👋 Herbot is here. General is our everyday chat. Every other topic is its own agent: say anything in a new topic and I'll ask what it should be.";
@@ -370,12 +768,46 @@ async fn apply<A: TelegramApi, T: Transcriber>(
         // The 👀 goes out alongside the work, not one Telegram round trip
         // before it.
         Action::Store(msg) => {
-            let ((), handled) = tokio::join!(mark_seen(ctx, &msg), take_message(ctx, msg.clone()));
+            let ((), handled) =
+                tokio::join!(mark_seen(ctx, &msg), take_message(ctx, msg.clone(), None));
             handled?
         }
         Action::RunCommand(msg, cmd) => {
             let ((), ran) = tokio::join!(mark_seen(ctx, &msg), run_command(ctx, &msg, cmd));
             ran?
+        }
+        Action::Edit(mut msg) => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            if !s.enabled || s.setup_state != SetupState::Ready {
+                return Ok(());
+            }
+            let changed = sqlx::query("UPDATE messages SET body=$3 WHERE conversation_id=$1 AND tg_message_id=$2 AND NOT from_bot AND body<>$3").bind(s.conversation_id).bind(msg.message_id).bind(&msg.text).execute(ctx.pool).await?.rows_affected();
+            if changed > 0 || store::is_private(ctx.pool, s.conversation_id).await? {
+                msg.text = format!(
+                    "Ashrith edited his message to: {}; answer the edited version.",
+                    msg.text
+                );
+                hand_to_agent(ctx, &msg, s.conversation_id, None).await?;
+            }
+        }
+        Action::Reaction {
+            chat,
+            message_id,
+            reactions,
+        } => {
+            let found:Option<(i64,i64)> = sqlx::query_as("SELECT m.id,m.conversation_id FROM messages m JOIN conversations v ON v.id=m.conversation_id JOIN chats c ON c.id=v.chat_id WHERE c.tg_chat_id=$1 AND m.tg_message_id=$2 AND m.from_bot AND v.enabled AND NOT v.private_mode").bind(chat.tg_chat_id).bind(message_id).fetch_optional(ctx.pool).await?;
+            if let Some((id, conversation)) = found {
+                sqlx::query("INSERT INTO feedback(message_id,reactions) VALUES($1,$2) ON CONFLICT(message_id) DO UPDATE SET reactions=$2,updated_at=now()").bind(id).bind(&reactions).execute(ctx.pool).await?;
+                let missed = reactions.as_array().is_some_and(|rs| {
+                    rs.iter()
+                        .any(|r| r.get("emoji").and_then(|e| e.as_str()) == Some("👎"))
+                });
+                sqlx::query("UPDATE conversations SET negative_feedback=$2 WHERE id=$1")
+                    .bind(conversation)
+                    .bind(missed)
+                    .execute(ctx.pool)
+                    .await?;
+            }
         }
         Action::Button(press) => handle_button(ctx, &press).await?,
     }
@@ -387,6 +819,7 @@ async fn apply<A: TelegramApi, T: Transcriber>(
 async fn take_message<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     mut msg: InboundMessage,
+    style: Option<Style>,
 ) -> Result<(), HandleError> {
     if let Some(voice) = msg.voice.clone() {
         if voice.duration_secs > MAX_VOICE_SECONDS {
@@ -395,7 +828,11 @@ async fn take_message<A: TelegramApi, T: Transcriber>(
             return Ok(());
         }
         let audio = ctx.api.download_file(&voice.file_id).await?;
-        let transcript = ctx.transcriber.transcribe(audio).await?;
+        let language = store::language_at(ctx.pool, msg.chat.tg_chat_id, msg.topic_id).await?;
+        let transcript = ctx
+            .transcriber
+            .transcribe_in(audio, crate::voice::iso_code(&language))
+            .await?;
         if transcript.trim().is_empty() {
             reply(ctx, &msg, setup::NOTHING_HEARD).await?;
             return Ok(());
@@ -411,7 +848,45 @@ async fn take_message<A: TelegramApi, T: Transcriber>(
             format!("{}\n\n{}", msg.text.trim(), transcript)
         };
     }
-    store_and_continue(ctx, &msg).await
+    // Photos, documents, video and audio: saved in the topic's folder and
+    // described to the agent.
+    if let Some(attachment) = msg.attachment.clone() {
+        let folder = agents_md::relative_dir(msg.chat.tg_chat_id, msg.topic_id);
+        let received = inbound_files::receive(
+            ctx.api,
+            ctx.transcriber,
+            ctx.agents_dir,
+            &folder,
+            msg.message_id,
+            &attachment,
+            crate::voice::iso_code(
+                &store::language_at(ctx.pool, msg.chat.tg_chat_id, msg.topic_id).await?,
+            ),
+        )
+        .await;
+        match received {
+            Ok(received) => {
+                tracing::info!(kind = attachment.kind.as_str(), path = %received.file.path, "received a file");
+                msg.text = if msg.text.trim().is_empty() {
+                    received.note
+                } else {
+                    format!("{}\n\n{}", msg.text.trim(), received.note)
+                };
+                msg.files.push(received.file);
+            }
+            Err(too_big @ inbound_files::FileError::TooBig { .. }) => {
+                reply(
+                    ctx,
+                    &msg,
+                    &format!("📎 {too_big}. Send a smaller file or a link."),
+                )
+                .await?;
+                return Ok(());
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    store_and_continue(ctx, &msg, style).await
 }
 
 /// Reacts 👀 to an admin message as soon as it arrives. A failed reaction
@@ -437,13 +912,23 @@ async fn hand_to_agent<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     conversation_id: i64,
+    style: Option<Style>,
 ) -> Result<(), HandleError> {
     for message_id in store::supersede_open_questions(ctx.pool, conversation_id).await? {
         ctx.api
             .remove_buttons(msg.chat.tg_chat_id, message_id)
             .await?;
     }
-    submit_turn(ctx, msg, conversation_id);
+    if let Some(style) = style.filter(|s| {
+        matches!(
+            s,
+            Style::DeepSearch | Style::Heavy | Style::Imagine | Style::Sticker | Style::Summary
+        )
+    }) {
+        // Long runs: say what's happening (typing alone looks stuck).
+        reply(ctx, msg, &format!("{}…", style.working())).await?;
+    }
+    submit_turn(ctx, msg, conversation_id, style);
     Ok(())
 }
 
@@ -452,6 +937,7 @@ fn submit_turn<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     conversation_id: i64,
+    style: Option<Style>,
 ) {
     ctx.turns.submit(TurnJob {
         conversation_id,
@@ -464,6 +950,8 @@ fn submit_turn<A: TelegramApi, T: Transcriber>(
         sender_id: msg.from_user_id,
         sent_at: msg.sent_at,
         reply: None,
+        style,
+        album: msg.media_group_id.clone(),
     });
 }
 
@@ -483,17 +971,32 @@ async fn reply<A: TelegramApi, T: Transcriber>(
     Ok(())
 }
 
-async fn store_and_continue<A: TelegramApi, T: Transcriber>(
+pub(crate) async fn store_and_continue<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
+    style: Option<Style>,
 ) -> Result<(), HandleError> {
+    type SetupLocks =
+        std::sync::Mutex<std::collections::HashMap<LaneKey, Arc<tokio::sync::Mutex<()>>>>;
+    static LOCKS: std::sync::OnceLock<SetupLocks> = std::sync::OnceLock::new();
+    let lock = LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("setup locks")
+        .entry((msg.chat.tg_chat_id, msg.topic_id))
+        .or_default()
+        .clone();
+    let _guard = lock.lock().await;
     match store::store_message(ctx.pool, msg).await? {
         StoreOutcome::Stored {
             conversation_id,
             message_row_id,
         } => {
             tracing::info!(conversation_id, message_row_id, "stored admin message");
-            continue_setup(ctx, msg, conversation_id).await?;
+            continue_setup(ctx, msg, conversation_id, style).await?;
+        }
+        StoreOutcome::Private { conversation_id } => {
+            hand_to_agent(ctx, msg, conversation_id, style).await?;
         }
         StoreOutcome::Duplicate { conversation_id } => {
             tracing::debug!(conversation_id, "duplicate message ignored");
@@ -516,6 +1019,7 @@ async fn continue_setup<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     msg: &InboundMessage,
     conversation_id: i64,
+    style: Option<Style>,
 ) -> Result<(), HandleError> {
     let status = store::conversation_status_by_id(ctx.pool, conversation_id).await?;
     let is_voice = msg.voice.is_some();
@@ -530,7 +1034,7 @@ async fn continue_setup<A: TelegramApi, T: Transcriber>(
             if is_voice {
                 reply(ctx, msg, &setup::heard(&msg.text)).await?;
             }
-            hand_to_agent(ctx, msg, conversation_id).await?;
+            hand_to_agent(ctx, msg, conversation_id, style).await?;
         }
         // A new topic: ask what this agent should be.
         SetupState::New => {
@@ -560,7 +1064,7 @@ async fn continue_setup<A: TelegramApi, T: Transcriber>(
             if is_voice {
                 reply(ctx, msg, &setup::heard(&msg.text)).await?;
             }
-            hand_to_agent(ctx, msg, conversation_id).await?;
+            hand_to_agent(ctx, msg, conversation_id, style).await?;
         }
     }
     Ok(())
@@ -637,12 +1141,69 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
     ctx: &Ctx<'_, A, T>,
     press: &ButtonPress,
 ) -> Result<(), HandleError> {
+    if press.data.starts_with("voice:") || press.data.starts_with("persona:") {
+        return crate::speech::button(ctx, press).await;
+    }
     let chat = press.chat.tg_chat_id;
+    if press.data.starts_with("mem:") {
+        return handle_memory_button(ctx, press).await;
+    }
+    if press.data.starts_with("task:") {
+        if let Err(err) = crate::tasks::callback(ctx.pool, ctx.api, press).await {
+            let id = errors::record(
+                ctx.pool,
+                "task.callback",
+                &err.to_string(),
+                json!({"chat":chat,"topic":press.topic_id}),
+            )
+            .await?;
+            tracing::error!(error_id=%id,error=%err,"task button failed");
+            let message = format!("❌ Failed ({id}): scheduled task control failed. Check logs.");
+            ctx.api
+                .send_text(chat, press.topic_id, Some(press.message_id), &message)
+                .await?;
+            ctx.api
+                .answer_button(
+                    &press.callback_id,
+                    Some("Task control failed; see the error message"),
+                )
+                .await?;
+        }
+        return Ok(());
+    }
+    if let Some(id) = press
+        .data
+        .strip_prefix("retry:")
+        .and_then(|s| s.parse::<i64>().ok())
+    {
+        ctx.api.answer_button(&press.callback_id, None).await?;
+        let msg = InboundMessage {
+            chat: press.chat.clone(),
+            topic_id: press.topic_id,
+            message_id: press.message_id,
+            from_user_id: press.from_user_id,
+            from_name: press.from_name.clone(),
+            from_is_bot: false,
+            text: String::new(),
+            voice: None,
+            attachment: None,
+            files: vec![],
+            media_group_id: None,
+            replied_bot_text: None,
+            reply_to_message_id: None,
+            sent_at: Utc::now(),
+            command: None,
+        };
+        return retry(ctx, &msg, Some(id)).await;
+    }
     if let Some(tap) = wipe::parse(&press.data) {
         return handle_wipe_tap(ctx, press, tap).await;
     }
     if let Some(conversation_id) = setup::parse_keep(&press.data) {
         return handle_keep_tap(ctx, press, conversation_id).await;
+    }
+    if let Some((conversation_id, mode)) = modes::parse_button(&press.data) {
+        return handle_mode_tap(ctx, press, conversation_id, mode).await;
     }
     let Some((question_id, index)) = turns::parse_answer_button(&press.data) else {
         ctx.api
@@ -684,7 +1245,39 @@ async fn handle_button<A: TelegramApi, T: Transcriber>(
         sender_id: press.from_user_id,
         sent_at: Utc::now(),
         reply: None,
+        style: None,
+        album: None,
     });
+    Ok(())
+}
+
+/// A `/mode` button: sets the topic's mode and updates the message in place.
+async fn handle_mode_tap<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    press: &ButtonPress,
+    conversation_id: i64,
+    mode: Mode,
+) -> Result<(), HandleError> {
+    let chat = press.chat.tg_chat_id;
+    if store::find_conversation(ctx.pool, chat, press.topic_id).await? != Some(conversation_id) {
+        ctx.api
+            .answer_button(&press.callback_id, Some(setup::OTHER_TOPIC_TOAST))
+            .await?;
+        return Ok(());
+    }
+    store::set_mode(ctx.pool, conversation_id, mode).await?;
+    let status = store::conversation_status_by_id(ctx.pool, conversation_id).await?;
+    ctx.api
+        .edit_text(
+            chat,
+            press.message_id,
+            &modes::summary(&status.place(), mode),
+        )
+        .await?;
+    ctx.api
+        .answer_button(&press.callback_id, Some(mode.label()))
+        .await?;
+    tracing::info!(conversation_id, mode = mode.as_str(), "mode changed");
     Ok(())
 }
 
@@ -804,7 +1397,124 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
     cmd: Command,
 ) -> Result<(), HandleError> {
     let text = match cmd {
+        Command::Voice(_) | Command::Speak | Command::Persona => {
+            return crate::speech::command(ctx, msg, &cmd).await;
+        }
+        Command::Tasks => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            if s.enabled {
+                crate::tasks::show(
+                    ctx.pool,
+                    ctx.api,
+                    s.conversation_id,
+                    msg.chat.tg_chat_id,
+                    msg.topic_id,
+                )
+                .await?;
+            }
+            return Ok(());
+        }
+        Command::Retry => {
+            return retry(ctx, msg, None).await;
+        }
+        Command::Search(words) => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            if words.trim().is_empty() {
+                "Usage: /search words".into()
+            } else {
+                crate::actions::search(ctx.pool, s.conversation_id, &words).await?
+            }
+        }
+        Command::Private(arg) => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            match arg.as_str() {
+                "on" | "off" => {
+                    sqlx::query("UPDATE conversations SET private_mode=$2 WHERE id=$1")
+                        .bind(s.conversation_id)
+                        .bind(arg == "on")
+                        .execute(ctx.pool)
+                        .await?;
+                    format!(
+                        "Private mode {arg}. {}",
+                        if arg == "on" {
+                            "🕶️ Messages are not saved to Herbot history. Telegram and T3 still retain this conversation."
+                        } else {
+                            "History storage resumed."
+                        }
+                    )
+                }
+                _ => "Usage: /private on|off".into(),
+            }
+        }
+        Command::Export => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            let dir = std::env::temp_dir().join(format!(
+                "herbot-export-{}-{}",
+                s.conversation_id, msg.message_id
+            ));
+            tokio::fs::create_dir_all(&dir).await?;
+            let result = async {
+                for (ext, html) in [("md", false), ("html", true)] {
+                    let content = crate::actions::export(ctx.pool, s.conversation_id, html).await?;
+                    let path = dir.join(format!("conversation.{ext}"));
+                    tokio::fs::write(&path, content).await?;
+                    ctx.api
+                        .send_file(
+                            msg.chat.tg_chat_id,
+                            msg.topic_id,
+                            Some(msg.message_id),
+                            &crate::media::OutFile::new(path),
+                        )
+                        .await?;
+                }
+                Ok::<(), HandleError>(())
+            }
+            .await;
+            tokio::fs::remove_dir_all(&dir).await?;
+            return result;
+        }
         Command::Start | Command::Help => HELP_TEXT.to_string(),
+        Command::Memory => {
+            return memory_page(ctx, msg.chat.tg_chat_id, msg.topic_id, 0).await;
+        }
+        Command::Customize(text) | Command::AboutMe(text) => {
+            let about = matches!(msg.command, Some(Command::AboutMe(_)));
+            let prefs = crate::personal::preferences(ctx.pool).await?;
+            if text.is_empty() {
+                // The two fields together can exceed Telegram's message limit.
+                for text in [
+                    format!("Custom instructions:\n{}", prefs.custom_instructions),
+                    format!("About you:\n{}", prefs.about_you),
+                ] {
+                    ctx.api
+                        .send_text(
+                            msg.chat.tg_chat_id,
+                            msg.topic_id,
+                            Some(msg.message_id),
+                            &text,
+                        )
+                        .await?;
+                }
+                return Ok(());
+            }
+            let value = if text.eq_ignore_ascii_case("clear") {
+                String::new()
+            } else {
+                text
+            };
+            crate::personal::set_preference(
+                ctx.pool,
+                ctx.agents_dir,
+                if about {
+                    "about_you"
+                } else {
+                    "custom_instructions"
+                },
+                &value,
+            )
+            .await?;
+            "Personalisation saved for every topic.".to_string()
+        }
         Command::Setup => {
             let status = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
             return send_greeting(ctx, msg, &status).await;
@@ -818,7 +1528,15 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
                 .unwrap_or_else(|| "not set yet (send /setup)".to_string());
             format!(
                 "📍 {}\nConversation #{} · {} messages stored\nPurpose: {}\nAgent file: {}\nModel: {}\nThread: {}",
-                s.place(),
+                format_args!(
+                    "{}{}",
+                    s.place(),
+                    if store::is_private(ctx.pool, s.conversation_id).await? {
+                        " 🕶️"
+                    } else {
+                        ""
+                    }
+                ),
                 s.conversation_id,
                 s.message_count,
                 purpose,
@@ -844,6 +1562,125 @@ async fn run_command<A: TelegramApi, T: Transcriber>(
         Command::Forget { confirmed: true } => {
             let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
             perform_wipe(ctx, &s, wipe::WipeKind::Forget).await?
+        }
+        Command::Language(arg) => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            let wanted = arg.trim();
+            if wanted.is_empty() {
+                format!(
+                    "{} answers in {}. Send /language Spanish (or any language) to change it, /language english to go back.",
+                    s.place(),
+                    s.language
+                )
+            } else if wanted.chars().count() > 40
+                || !wanted
+                    .chars()
+                    .all(|c| c.is_alphabetic() || c == ' ' || c == '-')
+            {
+                "Name a language, like /language Spanish or /language Telugu.".into()
+            } else {
+                let mut name: String = wanted.to_lowercase();
+                if name == "default" {
+                    name = "english".into();
+                }
+                let name: String = name
+                    .split_whitespace()
+                    .map(|w| {
+                        let mut c = w.chars();
+                        c.next()
+                            .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                            .unwrap_or_default()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                store::set_language(ctx.pool, s.conversation_id, &name).await?;
+                if name == "English" {
+                    format!("{} answers in English again.", s.place())
+                } else {
+                    format!(
+                        "{} now answers in {name}. Voice notes are transcribed in {name}{}, and spoken replies follow it. /language english to go back.",
+                        s.place(),
+                        if crate::voice::iso_code(&name).is_some() {
+                            ""
+                        } else {
+                            " (detected automatically)"
+                        }
+                    )
+                }
+            }
+        }
+        Command::Mode(arg) => {
+            let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+            if arg.is_empty() {
+                ctx.api
+                    .send_buttons(
+                        msg.chat.tg_chat_id,
+                        msg.topic_id,
+                        Some(msg.message_id),
+                        &modes::summary(&s.place(), s.mode),
+                        &modes::buttons(s.conversation_id, s.mode),
+                    )
+                    .await?;
+                return Ok(());
+            }
+            match Mode::parse(&arg) {
+                Some(mode) => {
+                    store::set_mode(ctx.pool, s.conversation_id, mode).await?;
+                    format!(
+                        "{} on for {}: {}.",
+                        mode.label(),
+                        format_args!(
+                            "{}{}",
+                            s.place(),
+                            if store::is_private(ctx.pool, s.conversation_id).await? {
+                                " 🕶️"
+                            } else {
+                                ""
+                            }
+                        ),
+                        mode.description()
+                    )
+                }
+                None => "Modes are fast, auto, expert and heavy. Send /mode to pick one.".into(),
+            }
+        }
+        Command::Styled { style, question } => {
+            if question.trim().is_empty()
+                && !matches!(style, Style::Summary)
+                && !(style == Style::Sticker && msg.attachment.is_some())
+            {
+                format!(
+                    "Put your question after the command, like /{} what changed in Rust this year?",
+                    style.as_str()
+                )
+            } else {
+                // The question goes to the agent like any message, in that mode.
+                let mut asked = msg.clone();
+                asked.text = if style == Style::Summary {
+                    let source = msg
+                        .text
+                        .split_once("[Quoted source to summarise]")
+                        .map(|(_, source)| source);
+                    match source {
+                        Some(source) => {
+                            format!("{question}\n\n[Quoted source to summarise]\n{source}")
+                        }
+                        None => {
+                            if question.is_empty() {
+                                "Summarise recent history.".into()
+                            } else {
+                                question
+                            }
+                        }
+                    }
+                } else if question.is_empty() {
+                    "Make a sticker from the attached image.".into()
+                } else {
+                    question
+                };
+                asked.command = None;
+                return take_message(ctx, asked, Some(style)).await;
+            }
         }
         Command::Unknown(name) => format!("I don't know /{name}. Try /help."),
     };
@@ -877,40 +1714,44 @@ pub async fn process<A: TelegramApi, T: Transcriber>(
         }
     };
 
-    // Fail loud: tell the admin where it happened, if it was their message.
-    if let Some(Inbound::Message(msg)) = telegram::normalize(update, ctx.bot_username)
-        && msg.from_user_id == ctx.rules.admin_user_id
-        && msg.chat.kind != ChatKind::Private
-    {
+    // Reapply the policy before reporting: strangers and other chats stay silent.
+    let target = telegram::normalize(update, ctx.bot_username)
+        .map(|inbound| policy::decide(inbound, &ctx.rules))
+        .and_then(|action| match action {
+            Action::Store(msg) | Action::RunCommand(msg, _) | Action::Edit(msg) => {
+                Some((msg.chat.tg_chat_id, msg.topic_id, msg.message_id))
+            }
+            Action::Button(press) => {
+                Some((press.chat.tg_chat_id, press.topic_id, press.message_id))
+            }
+            _ => None,
+        });
+    if let Some((chat, topic, message)) = target {
         let text = format!(
             "❌ Failed ({error_id}): {}. Check logs.",
             short_reason(&err)
         );
-        if let Err(send_err) = ctx
-            .api
-            .send_text(
-                msg.chat.tg_chat_id,
-                msg.topic_id,
-                Some(msg.message_id),
-                &text,
-            )
-            .await
-        {
+        if let Err(send_err) = ctx.api.send_text(chat, topic, Some(message), &text).await {
             tracing::error!(%error_id, error = %send_err, "could not tell the admin about the failure");
         }
     }
     Some(error_id)
 }
 
-fn short_reason(err: &HandleError) -> &'static str {
-    match err {
+fn short_reason(err: &HandleError) -> String {
+    let reason = match err {
+        HandleError::Personal(err) => return setup::clip(&err.to_string(), 200),
+        HandleError::Speech(_) => "speech or voice settings failed",
+        HandleError::Task(_) => "scheduled task failed",
         HandleError::Db(_) => "database error",
         HandleError::Api(_) => "Telegram API error",
         HandleError::Voice(VoiceError::NotConfigured) => "voice notes are off (no OPENAI_API_KEY)",
         HandleError::Voice(_) => "couldn't transcribe that voice note",
         HandleError::AgentsMd(_) => "couldn't save AGENTS.md",
         HandleError::T3(_) => "couldn't delete this topic's T3 threads, so nothing was wiped",
-    }
+        HandleError::Media(_) => "couldn't receive that file",
+    };
+    reason.to_string()
 }
 
 /// Registers the `/` command menu, only where Herbot works: the home group
@@ -942,6 +1783,7 @@ pub struct RunSettings<A: TelegramApi, T: Transcriber> {
     pub rules: Rules,
     pub bot_username: String,
     pub transcriber: T,
+    pub speaker: Arc<dyn crate::speech::Speaker>,
     /// Absolute path of the conversation folders.
     pub agents_dir: std::path::PathBuf,
     pub agent_label: String,
@@ -972,7 +1814,7 @@ pub fn route(update: &Update, bot_username: &str, rules: &Rules) -> Route {
         return Route::Skip;
     };
     match policy::decide(inbound, rules) {
-        Action::Store(msg) | Action::RunCommand(msg, _) => {
+        Action::Store(msg) | Action::Edit(msg) | Action::RunCommand(msg, _) => {
             Route::Lane((msg.chat.tg_chat_id, msg.topic_id))
         }
         Action::Button(press) => Route::Lane((press.chat.tg_chat_id, press.topic_id)),
@@ -990,6 +1832,7 @@ impl<A: TelegramApi, T: Transcriber> Shared<A, T> {
         let s = &self.settings;
         Ctx {
             pool: &self.pool,
+            speaker: &*s.speaker,
             api: &*s.api,
             transcriber: &s.transcriber,
             rules: s.rules,
@@ -1099,7 +1942,8 @@ impl<A: TelegramApi + 'static, T: Transcriber + Send + 'static> InboundLanes<A, 
             );
         }
         for (update_id, body) in pending {
-            match serde_json::from_value::<Update>(body) {
+            // teloxide's Update parses only from text, not from a JSON value.
+            match serde_json::from_str::<Update>(&body.to_string()) {
                 Ok(update) => match self.route(&update) {
                     Route::Lane(key) => self.submit(key, update),
                     other => {
@@ -1136,6 +1980,7 @@ pub async fn run<T: Transcriber + Send + 'static>(
     pool: PgPool,
     settings: RunSettings<BotApi, T>,
     mut shutdown: watch::Receiver<bool>,
+    mut inject: Option<mpsc::UnboundedReceiver<Update>>,
 ) {
     let bot_username = settings.bot_username.clone();
     let lanes = InboundLanes::new(pool.clone(), settings);
@@ -1157,6 +2002,8 @@ pub async fn run<T: Transcriber + Send + 'static>(
             .timeout(POLL_TIMEOUT_SECS)
             .allowed_updates(vec![
                 AllowedUpdate::Message,
+                AllowedUpdate::EditedMessage,
+                AllowedUpdate::MessageReaction,
                 AllowedUpdate::MyChatMember,
                 AllowedUpdate::CallbackQuery,
             ]);
@@ -1164,8 +2011,32 @@ pub async fn run<T: Transcriber + Send + 'static>(
             request = request.offset(offset);
         }
 
+        let injected = async {
+            match inject.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
+            }
+        };
         let result = tokio::select! {
             result = request.send() => result,
+            Some(update) = injected => {
+                // A simulated admin message (`/internal/simulate`): handled
+                // exactly like a real one, but it moves no Telegram offset.
+                match lanes.route(&update) {
+                    Route::Skip => {}
+                    Route::Inline => lanes.handle_inline(&update).await,
+                    Route::Lane(key) => {
+                        let body = serde_json::to_value(&update).unwrap_or_default();
+                        match store::inbox_insert(&pool, i64::from(update.id.0), &body).await {
+                            Ok(()) => lanes.submit(key, update),
+                            Err(err) => {
+                                let _ = errors::record(&pool, "telegram.inbox_save", &err.to_string(), json!({ "simulated": true })).await;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
             _ = shutdown.changed() => break,
         };
 
@@ -1218,4 +2089,180 @@ pub async fn run<T: Transcriber + Send + 'static>(
     }
     lanes.finish(Duration::from_secs(10)).await;
     tracing::info!("telegram polling stopped");
+}
+
+async fn memory_page<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    chat: i64,
+    topic: Option<i32>,
+    page: usize,
+) -> Result<(), HandleError> {
+    let memories = crate::personal::recall(ctx.pool, None).await?;
+    let page = page.min(memories.len().saturating_sub(1) / 10);
+    ctx.api
+        .send_text(
+            chat,
+            topic,
+            None,
+            &format!("Shared memories: {} (page {})", memories.len(), page + 1),
+        )
+        .await?;
+    for memory in memories.iter().skip(page * 10).take(10) {
+        ctx.api
+            .send_buttons(
+                chat,
+                topic,
+                None,
+                &format!("#{}: {}", memory.id, memory.content),
+                &[vec![(
+                    format!("Forget #{}", memory.id),
+                    format!("mem:del:{}", memory.id),
+                )]],
+            )
+            .await?;
+    }
+    let mut buttons = Vec::new();
+    if page > 0 {
+        buttons.push(("Previous".into(), format!("mem:page:{}", page - 1)));
+    }
+    if (page + 1) * 10 < memories.len() {
+        buttons.push(("Next".into(), format!("mem:page:{}", page + 1)));
+    }
+    if !memories.is_empty() {
+        buttons.push(("Forget all".into(), "mem:all".into()));
+    }
+    if !buttons.is_empty() {
+        ctx.api
+            .send_buttons(chat, topic, None, "Manage memories", &[buttons])
+            .await?;
+    }
+    Ok(())
+}
+
+async fn handle_memory_button<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    press: &ButtonPress,
+) -> Result<(), HandleError> {
+    let chat = press.chat.tg_chat_id;
+    let status = store::conversation_status(ctx.pool, &press.chat, press.topic_id).await?;
+    let parts: Vec<_> = press.data.split(':').collect();
+    match parts.as_slice() {
+        ["mem", "page", page] => {
+            if let Ok(page) = page.parse::<usize>() {
+                memory_page(ctx, chat, press.topic_id, page).await?;
+            }
+        }
+        ["mem", "del", id] => {
+            if let Ok(id) = id.parse::<i64>() {
+                crate::personal::forget(ctx.pool, ctx.agents_dir, Some(id)).await?;
+                ctx.api.remove_buttons(chat, press.message_id).await?;
+                ctx.api
+                    .edit_text(chat, press.message_id, "Memory forgotten.")
+                    .await?;
+            }
+        }
+        ["mem", "all"] => {
+            let stamp = Utc::now().timestamp();
+            let cutoff = crate::personal::recall(ctx.pool, None)
+                .await?
+                .last()
+                .map(|m| m.id)
+                .unwrap_or(0);
+            let id = status.conversation_id;
+            ctx.api
+                .send_buttons(
+                    chat,
+                    press.topic_id,
+                    None,
+                    "Forget every shared memory? Custom instructions and about-you will stay.",
+                    &[vec![
+                        (
+                            "Yes, forget all".into(),
+                            format!("mem:yes:{id}:{stamp}:{cutoff}"),
+                        ),
+                        ("Cancel".into(), format!("mem:cancel:{id}:{stamp}:{cutoff}")),
+                    ]],
+                )
+                .await?;
+        }
+        ["mem", action @ ("yes" | "cancel"), id, stamp, cutoff] => {
+            let valid = id.parse::<i64>().ok() == Some(status.conversation_id)
+                && stamp
+                    .parse::<i64>()
+                    .ok()
+                    .is_some_and(|stamp| (0..600).contains(&(Utc::now().timestamp() - stamp)));
+            if valid && cutoff.parse::<i64>().is_ok() {
+                if *action == "yes" {
+                    crate::personal::forget_through(
+                        ctx.pool,
+                        ctx.agents_dir,
+                        cutoff.parse().expect("validated cutoff"),
+                    )
+                    .await?;
+                }
+                ctx.api.remove_buttons(chat, press.message_id).await?;
+                ctx.api
+                    .edit_text(
+                        chat,
+                        press.message_id,
+                        if *action == "yes" {
+                            "All memories forgotten."
+                        } else {
+                            "Cancelled."
+                        },
+                    )
+                    .await?;
+            } else {
+                ctx.api
+                    .answer_button(
+                        &press.callback_id,
+                        Some("Confirmation expired or belongs to another topic."),
+                    )
+                    .await?;
+                return Ok(());
+            }
+        }
+        _ => {}
+    }
+    ctx.api.answer_button(&press.callback_id, None).await?;
+    Ok(())
+}
+
+async fn retry<A: TelegramApi, T: Transcriber>(
+    ctx: &Ctx<'_, A, T>,
+    msg: &InboundMessage,
+    button: Option<i64>,
+) -> Result<(), HandleError> {
+    let s = store::conversation_status(ctx.pool, &msg.chat, msg.topic_id).await?;
+    if !s.enabled || s.setup_state != SetupState::Ready {
+        return Ok(());
+    }
+    if let Some(id) = button {
+        let current: Option<i32> =
+            sqlx::query_scalar("SELECT retry_message_id FROM conversations WHERE id=$1")
+                .bind(s.conversation_id)
+                .fetch_one(ctx.pool)
+                .await?;
+        if id != s.conversation_id || current != Some(msg.message_id) {
+            return reply(ctx, msg, "That regenerate button is out of date.").await;
+        }
+    }
+    if store::is_private(ctx.pool, s.conversation_id).await? {
+        return reply(
+            ctx,
+            msg,
+            "Retry is unavailable while history storage is off. Send your question again.",
+        )
+        .await;
+    }
+    let previous:Option<(i32,String)>=sqlx::query_as("SELECT tg_message_id,body FROM messages WHERE conversation_id=$1 AND NOT from_bot AND body NOT LIKE '/%' ORDER BY sent_at DESC,id DESC LIMIT 1").bind(s.conversation_id).fetch_optional(ctx.pool).await?;
+    if let Some((id, body)) = previous {
+        let mut again = msg.clone();
+        again.message_id = id;
+        again.text =
+            format!("Answer Ashrith's previous message again, differently or better: {body}");
+        hand_to_agent(ctx, &again, s.conversation_id, None).await
+    } else {
+        reply(ctx, msg, "No previous message to retry.").await
+    }
 }

@@ -25,6 +25,8 @@ pub struct Caller {
 pub enum HubError {
     #[error("unknown caller token; pass the `caller` value from your <herbot-meta> header")]
     UnknownCaller,
+    #[error(transparent)]
+    Personal(#[from] crate::personal::PersonalError),
     #[error("{0}")]
     Forbidden(String),
     #[error("{0}")]
@@ -54,6 +56,7 @@ pub async fn resolve_caller(pool: &PgPool, token: &str) -> Result<Caller, HubErr
     .fetch_optional(pool)
     .await?;
     let (conversation_id, chat_row_id, topic) = row.ok_or(HubError::UnknownCaller)?;
+    require_public(pool, conversation_id).await?;
     let place = store::conversation_status_by_id(pool, conversation_id)
         .await?
         .place();
@@ -80,6 +83,7 @@ pub struct TopicSummary {
 /// Every conversation in the caller's group: General first, then the most
 /// recently active topics.
 pub async fn list_topics(pool: &PgPool, caller: &Caller) -> Result<Vec<TopicSummary>, HubError> {
+    require_public(pool, caller.conversation_id).await?;
     let topics = store::group_conversations(pool, caller.chat_row_id)
         .await?
         .into_iter()
@@ -136,6 +140,7 @@ async fn allowed_target(
     caller: &Caller,
     topic: Option<&str>,
 ) -> Result<Option<i64>, HubError> {
+    require_public(pool, caller.conversation_id).await?;
     match (caller.is_general, topic) {
         (true, None) => Ok(None), // General: everything
         (true, Some(reference)) => Ok(Some(resolve_topic(pool, caller, reference).await?)),
@@ -189,6 +194,7 @@ pub async fn search(
         "SELECT m.conversation_id, m.sent_at, m.from_bot, m.body
          FROM messages m JOIN conversations v ON v.id = m.conversation_id
          WHERE v.chat_id = $1
+           AND NOT v.private_mode
            AND ($2::bigint IS NULL OR m.conversation_id = $2)
            AND (m.search @@ websearch_to_tsquery('simple', $3) OR m.body ILIKE '%' || $3 || '%')
          ORDER BY m.sent_at DESC, m.id DESC
@@ -215,6 +221,7 @@ pub async fn read(
     let target = allowed_target(pool, caller, topic)
         .await?
         .unwrap_or(caller.conversation_id);
+    require_public(pool, target).await?;
     let limit = limit.unwrap_or(30).clamp(1, MAX_READ_MESSAGES);
     let mut rows: Vec<(i64, DateTime<Utc>, bool, String)> = sqlx::query_as(
         "SELECT conversation_id, sent_at, from_bot, body FROM messages
@@ -270,4 +277,127 @@ pub async fn action_target(pool: &PgPool, caller: &Caller, topic: &str) -> Resul
         ));
     }
     Ok(target)
+}
+
+/// Global personal data is available to every authenticated conversation.
+pub async fn remember(
+    pool: &PgPool,
+    caller_token: &str,
+    dir: &std::path::Path,
+    content: &str,
+) -> Result<crate::personal::Memory, HubError> {
+    let caller = resolve_caller(pool, caller_token).await?;
+    require_public(pool, caller.conversation_id).await?;
+    personal_result(
+        pool,
+        crate::personal::remember(pool, dir, content, Some(caller.conversation_id), None).await,
+    )
+    .await
+}
+pub async fn forget(
+    pool: &PgPool,
+    caller_token: &str,
+    dir: &std::path::Path,
+    id: i64,
+) -> Result<u64, HubError> {
+    let caller = resolve_caller(pool, caller_token).await?;
+    require_public(pool, caller.conversation_id).await?;
+    personal_result(pool, crate::personal::forget(pool, dir, Some(id)).await).await
+}
+pub async fn recall(
+    pool: &PgPool,
+    caller_token: &str,
+    query: Option<&str>,
+) -> Result<Vec<crate::personal::Memory>, HubError> {
+    let caller = resolve_caller(pool, caller_token).await?;
+    require_public(pool, caller.conversation_id).await?;
+    personal_result(
+        pool,
+        crate::personal::recall(pool, query)
+            .await
+            .map_err(Into::into),
+    )
+    .await
+}
+
+async fn personal_result<T>(
+    pool: &PgPool,
+    result: Result<T, crate::personal::PersonalError>,
+) -> Result<T, HubError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(
+            err @ (crate::personal::PersonalError::Invalid(_)
+            | crate::personal::PersonalError::NotFound),
+        ) => Err(err.into()),
+        Err(err) => {
+            let id = crate::errors::record(
+                pool,
+                "personal.tool",
+                &err.to_string(),
+                serde_json::json!({}),
+            )
+            .await?;
+            tracing::error!(error_id = %id, error = %err, "personalisation tool failed");
+            Err(HubError::BadRequest(format!(
+                "❌ Failed ({id}): personalisation could not be updated. Check logs."
+            )))
+        }
+    }
+}
+
+/// Task permissions follow the caller token: own topic, or General's group.
+pub async fn task_target(pool: &PgPool, caller: &Caller, id: i64) -> Result<(), HubError> {
+    let chat: Option<i64> = sqlx::query_scalar("SELECT chat_id FROM conversations WHERE id=$1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    if chat != Some(caller.chat_row_id) || (!caller.is_general && id != caller.conversation_id) {
+        return Err(HubError::Forbidden(
+            "Tasks are restricted to your own topic, or General's group".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn require_public(pool: &PgPool, id: i64) -> Result<(), HubError> {
+    if store::is_private(pool, id).await? {
+        return Err(HubError::Forbidden(
+            "history and memory tools are unavailable in private mode".into(),
+        ));
+    }
+    Ok(())
+}
+pub async fn list_tasks(
+    pool: &PgPool,
+    caller: &Caller,
+) -> Result<Vec<crate::tasks::Task>, HubError> {
+    Ok(sqlx::query_as("SELECT t.* FROM tasks t JOIN conversations c ON c.id=t.conversation_id WHERE c.chat_id=$1 AND ($2 OR c.id=$3) ORDER BY t.created_at DESC,t.id DESC").bind(caller.chat_row_id).bind(caller.is_general).bind(caller.conversation_id).fetch_all(pool).await?)
+}
+pub async fn change_task(
+    pool: &PgPool,
+    caller: &Caller,
+    id: i64,
+    action: &str,
+) -> Result<crate::tasks::Task, HubError> {
+    let conversation: Option<i64> =
+        sqlx::query_scalar("SELECT conversation_id FROM tasks WHERE id=$1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    task_target(
+        pool,
+        caller,
+        conversation.ok_or_else(|| HubError::NotFound("Task not found".into()))?,
+    )
+    .await?;
+    crate::tasks::change(pool, id, action)
+        .await
+        .map_err(task_error)
+}
+pub fn task_error(err: crate::tasks::TaskError) -> HubError {
+    match err {
+        crate::tasks::TaskError::Db(e) => HubError::Db(e),
+        other => HubError::BadRequest(other.to_string()),
+    }
 }

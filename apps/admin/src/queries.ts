@@ -3,7 +3,7 @@
 // prefetch on hover); components read the same keys with `useSuspenseQuery`,
 // so a page never fetches the same thing twice and mutations update in place.
 import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
-import { ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
+import { listMemories, getPreferences, listTasks, ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
 
 export const keys = {
   session: ['session'] as const,
@@ -53,7 +53,7 @@ export const topicQuery = (id: number) =>
     queryFn: () => getTopic({ data: id }),
     // Small (no messages), so polling is cheap. A changed message count is
     // what tells the chat log to fetch what's new.
-    refetchInterval: 10_000,
+    refetchInterval: 2_000,
   })
 
 /** A topic's history, newest page first; each next page is older. Pages
@@ -83,3 +83,11 @@ export const errorQuery = (id: string) =>
     // An error never changes once recorded.
     staleTime: Infinity,
   })
+
+export const memoriesQuery = queryOptions({
+  queryKey: ['memories'], queryFn: () => listMemories(), refetchInterval: 10_000,
+})
+export const preferencesQuery = queryOptions({
+  queryKey: ['preferences'], queryFn: () => getPreferences(), refetchInterval: 10_000,
+})
+export const tasksQuery = queryOptions({ queryKey: ['tasks'], queryFn: () => listTasks(), refetchInterval: 15_000 })

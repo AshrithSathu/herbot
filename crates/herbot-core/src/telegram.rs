@@ -41,8 +41,19 @@ pub struct ChatRef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Start,
+    Voice(String),
+    Speak,
+    Persona,
     Help,
     Status,
+    Memory,
+    Customize(String),
+    AboutMe(String),
+    Tasks,
+    Retry,
+    Export,
+    Search(String),
+    Private(String),
     Setup,
     /// `/new` asks first; `/new yes` wipes this topic's chat.
     New {
@@ -52,13 +63,54 @@ pub enum Command {
     Forget {
         confirmed: bool,
     },
+    /// `/mode` shows the topic's mode with buttons; `/mode fast` sets it.
+    Mode(String),
+    /// `/language` shows this topic's language; `/language Spanish` sets it.
+    Language(String),
+    /// `/fast`, `/think`, `/heavy`, `/deepsearch` + a question: one message
+    /// in that mode.
+    Styled {
+        style: crate::modes::Style,
+        question: String,
+    },
     Unknown(String),
 }
 
 /// All commands shown in Telegram's `/` menu, with descriptions.
 pub const COMMAND_MENU: &[(&str, &str)] = &[
-    ("setup", "Set what this conversation is for"),
+    ("mode", "Fast, Auto, Expert or Heavy for this topic"),
+    (
+        "deepsearch",
+        "Research a question across the web, with sources",
+    ),
+    ("think", "Answer one question thinking carefully"),
+    ("x", "What people on X are saying about something"),
+    (
+        "wiki",
+        "An encyclopedia article (Grokipedia, Wikipedia, sources)",
+    ),
+    ("imagine", "Generate or edit an image"),
+    ("voice", "Spoken replies and voice picker"),
+    ("speak", "Read a replied-to bot message aloud"),
+    ("retry", "Answer your last message again"),
+    ("search", "Search history: /search words"),
+    ("summary", "Summarise recent history or a replied message"),
+    ("tasks", "Scheduled and recurring prompts in this topic"),
+    ("memory", "View and forget shared memories"),
+    ("customize", "How you want every answer"),
+    ("language", "The language this topic answers in"),
+    ("aboutme", "What Herbot should know about you"),
+    ("persona", "Pick a persona: purpose and voice"),
+    ("sticker", "Make a sticker from a replied photo or prompt"),
+    ("export", "Download this conversation as Markdown and HTML"),
+    (
+        "private",
+        "Stop or resume storing this topic: /private on|off",
+    ),
+    ("fast", "A quick answer to one question"),
+    ("heavy", "Answer one question with several sub-agents"),
     ("status", "Show this conversation's details"),
+    ("setup", "Set what this conversation is for"),
     (
         "new",
         "Wipe this topic's chat and start fresh (keeps its purpose)",
@@ -82,10 +134,134 @@ pub struct InboundMessage {
     pub text: String,
     /// Set for voice notes.
     pub voice: Option<VoiceNote>,
+    /// A photo, document, video, audio file, GIF or sticker sent with it.
+    pub attachment: Option<Attachment>,
+    /// Where that attachment was saved, once the poller has downloaded it.
+    pub files: Vec<crate::media::SavedFile>,
+    /// Set for each photo or file of an album (several sent at once).
+    pub media_group_id: Option<String>,
+    pub replied_bot_text: Option<String>,
     pub reply_to_message_id: Option<i32>,
     pub sent_at: DateTime<Utc>,
     /// Set when the text is a slash command addressed to this bot.
     pub command: Option<Command>,
+}
+
+/// A file that came with a message (voice notes are [`VoiceNote`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    pub kind: AttachmentKind,
+    /// Telegram file ID, used to download it.
+    pub file_id: String,
+    pub file_name: Option<String>,
+    pub mime: Option<String>,
+    /// Bytes, when Telegram says (bots can download up to 20 MB).
+    pub size: Option<u32>,
+    pub duration_secs: Option<u32>,
+    /// A sticker's emoji.
+    pub emoji: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentKind {
+    Photo,
+    Document,
+    Video,
+    /// A round video message.
+    VideoNote,
+    Audio,
+    /// A GIF (Telegram sends it as a silent MP4).
+    Animation,
+    Sticker,
+}
+
+impl AttachmentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AttachmentKind::Photo => "photo",
+            AttachmentKind::Document => "document",
+            AttachmentKind::Video => "video",
+            AttachmentKind::VideoNote => "video note",
+            AttachmentKind::Audio => "audio",
+            AttachmentKind::Animation => "GIF",
+            AttachmentKind::Sticker => "sticker",
+        }
+    }
+}
+
+fn attachment_of(msg: &Message) -> Option<Attachment> {
+    let base = |kind, file: &teloxide::types::FileMeta| Attachment {
+        kind,
+        file_id: file.id.0.clone(),
+        file_name: None,
+        mime: None,
+        size: Some(file.size),
+        duration_secs: None,
+        emoji: None,
+    };
+    if let Some(sizes) = msg.photo() {
+        // Sizes come smallest first; the last is the full photo.
+        let largest = sizes.last()?;
+        return Some(Attachment {
+            mime: Some("image/jpeg".into()),
+            ..base(AttachmentKind::Photo, &largest.file)
+        });
+    }
+    if let Some(d) = msg.document() {
+        return Some(Attachment {
+            file_name: d.file_name.clone(),
+            mime: d.mime_type.as_ref().map(|m| m.to_string()),
+            ..base(AttachmentKind::Document, &d.file)
+        });
+    }
+    if let Some(v) = msg.video() {
+        return Some(Attachment {
+            file_name: v.file_name.clone(),
+            mime: v.mime_type.as_ref().map(|m| m.to_string()),
+            duration_secs: Some(v.duration.seconds()),
+            ..base(AttachmentKind::Video, &v.file)
+        });
+    }
+    if let Some(v) = msg.video_note() {
+        return Some(Attachment {
+            mime: Some("video/mp4".into()),
+            duration_secs: Some(v.duration.seconds()),
+            ..base(AttachmentKind::VideoNote, &v.file)
+        });
+    }
+    if let Some(a) = msg.audio() {
+        return Some(Attachment {
+            file_name: a.file_name.clone(),
+            mime: a.mime_type.as_ref().map(|m| m.to_string()),
+            duration_secs: Some(a.duration.seconds()),
+            ..base(AttachmentKind::Audio, &a.file)
+        });
+    }
+    if let Some(a) = msg.animation() {
+        return Some(Attachment {
+            file_name: a.file_name.clone(),
+            mime: a.mime_type.as_ref().map(|m| m.to_string()),
+            duration_secs: Some(a.duration.seconds()),
+            ..base(AttachmentKind::Animation, &a.file)
+        });
+    }
+    if let Some(s) = msg.sticker() {
+        return Some(Attachment {
+            emoji: s.emoji.clone(),
+            mime: Some(
+                if s.is_video() {
+                    "video/webm"
+                } else if s.is_animated() {
+                    "application/x-tgsticker"
+                } else {
+                    "image/webp"
+                }
+                .into(),
+            ),
+            ..base(AttachmentKind::Sticker, &s.file)
+        });
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,8 +272,16 @@ pub struct VoiceNote {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // one per update, never stored in bulk
 pub enum Inbound {
     Message(InboundMessage),
+    Edited(InboundMessage),
+    Reaction {
+        chat: ChatRef,
+        message_id: i32,
+        user_id: u64,
+        reactions: serde_json::Value,
+    },
     /// The bot was added to a group (or unblocked in a private chat).
     AddedToChat {
         chat: ChatRef,
@@ -142,7 +326,8 @@ impl Inbound {
     /// The chat this event happened in.
     pub fn chat(&self) -> &ChatRef {
         match self {
-            Inbound::Message(m) => &m.chat,
+            Inbound::Message(m) | Inbound::Edited(m) => &m.chat,
+            Inbound::Reaction { chat, .. } => chat,
             Inbound::AddedToChat { chat, .. }
             | Inbound::RemovedFromChat { chat, .. }
             | Inbound::TopicCreated { chat, .. }
@@ -157,6 +342,18 @@ impl Inbound {
 pub fn normalize(update: &Update, bot_username: &str) -> Option<Inbound> {
     match &update.kind {
         UpdateKind::Message(msg) => normalize_message(msg, bot_username),
+        UpdateKind::EditedMessage(msg) => match normalize_message(msg, bot_username)? {
+            Inbound::Message(m) if m.command.is_none() && !m.text.starts_with('/') => {
+                Some(Inbound::Edited(m))
+            }
+            _ => None,
+        },
+        UpdateKind::MessageReaction(r) => Some(Inbound::Reaction {
+            chat: chat_ref(&r.chat)?,
+            message_id: r.message_id.0,
+            user_id: r.user()?.id.0,
+            reactions: serde_json::to_value(&r.new_reaction).ok()?,
+        }),
         UpdateKind::MyChatMember(change) => normalize_membership(change),
         UpdateKind::CallbackQuery(query) => normalize_callback(query),
         _ => None,
@@ -242,7 +439,7 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         });
     }
 
-    // Anything else needs a sender and either words or a voice note.
+    // Anything else needs a sender and words, a voice note or a file.
     let from = from?;
     let voice = msg.voice().map(|v| VoiceNote {
         file_id: v.file.id.0.clone(),
@@ -253,8 +450,9 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         .or_else(|| msg.caption())
         .unwrap_or_default()
         .to_string();
-    if text.is_empty() && voice.is_none() {
-        return None; // stickers, polls, plain photos, ...
+    let mut attachment = attachment_of(msg);
+    if text.is_empty() && voice.is_none() && attachment.is_none() {
+        return None; // polls, contacts, locations, ...
     }
     let command = match parse_command(&text, bot_username) {
         CommandParse::NotACommand => None,
@@ -271,6 +469,33 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         .map(|m| m.id.0)
         .filter(|id| Some(*id) != topic);
 
+    let mut text = text;
+    if let Some(Command::Styled { style, .. }) = &command
+        && matches!(
+            style,
+            crate::modes::Style::Sticker
+                | crate::modes::Style::Summary
+                | crate::modes::Style::Imagine
+        )
+        && let Some(replied) = msg.reply_to_message().filter(|r| {
+            Some(r.id.0) != topic
+                && topic_id(r) == topic
+                && r.from.as_ref().is_some_and(|sender| {
+                    sender.id == from.id
+                        || (sender.is_bot
+                            && sender
+                                .username
+                                .as_deref()
+                                .is_some_and(|name| name.eq_ignore_ascii_case(bot_username)))
+                })
+        })
+    {
+        attachment = attachment.or_else(|| attachment_of(replied));
+        if *style == crate::modes::Style::Summary {
+            text.push_str("\n\n[Quoted source to summarise]\n");
+            text.push_str(replied.text().or_else(|| replied.caption()).unwrap_or(""));
+        }
+    }
     Some(Inbound::Message(InboundMessage {
         chat,
         topic_id: topic,
@@ -280,6 +505,22 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
         from_is_bot: from.is_bot,
         text,
         voice,
+        attachment,
+        files: Vec::new(),
+        media_group_id: msg.media_group_id().map(|g| g.0.clone()),
+        replied_bot_text: msg
+            .reply_to_message()
+            .filter(|m| Some(m.id.0) != topic)
+            .filter(|m| {
+                m.from.as_ref().is_some_and(|u| {
+                    u.is_bot
+                        && u.username
+                            .as_deref()
+                            .is_some_and(|n| n.eq_ignore_ascii_case(bot_username))
+                })
+            })
+            .and_then(|m| m.text().or_else(|| m.caption()))
+            .map(str::to_owned),
         reply_to_message_id,
         sent_at: msg.date,
         command,
@@ -314,6 +555,11 @@ fn confirmed_with_yes(rest: &str) -> bool {
 
 /// Parses `/cmd`, `/cmd args` and `/cmd@botname args`. The `@botname` part
 /// must match this bot (case-insensitive) or the command belongs to another bot.
+/// Everything after the command word (`/think why?` → `why?`).
+fn args(rest: &str, word: &str) -> String {
+    rest[word.len()..].trim().to_string()
+}
+
 fn parse_command(text: &str, bot_username: &str) -> CommandParse {
     let Some(rest) = text.strip_prefix('/') else {
         return CommandParse::NotACommand;
@@ -333,9 +579,24 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
         return CommandParse::ForAnotherBot;
     }
     let cmd = match name.to_ascii_lowercase().as_str() {
+        "voice" => Command::Voice(
+            rest.split_once(char::is_whitespace)
+                .map(|(_, args)| args.trim().to_ascii_lowercase())
+                .unwrap_or_default(),
+        ),
+        "speak" => Command::Speak,
+        "persona" => Command::Persona,
         "start" => Command::Start,
         "help" => Command::Help,
+        "tasks" => Command::Tasks,
         "status" => Command::Status,
+        "memory" => Command::Memory,
+        "customize" => Command::Customize(rest[word.len()..].trim().to_string()),
+        "aboutme" => Command::AboutMe(rest[word.len()..].trim().to_string()),
+        "retry" => Command::Retry,
+        "export" => Command::Export,
+        "search" => Command::Search(args(rest, word)),
+        "private" => Command::Private(args(rest, word)),
         "setup" => Command::Setup,
         "new" => Command::New {
             confirmed: confirmed_with_yes(rest),
@@ -343,6 +604,32 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
         "forget" => Command::Forget {
             confirmed: confirmed_with_yes(rest),
         },
+        "mode" => Command::Mode(args(rest, word)),
+        "language" | "lang" => Command::Language(args(rest, word)),
+        "x" | "twitter" => Command::Styled {
+            style: crate::modes::Style::X,
+            question: args(rest, word),
+        },
+        "wiki" | "grokipedia" => Command::Styled {
+            style: crate::modes::Style::Wiki,
+            question: args(rest, word),
+        },
+        "fast" | "think" | "heavy" | "deepsearch" | "deepersearch" | "research" | "imagine"
+        | "sticker" | "summary" => {
+            let style = match name.to_ascii_lowercase().as_str() {
+                "imagine" => crate::modes::Style::Imagine,
+                "sticker" => crate::modes::Style::Sticker,
+                "summary" => crate::modes::Style::Summary,
+                "fast" => crate::modes::Style::Fast,
+                "think" => crate::modes::Style::Think,
+                "heavy" => crate::modes::Style::Heavy,
+                _ => crate::modes::Style::DeepSearch,
+            };
+            Command::Styled {
+                style,
+                question: args(rest, word),
+            }
+        }
         other => Command::Unknown(other.to_string()),
     };
     CommandParse::ForThisBot(cmd)
@@ -353,8 +640,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn media_commands_take_only_same_topic_trusted_reply_sources() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/admin_topic_reply.json")).unwrap();
+        value["message"]["text"] = serde_json::json!("/summary");
+        value["message"]["reply_to_message"]["text"] =
+            serde_json::json!("A long decision to summarise");
+        value["message"]["reply_to_message"]["is_topic_message"] = serde_json::json!(true);
+        value["message"]["reply_to_message"]["message_thread_id"] = serde_json::json!(7);
+        let get = |v: &serde_json::Value| {
+            let update: Update = serde_json::from_str(&v.to_string()).unwrap();
+            match normalize(&update, "herbot_test_bot").unwrap() {
+                Inbound::Message(m) => m,
+                _ => panic!("message"),
+            }
+        };
+        assert!(get(&value).text.contains("A long decision"));
+        value["message"]["reply_to_message"]["message_thread_id"] = serde_json::json!(8);
+        assert!(!get(&value).text.contains("A long decision"));
+        value["message"]["reply_to_message"]["message_thread_id"] = serde_json::json!(7);
+        value["message"]["reply_to_message"]["from"]["id"] = serde_json::json!(222);
+        assert!(!get(&value).text.contains("A long decision"));
+    }
+
+    #[test]
     fn parses_commands_for_this_bot() {
         let bot = "Herbot_Bot";
+        for (command, style) in [
+            ("imagine", crate::modes::Style::Imagine),
+            ("sticker", crate::modes::Style::Sticker),
+            ("summary", crate::modes::Style::Summary),
+        ] {
+            assert_eq!(
+                parse_command(&format!("/{command}@{bot} hello"), bot),
+                CommandParse::ForThisBot(Command::Styled {
+                    style,
+                    question: "hello".into()
+                })
+            );
+            assert!(COMMAND_MENU.iter().any(|(name, _)| *name == command));
+        }
         assert_eq!(
             parse_command("/new", bot),
             CommandParse::ForThisBot(Command::New { confirmed: false })

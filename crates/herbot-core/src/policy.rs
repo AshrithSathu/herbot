@@ -20,7 +20,9 @@ pub struct Rules {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     /// Drop silently. `reason` is for logs only.
-    Ignore { reason: &'static str },
+    Ignore {
+        reason: &'static str,
+    },
     /// Leave this chat right away. `reason` is the audit-log action.
     Leave {
         chat: ChatRef,
@@ -28,11 +30,22 @@ pub enum Action {
         reason: &'static str,
     },
     /// The admin added the bot to a chat: remember it as active.
-    RegisterChat { chat: ChatRef, added_by: u64 },
+    RegisterChat {
+        chat: ChatRef,
+        added_by: u64,
+    },
     /// The bot was removed from a chat.
-    MarkLeft { chat: ChatRef },
+    MarkLeft {
+        chat: ChatRef,
+    },
     /// A message from the admin: store it under its conversation.
     Store(InboundMessage),
+    Edit(InboundMessage),
+    Reaction {
+        chat: ChatRef,
+        message_id: i32,
+        reactions: serde_json::Value,
+    },
     /// A slash command from the admin.
     RunCommand(InboundMessage, Command),
     /// A forum topic was created in a chat: name its conversation.
@@ -42,7 +55,10 @@ pub enum Action {
         name: String,
     },
     /// A chat's title changed.
-    RenameChat { chat: ChatRef, title: String },
+    RenameChat {
+        chat: ChatRef,
+        title: String,
+    },
     /// The admin tapped one of the bot's inline buttons.
     Button(ButtonPress),
 }
@@ -76,6 +92,33 @@ pub fn decide(inbound: Inbound, rules: &Rules) -> Action {
     // Then who.
     let admin = rules.admin_user_id;
     match inbound {
+        Inbound::Edited(msg) => {
+            if msg.from_user_id == admin && !msg.from_is_bot && msg.command.is_none() {
+                Action::Edit(msg)
+            } else {
+                Action::Ignore {
+                    reason: "unauthorized edit",
+                }
+            }
+        }
+        Inbound::Reaction {
+            chat,
+            message_id,
+            user_id,
+            reactions,
+        } => {
+            if user_id == admin {
+                Action::Reaction {
+                    chat,
+                    message_id,
+                    reactions,
+                }
+            } else {
+                Action::Ignore {
+                    reason: "unauthorized reaction",
+                }
+            }
+        }
         Inbound::Message(msg) => {
             if msg.from_is_bot {
                 return Action::Ignore {
@@ -89,9 +132,14 @@ pub fn decide(inbound: Inbound, rules: &Rules) -> Action {
             }
             match msg.command.clone() {
                 Some(cmd) => Action::RunCommand(msg, cmd),
-                None if msg.text.trim().is_empty() && msg.voice.is_none() => Action::Ignore {
-                    reason: "empty message",
-                },
+                None if msg.text.trim().is_empty()
+                    && msg.voice.is_none()
+                    && msg.attachment.is_none() =>
+                {
+                    Action::Ignore {
+                        reason: "empty message",
+                    }
+                }
                 None => Action::Store(msg),
             }
         }
@@ -183,6 +231,10 @@ mod tests {
             from_is_bot: false,
             text: text.into(),
             voice: None,
+            attachment: None,
+            files: Vec::new(),
+            media_group_id: None,
+            replied_bot_text: None,
             reply_to_message_id: None,
             sent_at: Utc::now(),
             command,
