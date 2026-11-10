@@ -130,3 +130,5 @@ CI (formatting, clippy, tests against Postgres) is **manual only**: `gh workflow
 ## Workflow
 
 Development happens in T3 Code with Codex: one roadmap step per branch (`step-N/<name>`), small logical commits, and each step lands only when its "Done when" checks pass. See [AGENTS.md](AGENTS.md).
+
+Rust lifecycle states and crash boundaries are inventoried in [docs/STATE_MACHINES.md](docs/STATE_MACHINES.md). Migration 0018 normalizes legacy question/setup control metadata before enforcing their legal combinations; task lifecycle changes use typed transitions while retaining the existing API values.

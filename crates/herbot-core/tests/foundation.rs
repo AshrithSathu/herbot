@@ -272,3 +272,138 @@ async fn setup_state_rules_are_enforced(pool: PgPool) {
         .await
         .unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn task_lifecycle_preserves_wire_values_and_manual_run_semantics(pool: PgPool) {
+    use herbot_core::tasks::{self, CreateTask, TaskStatus};
+    sqlx::raw_sql("INSERT INTO chats(tg_chat_id,kind) VALUES (42,'private'); INSERT INTO conversations(chat_id) VALUES (1)")
+        .execute(&pool).await.unwrap();
+    let task = tasks::create(
+        &pool,
+        CreateTask {
+            conversation_id: 1,
+            prompt: "Check the weather".into(),
+            title: None,
+            when: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            cron: None,
+            timezone: Some("Asia/Kolkata".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(task.status, TaskStatus::Active);
+    assert_eq!(serde_json::to_value(&task).unwrap()["status"], "active");
+    assert_eq!(
+        tasks::change(&pool, task.id, "pause").await.unwrap().status,
+        TaskStatus::Paused
+    );
+    assert!(tasks::change(&pool, task.id, "pause").await.is_err());
+    assert_eq!(
+        tasks::change(&pool, task.id, "run").await.unwrap().status,
+        TaskStatus::Paused
+    );
+    let requested: bool = sqlx::query_scalar("SELECT run_requested FROM tasks WHERE id=$1")
+        .bind(task.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(requested);
+    assert_eq!(
+        tasks::change(&pool, task.id, "resume")
+            .await
+            .unwrap()
+            .status,
+        TaskStatus::Active
+    );
+    assert_eq!(
+        tasks::change(&pool, task.id, "cancel")
+            .await
+            .unwrap()
+            .status,
+        TaskStatus::Cancelled
+    );
+    assert!(tasks::change(&pool, task.id, "run").await.is_err());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn partial_question_and_setup_states_are_rejected(pool: PgPool) {
+    sqlx::raw_sql("INSERT INTO chats(tg_chat_id,kind) VALUES (42,'private');
+        INSERT INTO conversations(chat_id) VALUES (1);
+        INSERT INTO agent_threads(conversation_id,t3_thread_id) VALUES (1,'thread');
+        INSERT INTO pending_questions(thread_id,question,options) VALUES (1,'Pick', '[\"Yes\",\"No\"]')")
+        .execute(&pool).await.unwrap();
+    for bad in [
+        "UPDATE conversations SET setup_prompt_tg_message_id=10",
+        "UPDATE pending_questions SET answer='Yes'",
+        "UPDATE pending_questions SET answered_at=now()",
+        "UPDATE pending_questions SET status='answered'",
+        "UPDATE pending_questions SET status='superseded'",
+    ] {
+        assert!(sqlx::query(bad).execute(&pool).await.is_err(), "{bad}");
+    }
+    sqlx::query(
+        "UPDATE conversations SET setup_state='awaiting_purpose',setup_prompt_tg_message_id=10",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        herbot_core::store::keep_purpose(&pool, 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    sqlx::query("UPDATE pending_questions SET status='answered',answer='Yes',answered_at=now()")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query("UPDATE pending_questions SET status='open'")
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn state_migration_repairs_legacy_control_metadata(pool: PgPool) {
+    // Recreate pre-0018 shapes only inside this sqlx-owned throwaway database.
+    sqlx::raw_sql(
+        "ALTER TABLE conversations DROP CONSTRAINT conversations_setup_prompt_state;
+        ALTER TABLE pending_questions DROP CONSTRAINT pending_questions_resolution;
+        INSERT INTO chats(tg_chat_id,kind) VALUES (42,'private');
+        INSERT INTO conversations(chat_id,setup_prompt_tg_message_id) VALUES (1,10);
+        INSERT INTO agent_threads(conversation_id,t3_thread_id) VALUES (1,'thread');
+        INSERT INTO pending_questions(thread_id,question,status,answer,answered_at) VALUES
+        (1,'Open','open','stale',now()), (1,'Missing answer','answered',NULL,NULL),
+        (1,'Answered','answered','Yes',NULL), (1,'Superseded','superseded','stale',NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0018_state_invariants.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let prompt: Option<i32> =
+        sqlx::query_scalar("SELECT setup_prompt_tg_message_id FROM conversations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(prompt, None);
+    let rows: Vec<(String, Option<String>, bool)> = sqlx::query_as(
+        "SELECT status,answer,answered_at IS NOT NULL FROM pending_questions ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            ("open".into(), None, false),
+            ("superseded".into(), None, true),
+            ("answered".into(), Some("Yes".into()), true),
+            ("superseded".into(), None, true)
+        ]
+    );
+}

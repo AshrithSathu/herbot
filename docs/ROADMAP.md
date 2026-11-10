@@ -96,5 +96,6 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - Done when: a fresh VPS comes up from the README alone.
 
 ## Step 11: Hardening
+- [x] Rust state inventory and typed task lifecycle; migration 0018 enforces question resolution and setup prompt states after backfilling legacy metadata (see STATE_MACHINES.md). Runtime/crash limits remain documented.
 - [ ] Rate limits, retention job, health alerts to the admin
 - Done when: a week runs with no manual restarts.
