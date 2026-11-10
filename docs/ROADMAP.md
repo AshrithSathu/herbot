@@ -86,7 +86,7 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - [x] W5 `/retry` and 🔄, edited messages re-asked, `/export` (Markdown + HTML), `/search`, `/private`, reaction feedback, a progress timer for long turns
 - [x] W6 `/imagine`, `/sticker` (Codex's image generation), `/summary`. Video generation and replying when tagged on X are out of scope
 - [x] W7 animated companions with voice chat in the panel
-- [x] Lead: `/x` (+ `search_x` with `X_BEARER_TOKEN`), `/wiki` (Grokipedia), `/language`
+- [x] Lead: `/x` (live web search of X), `/wiki` (Grokipedia), `/language`
 - Done when: ✅ every row in GROK_PARITY.md is ✅, 🔑 or ⛔ with a reason; ✅ each ✅ feature ran once through the live bot with simulated messages (2026-11-10); ⏳ Ashrith tries it end to end in Telegram and the panel.
 
 ## Step 10: Isolated bots-T3 and VPS deploy

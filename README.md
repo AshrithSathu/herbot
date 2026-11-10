@@ -35,7 +35,7 @@ Telegram Bot API ⇄ herbot-core (Rust) ⇄ bots-T3 (Codex, isolated container)
 | `/fast`, `/think`, `/heavy` + question | One message in that mode |
 | `/deepsearch` + question | Researches it across the live web and replies with a cited report, plus the report as a file |
 | `/imagine` + prompt | An image (Codex's built-in image generation); reply to a photo to edit it |
-| `/x` + topic | What people on X are saying (real-time with `X_BEARER_TOKEN`, otherwise from the live web) |
+| `/x` + topic | What people on X are saying, from the live web |
 | `/wiki` + topic | An encyclopedia article from Grokipedia, Wikipedia and sources |
 | `/language` + name | The language this topic answers in (English by default); voice notes and spoken replies follow it |
 | `/sticker` | A Telegram sticker from a photo you reply to, or from a prompt (drawn by Codex's image generation) |

@@ -172,8 +172,7 @@ async fn lists_all_tools_with_caller_required(pool: PgPool) {
             "remember",
             "resume_task",
             "schedule_task",
-            "search_messages",
-            "search_x"
+            "search_messages"
         ]
     );
     for tool in &tools {

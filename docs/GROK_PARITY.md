@@ -4,7 +4,7 @@ Everything Grok does (grok.com, the apps, Grok in Telegram), and how Herbot does
 
 Status: ✅ built and run once for real (simulated messages through the live bot, 2026-11-10); ⛔ out of scope by Ashrith's decision.
 
-Out of scope: video generation, and replying when tagged on X (Grok's @grok replies). `/x` (reading what people post on X) stays.
+Out of scope: video generation, replying when tagged on X (Grok's @grok replies), and real-time search through X's paid API. `/x` (what people post on X, from the live web) stays.
 
 | # | Grok feature | Herbot | Owner | Status |
 |---|---|---|---|---|
@@ -35,7 +35,7 @@ Out of scope: video generation, and replying when tagged on X (Grok's @grok repl
 | 25 | Connectors (MCP, apps) | Codex MCP servers; Herbot-wide ones in `agents/.codex/config.toml`; panel Connectors page | W4 | ✅ |
 | 26 | Web app (grok.com) | Admin panel becomes a chat app: chat with any topic, attachments, new topics, settings | W4 | ✅ |
 | 27 | Telegram extras (summaries, stickers) | Summarise a topic or reply thread; `/sticker` makes a sticker from an image or prompt, drawn by Codex's own image generation (no other image API); Herbot only converts it to 512px WebP | W6 | ✅ |
-| 28 | Real-time X (Twitter) analysis | `/x <topic>` and the agents' `search_x` tool (X API v2 recent search: posts, authors, dates, engagement, links) with `X_BEARER_TOKEN`; without it, live web search of x.com plus X's public post endpoint (verified) for reading posts | lead | ✅ (full real-time search with `X_BEARER_TOKEN`) |
+| 28 | Real-time X (Twitter) analysis | `/x <topic>`: live web search of x.com and news quoting posts, plus X's public post endpoint (verified) to read a post exactly. Real-time search through X's own API (needs a paid X API plan) is out of scope (Ashrith's call, 2026-11-10) | lead | ✅ (web search; X API search ⛔ out of scope) |
 | 29 | Grokipedia | `/wiki <topic>`: an encyclopedia article from Grokipedia (grokipedia.com), Wikipedia and primary sources, noting where they disagree; agents use Grokipedia for lookups | lead | ✅ |
 | 30 | Many languages | English by default (your rule); `/language <name>` makes a topic answer in any language, with its voice notes and video soundtracks transcribed in it and spoken replies following it. Ran live in Spanish | lead | ✅ |
 | 31 | Animated companions and live voice chat | Panel **Companions** page: four original animated characters (Luma, Flint, Pip, Orbit; SVG, idle/listening/thinking/talking with mouths driven by the reply's audio, calmer under reduced motion) you talk to by voice or text, each backed by its own agent topic with memory (General, clearly labelled, until the bot can create topics). Ran live: speech → transcription → agent reply → spoken reply | W7 | ✅ |

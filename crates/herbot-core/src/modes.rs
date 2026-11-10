@@ -168,9 +168,8 @@ impl Style {
     }
 }
 
-const X_SEARCH: &str = "x: Ashrith wants what people on X (Twitter) are saying. First use the \
-herbot search_x tool (real-time posts from the last 7 days); if it says X_BEARER_TOKEN isn't set, \
-search the live web for recent posts (site:x.com and site:twitter.com, plus news that quotes posts). Read a \
+const X_SEARCH: &str = "x: Ashrith wants what people on X (Twitter) are saying. Search the \
+live web for recent posts (site:x.com and site:twitter.com, plus news that quotes posts). Read a \
 specific post through X's public endpoints, without logging in: \
 https://cdn.syndication.twimg.com/tweet-result?id=<post id>&token=a (JSON with the text, author, \
 date and counts; the id is the number at the end of a post's URL). Summarise the main voices, \
