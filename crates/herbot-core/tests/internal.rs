@@ -23,6 +23,8 @@ const HQ: i64 = -100111;
 struct FakeApi {
     sent: Mutex<Vec<(i64, Option<i32>, String)>>,
     next: AtomicI32,
+    /// Telegram refuses every send.
+    down: std::sync::atomic::AtomicBool,
 }
 
 impl TelegramApi for FakeApi {
@@ -33,6 +35,9 @@ impl TelegramApi for FakeApi {
         _reply_to: Option<i32>,
         text: &str,
     ) -> Result<i32, ApiError> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(ApiError("Bad Request: message thread not found".into()));
+        }
         self.sent
             .lock()
             .unwrap()
@@ -304,4 +309,69 @@ async fn bad_tokens_topics_and_targets_are_refused(pool: PgPool) {
     }
     assert!(h.api.sent.lock().unwrap().is_empty(), "nothing was posted");
     assert!(h.lanes.jobs.lock().unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn only_set_up_switched_on_topics_can_be_asked(pool: PgPool) {
+    let h = harness(pool, AnsweringLanes::default(), Duration::from_secs(5)).await;
+    let general = token(&h.pool, 1).await;
+    // Not set up yet: refused, so General can't skip the topic's purpose setup.
+    sqlx::query("UPDATE conversations SET setup_state = 'new', purpose = NULL WHERE id = 2")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let (status, body) = call(
+        &h,
+        "/internal/ask",
+        TOKEN,
+        json!({ "caller": general, "topic": "2", "message": "hi" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("isn't set up yet"),
+        "{body}"
+    );
+    // Switched off: hidden from General altogether.
+    sqlx::query("UPDATE conversations SET setup_state = 'ready', purpose = 'Rust research', enabled = false WHERE id = 2")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let (status, body) = call(
+        &h,
+        "/internal/ask",
+        TOKEN,
+        json!({ "caller": general, "topic": "2", "message": "hi" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    // Nothing was shown in the topic and no turn ran.
+    assert!(h.api.sent.lock().unwrap().is_empty());
+    assert!(h.lanes.jobs.lock().unwrap().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_telegram_failure_is_recorded_with_an_error_id(pool: PgPool) {
+    let h = harness(pool, AnsweringLanes::default(), Duration::from_secs(5)).await;
+    h.api.down.store(true, Ordering::SeqCst);
+    let general = token(&h.pool, 1).await;
+    let (status, body) = call(
+        &h,
+        "/internal/post",
+        TOKEN,
+        json!({ "caller": general, "topic": "Research", "text": "hi" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let error = body["error"].as_str().unwrap();
+    assert!(
+        error.starts_with("Failed (E-") && error.contains("message thread not found"),
+        "{error}"
+    );
+    let recorded: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM errors WHERE kind = 'internal.send'")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(recorded, 1);
 }
