@@ -740,9 +740,17 @@ async fn set_voice(
     }
 }
 
-async fn task_list(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
+#[derive(Deserialize)]
+struct TaskPage {
+    before: Option<i64>,
+}
+async fn task_list(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Query(page): Query<TaskPage>,
+) -> Reply {
     guard!(headers, state);
-    match crate::tasks::list(&state.pool, None).await {
+    match crate::tasks::list_page(&state.pool, None, page.before).await {
         Ok(t) => ok(t),
         Err(e) => task_fail(e),
     }

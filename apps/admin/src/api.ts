@@ -246,9 +246,11 @@ export interface TaskInput {
   conversation_id: number; prompt: string; title?: string;
   when?: string; cron?: string; timezone?: string;
 }
-export const listTasks = createServerFn({ method: 'GET' }).handler(async () => {
-  const core = await serverSide(); return core<Task[]>('/tasks')
-})
+export const listTasks = createServerFn({ method: 'GET' })
+  .validator((data: { before?: number }) => data)
+  .handler(async ({ data }) => {
+    const core = await serverSide(); return core<Task[]>(`/tasks${data.before ? `?before=${data.before}` : ''}`)
+  })
 export const createTask = createServerFn({ method: 'POST' })
   .validator((data: TaskInput) => data)
   .handler(async ({ data }) => {

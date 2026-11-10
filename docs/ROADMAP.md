@@ -102,5 +102,6 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - [x] Performance: history labels in one batched query; migration 0019 indexes open-question cleanup, thread deletion and per-topic task history
 - [x] Round 2 safety: clean slate excludes active work and rejects older queued/replayed turns; scheduled occurrences survive a crash after claim (migration 0020)
 - [x] Panel inbox drains per topic; create-agent/message requests retain durable idempotency keys and responses (migration 0021)
+- [x] Bounded task history with cursor pagination in the API/panel; hub search uses full-text first and a deliberate literal substring fallback
 - [ ] Rate limits, retention job, health alerts to the admin
 - Done when: a week runs with no manual restarts.

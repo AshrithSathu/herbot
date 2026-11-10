@@ -90,4 +90,10 @@ export const memoriesQuery = queryOptions({
 export const preferencesQuery = queryOptions({
   queryKey: ['preferences'], queryFn: () => getPreferences(), refetchInterval: 10_000,
 })
-export const tasksQuery = queryOptions({ queryKey: ['tasks'], queryFn: () => listTasks(), refetchInterval: 15_000 })
+export const tasksQuery = infiniteQueryOptions({
+  queryKey: ['tasks'],
+  initialPageParam: undefined as number | undefined,
+  queryFn: ({ pageParam }) => listTasks({ data: { before: pageParam } }),
+  getNextPageParam: (last) => last.length === 50 ? last[last.length - 1].id : undefined,
+  refetchInterval: 15_000,
+})
