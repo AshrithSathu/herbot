@@ -118,7 +118,7 @@ Data goes through TanStack Query: route loaders fill the cache on the server, so
 
 In production, `make admin-build` and then `bun run --cwd apps/admin start` run `apps/admin/server.mjs` on Bun (Bun is the panel's runtime and package manager). It caches the content-hashed `/assets` for a year without revalidating, and serves them as brotli or gzip files written at build time (718 KB of JavaScript and CSS goes out as 196 KB). Pages and server-function data are compressed as they stream out.
 
-Panel lifecycle ownership and the full state inventory are in [docs/STATE_MACHINES.md](docs/STATE_MACHINES.md#panel-inventory-and-ownership-step-11). Settings drafts survive tab switches, failed reads offer recovery, and accepted New agent creation is separate from opening its page.
+Panel lifecycle ownership and the full state inventory are in [docs/STATE_MACHINES.md](docs/STATE_MACHINES.md#panel-inventory-and-ownership-step-11). Settings drafts survive tab switches, failed reads offer recovery, and accepted New agent creation is separate from opening its page. Companion connection failures offer retry; microphone stop/transcription holds one request lock.
 
 Tests run when Ashrith asks for them, not on every change. The panel has no browser (e2e) tests; they were removed on 2026-11-09.
 
