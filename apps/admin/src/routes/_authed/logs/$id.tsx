@@ -66,7 +66,7 @@ function ErrorPage() {
               <dt className="text-muted-foreground">Topic</dt>
               <dd className="min-w-0">
                 {topic ? (
-                  <Link to="/topics/$id" params={{ id: topic.id }} className="inline-flex max-w-full">
+                  <Link to="/topics/$id" params={{ id: topic.id }} className="relative inline-flex max-w-full before:absolute before:-inset-x-1 before:-inset-y-3">
                     <UserText>{topic.name}</UserText>
                   </Link>
                 ) : (

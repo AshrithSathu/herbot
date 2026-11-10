@@ -156,11 +156,9 @@
   [id] {
     scroll-margin-top: 64px;
   }
-  @media (prefers-reduced-motion: no-preference) {
-    html {
-      scroll-behavior: smooth;
-    }
-  }
+  /* No page-wide smooth scrolling: virtualized lists correct the scroll
+   * position as rows are measured, and a smooth correction stalls them.
+   * Code that wants a smooth jump asks for it (scrollIntoView). */
   body {
     @apply bg-background text-foreground antialiased;
     font-size: 15px;

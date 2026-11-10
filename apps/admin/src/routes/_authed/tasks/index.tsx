@@ -194,7 +194,7 @@ function TaskCard({ task, topic }: { task: Task; topic: Topic | undefined }) {
         <dt className="text-muted-foreground">Topic</dt>
         <dd className="min-w-0">
           {topic ? (
-            <Link to="/topics/$id" params={{ id: topic.id }} className="inline-flex max-w-full items-center gap-1">
+            <Link to="/topics/$id" params={{ id: topic.id }} className="relative inline-flex max-w-full items-center gap-1 before:absolute before:-inset-x-1 before:-inset-y-3">
               {topic.is_general ? (
                 <MessageCircleIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
               ) : (
