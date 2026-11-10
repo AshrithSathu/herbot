@@ -947,3 +947,84 @@ async fn t3_cli_deadline_includes_a_blocked_stdin_write() {
     .expect("stdin must be covered by the CLI deadline");
     assert_eq!(result.unwrap_err(), AgentError::Timeout(1));
 }
+
+struct NoProjects;
+impl herbot_core::agent::ProjectCleaner for NoProjects {
+    fn project_of_thread<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> herbot_core::agent::BoxFuture<'a, Result<Option<String>, AgentError>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn threads_in_project<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> herbot_core::agent::BoxFuture<'a, Result<Vec<String>, AgentError>> {
+        Box::pin(async { Ok(vec![]) })
+    }
+    fn remove_project<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> herbot_core::agent::BoxFuture<'a, Result<(), AgentError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn wipes_wait_for_running_turns_and_discard_queued_turns(pool: PgPool) {
+    use herbot_core::{
+        store,
+        wipe::{self, WipeKind},
+    };
+    for kind in [WipeKind::New, WipeKind::Forget] {
+        let runner = FakeRunner {
+            delay: Duration::from_millis(150),
+            ..Default::default()
+        };
+        // Use a fresh fixture for each kind without sharing conversation IDs.
+        if kind == WipeKind::Forget {
+            sqlx::query("TRUNCATE chats RESTART IDENTITY CASCADE")
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let h = H::with_runner(pool.clone(), runner).await;
+        let api = h.deps.api.clone();
+        let runner = h.deps.runner.clone();
+        let dir = h.deps.agents_dir.clone();
+        let lanes = Arc::new(Lanes::new(h.deps));
+        let old = job(1, Some(7), 31, "queued before clean slate");
+        lanes.submit(job(1, Some(7), 30, "running"));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while runner.calls().len() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let status = store::conversation_status_by_id(&pool, 1).await.unwrap();
+        wipe::run(&pool, &NoProjects, &dir, &status, kind)
+            .await
+            .unwrap();
+        // A previously accepted job (including crash replay) cannot recreate the thread.
+        lanes.submit(old);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while lanes.in_progress(1) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let messages: i64 = sqlx::query_scalar("SELECT count(*) FROM messages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let threads: i64 = sqlx::query_scalar("SELECT count(*) FROM agent_threads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!((messages, threads), (0, 0));
+        assert_eq!(api.texts().iter().filter(|s| s.as_str() == "ok").count(), 1);
+        assert_eq!(runner.calls().len(), 2);
+    }
+}

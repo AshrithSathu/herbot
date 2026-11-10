@@ -85,6 +85,7 @@ asked ──tapped in another topic──▶ refused (toast)
 
 - **The button carries everything:** `wipe:<kind|cancel>:<conversation>:<issued_at>` (`wipe.rs`, `CONFIRM_TTL_SECS`).
 - **The admin panel runs the same wipe** behind its own confirmation dialog.
+- **Wipes and turns share a per-database, per-conversation mutex.** A wipe waits for the running turn, deletes its result, then commits `conversations.wiped_at` with the local deletion. Turns and message storage/setup reject messages whose original `sent_at` is at or before that boundary. This also discards older queued and crash-replayed messages. Other conversations proceed independently. Pending scheduled occurrences and panel inbox entries are discarded by the same wipe transaction. The mutex remains held through Forget's setup/file reset.
 
 ### 7. A turn (one message to the agent)
 
@@ -158,7 +159,8 @@ The full state is a product, not just status:
 | Run history | never run (count 0, no last time) → claimed (count increments, last time set) | 0013 CHECK; claim transaction |
 | Result | claim clears last_error → dispatch/agent error records it | `tick`, `dispatch`; async agent errors update only the same claim timestamp |
 
-Manual runs of paused or done tasks preserve their lifecycle and next time. A manual run of an active one-off consumes its schedule; active recurring runs advance the schedule. Cancel is idempotent from every state. These existing behaviors are retained. Claim commits **before** posting to Telegram: a crash after claim can lose that execution; it is not a durable delivery queue and does not replay claimed runs.
+Manual runs of paused or done tasks preserve their lifecycle and next time. A manual run of an active one-off consumes its schedule; active recurring runs advance the schedule. Cancel is idempotent from every state. These existing behaviors are retained. Claim now commits a `task_runs` snapshot in the same transaction as advancing the schedule/count (migration 0020). Occurrences move pending → owned by this process → completed after the turn outcome (including a reported failure). Each process has a unique dispatch owner; ticks skip occurrences already owned by that process. On restart, unfinished occurrences owned by the previous process are dispatched again without incrementing run_count or advancing the schedule twice. The deployment has one scheduler process. A crash after an external effect but before completion can replay that effect; Telegram and T3 offer no atomic exactly-once handoff. Explicit dispatch/turn failures are consumed and reported, never silently retried. A wipe completes pending occurrences and its timestamp also blocks an occurrence already loaded for dispatch.
+Migration 0020 preserves all existing tasks and history, initializes wiped_at to NULL, and starts with no pending runs: old run_count values do not prove an occurrence was lost, so historical runs are not replayed.
 
 ### 15. Memory and personalisation (`personal.rs`)
 
@@ -177,7 +179,8 @@ Memories: added (`remember`, panel; near-duplicates and secrets refused; ≤ 200
 
 ### 18. Panel chat (`panel.rs`)
 
-Composer: `draft → sending → accepted | error → retry`. Accepted messages are posted to Telegram first, saved in `panel_inbox` (migration 0015), then go through the same setup/turn path and are deleted; anything left is replayed at startup, and a wipe clears it. The chat shows "thinking…" while the conversation's lane has turns queued.
+Composer: `draft → sending → accepted | error → retry`. Sends serialize within a conversation from Telegram posting through durable enqueue; inbox workers drain one conversation at a time independently of other conversations. Startup launches a drain for each pending conversation.
+ Accepted messages are posted to Telegram first, saved in `panel_inbox` (migration 0015), then go through the same setup/turn path and are deleted; anything left is replayed at startup, and a wipe clears it. The chat shows "thinking…" while the conversation's lane has turns queued.
 
 ### 19. Companion voice conversation (`/companions`, `panel_voice.rs`)
 
@@ -219,7 +222,7 @@ This inventory covers production modules in both Rust crates, including the sche
 | Inbound speech (`voice`, `poller`, `inbound_files`) | duration/size checked → downloaded → transcribed → echoed/stored/forwarded; refused/failed exits | Keep sequential async control flow and typed errors/`AnyTranscriber`; no independent resumable speech state. |
 | Outbound speech (`speech`) | disabled/skipped or synthesizing + upload activity → delivered / failure | Keep future scope and speaker trait; text/files can already be delivered when speech fails. Panel speech requests are independent authenticated HTTP operations. |
 | Files and media (`media`, `inbound_files`, `outbound_files`, `imagine`, `format`) | validated → saved/transformed → sent → recorded; refused/failed exits | Keep `FileKind`, `Activity`, refusal/error enums and sequential operations. Document/photo resend is a deliberate format conversion path. Partial file delivery is reachable. |
-| Panel durable ingress (`panel`) | Telegram posted → inbox row → shared setup/turn submit → row deleted | Keep row presence + processing Mutex + transaction. Consumed after submit, not after agent reply. A crash before durable insert can leave a Telegram post without a turn; a crash after submit before delete can replay. |
+| Panel durable ingress (`panel`) | Telegram posted → inbox row → shared setup/turn submit → row deleted | Keep row presence + per-conversation processing Mutex. Consumed after submit, not after agent reply. A crash before durable insert can leave a Telegram post without a turn; a crash after submit before delete can replay. |
 | Panel topic provisioning (`panel::new_topic`) | Telegram topic created → conversation/purpose/file saved → ready; each effect may fail | Keep sequential fallible operations; no new lifecycle column can make Telegram and filesystem writes atomic. Partial provisioning is reachable and reported. |
 | Panel reply correlation (`panel`) | message-id → reply slot registered → removed at delivery; waiter completes/times out | Keep map + one-shot ownership. Setup/disabled topics may produce no agent turn; caller timeout is separate from queue consumption. |
 | Memory/preferences projection (`personal`) | DB mutation committed → projection replaced → timestamp advanced; IO failure → repaired at startup/next mutation | Keep singleton timestamp + advisory lock + atomic rename; no extra dirty flag because startup rewrites from DB. DB and file are not one transaction. |
