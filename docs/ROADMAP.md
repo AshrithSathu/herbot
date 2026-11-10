@@ -96,13 +96,9 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - Done when: a fresh VPS comes up from the README alone.
 
 ## Step 11: Hardening
-- [x] Panel state inventory and request recovery: explicit creation/copy states, preserved settings drafts, guarded optimistic switch, retryable history deltas and read failures (see `STATE_MACHINES.md`; device/browser behavior remains a manual check)
-- [x] Companion connection lifecycle and recorder handoff: retry failed setup, reject stale setup callbacks, guard transcription, retain failed-turn text and detach media callbacks on teardown
+- [x] State machines made explicit (see `docs/STATE_MACHINES.md`): typed task lifecycle with one place for transitions; migration 0018 backfills, then enforces, legal setup-prompt and question-resolution states; every other machine inventoried with its crash boundaries
+- [x] Panel request states: explicit New agent and copy states, settings and task drafts kept across tabs, a guarded optimistic on/off switch, retryable history refresh and failed loads; companions retry a failed setup, ignore stale callbacks and keep a failed turn's text
+- [x] Review fixes: header sanitizing can't panic on Unicode case expansion; agents can send files only from their own topic (symlinks included) or Codex's generated images; the T3 CLI timeout covers writing the message too
+- [x] Performance: history labels in one batched query; migration 0019 indexes open-question cleanup, thread deletion and per-topic task history
 - [ ] Rate limits, retention job, health alerts to the admin
 - Done when: a week runs with no manual restarts.
-
-## Step 11: Review and performance
-- Header sanitization handles Unicode case expansion without panicking; outbound file resolution rejects sibling topics, including symlink escapes.
-- Verification results are recorded in the review report; no live bot or database checks are used.
-- Hub history label lookups are batched; migration 0019 indexes open-question cleanup, thread deletion, and per-topic task history.
-- T3 CLI timeouts also bound blocked stdin writes, with a fake-process regression test.

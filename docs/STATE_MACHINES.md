@@ -1,6 +1,6 @@
 # State machines
 
-Every piece of state in Herbot that moves through steps, with each step, what moves it, and where that's enforced. When you add a state or a transition, update this file in the same commit. The schema allows only the states listed here (migration 0010 removed the ones nothing could reach).
+Every piece of state in Herbot that moves through steps, with each step, what moves it, and where that's enforced. When you add a state or a transition, update this file in the same commit. Persisted lifecycle constraints are in migrations 0010, 0013 and 0018; transient workflows below are enforced by ownership, channels and guarded operations. External effects are not atomic with database commits.
 
 ## Bot (herbot-core)
 
@@ -19,7 +19,7 @@ The main one. It decides where a message goes: to setup, or to the agent. The tr
 | any | `new` | `/forget` | `store::reset_setup` |
 
 - Only `ready` hands messages to the agent. In `awaiting_purpose`, the next message is the purpose. A message that's too short gets a reply saying why, and the state stays.
-- `ready` always has a purpose (`conversations_ready_has_purpose`).
+- `ready` always has a purpose (`conversations_ready_has_purpose`). A setup prompt can exist only while `awaiting_purpose` (`conversations_setup_prompt_state`, migration 0018).
 - After `/setup`, the old purpose stays until it's replaced or kept. The prompt says so and carries the Keep button. `setup_prompt_tg_message_id` remembers that prompt, so its button is removed when the purpose is replaced, kept, or asked for again. Only the newest prompt has a live button.
 - Labels in the panel come from `topicStatus` in `apps/admin/src/format.ts`:
 
@@ -72,6 +72,7 @@ open ──typed message in that topic──▶ superseded
 - **Superseded:** `store::supersede_open_questions` closes every open question in the topic, and their buttons are removed.
 - **Already answered:** a tap on a closed question gets the "already answered" toast, and its buttons are removed.
 - **Wiped:** questions are deleted along with their thread.
+- `pending_questions_resolution` (0018) enforces: open has no answer or closure timestamp; answered has both; superseded has a closure timestamp and no answer. The timestamp on superseded means closed, not button-answered. A newly created question may have no Telegram message id until delivery succeeds; that is a reachable intermediate state.
 
 ### 6. Wipe confirmation (`/new`, `/forget`): kept in the button, not the database
 
@@ -134,7 +135,7 @@ An album's parts are stored one by one; the turn lane waits up to 4 s (`turns::A
 
 `picker → pending → applied | cancelled | expired (10 min)`. Picking again supersedes it; setup changes and wipes invalidate it; a confirmation works once, only for its topic and prompt. Applying writes AGENTS.md (→ setup `ready`) and sets the voice.
 
-### 14. Scheduled task: `tasks.status`
+### 14. Scheduled task: `tasks.status` / `tasks::TaskStatus`
 
 | From | To | Trigger |
 |---|---|---|
@@ -144,7 +145,20 @@ An album's parts are stored one by one; the turn lane waits up to 4 s (`turns::A
 | `active` | `done` | A one-off run is claimed |
 | any | `cancelled` | Confirmed delete or cancel |
 
-The scheduler claims due tasks every 15 s (`FOR UPDATE SKIP LOCKED`), posts "⏰ …" in the topic and queues a turn. Missed runs during downtime run once, not once per missed slot; disabled or unready topics are skipped. Run now sets a flag the next claim clears.
+The scheduler claims due tasks every 15 s (`FOR UPDATE SKIP LOCKED`), posts "⏰ …" in the topic and queues a turn. Missed runs during downtime run once, not once per missed slot; disabled or unready topics are skipped. Run now sets a flag the next claim clears. `TaskAction` parses boundary strings once and `TaskStatus::transition` owns the user transition matrix; invalid transitions return `TaskError::Invalid`. SQL row locks serialize it against scheduler claims. Wire status strings are unchanged.
+
+The full state is a product, not just status:
+
+| Component | Legal states / transitions | Enforcement |
+|---|---|---|
+| Schedule | exactly one of one-off timestamp / cron | 0013 XOR CHECK; `create`, `next` validate future occurrence/timezone |
+| Lifecycle | active / paused / done / cancelled | `TaskStatus`, database CHECK |
+| Manual request | absent → requested → claimed (cleared); cancel/pause/resume clear it | `change`, `Scheduler::tick`; cancelled forbids a request |
+| Next occurrence | active/paused require a timestamp; done requires one-off, no next time, at least one run | 0013 CHECKs |
+| Run history | never run (count 0, no last time) → claimed (count increments, last time set) | 0013 CHECK; claim transaction |
+| Result | claim clears last_error → dispatch/agent error records it | `tick`, `dispatch`; async agent errors update only the same claim timestamp |
+
+Manual runs of paused or done tasks preserve their lifecycle and next time. A manual run of an active one-off consumes its schedule; active recurring runs advance the schedule. Cancel is idempotent from every state. These existing behaviors are retained. Claim commits **before** posting to Telegram: a crash after claim can lose that execution; it is not a durable delivery queue and does not replay claimed runs.
 
 ### 15. Memory and personalisation (`personal.rs`)
 
@@ -172,6 +186,52 @@ Composer: `draft → sending → accepted | error → retry`. Accepted messages 
 ### 20. Topic language: `conversations.language`
 
 English by default; `/language <name>` sets any language, `/language english` goes back. Its voice notes and video soundtracks are transcribed in it (auto-detected if the name isn't known), the agent's header says to reply in it, and spoken replies follow the text.
+
+### 21. Rust state inventory and representation decisions
+
+This inventory covers production modules in both Rust crates, including the schema and in-memory state. Independent configuration switches stay booleans; row presence and Rust ownership already make many workflows explicit without a second status column. Immutable message facts (`from_bot`, `is_voice`, file kind, sender, timestamps) are data, not lifecycle states.
+
+| Machine / where | States and transitions | Decision and enforcement |
+|---|---|---|
+| Setup + prompt (`store`, `setup`, `poller`, `agents_md`) | new → awaiting purpose → ready; reset/replace/keep (§1) | Keep `SetupState`; add prompt CHECK in 0018. Purpose, file and DB writes are separate effects; errors propagate. Do not require a file path for legacy ready rows. |
+| Conversation availability (`store`, `policy`, `admin`) | enabled ⇄ disabled, independently of setup and chat membership | Keep boolean; all combinations are meaningful. Policy remains pure and admin/home checks precede writes. |
+| Chat membership (`store`) | active ⇄ left (§3) | Keep checked text: used in SQL predicates, no unchecked Rust transition API. |
+| Bot selection (`bots`, `conversations.bot_id`) | default/explicit persona, enabled/off | Keep booleans and nullable foreign key; unique partial index permits one default. These are configuration, not staged work. |
+| Project registration / agent thread (`turns`, `wipe`, `store`) | unregistered → registered → thread present; timeout → recovered thread; wipe → absent | Keep boolean + unique thread row. Registration can succeed before thread creation. External project deletion precedes local wipe; no cross-system atomicity claim. |
+| Instruction freshness (`agents_md`, `meta`, `modes`, `personal`) | missing/outdated → rewritten; newer than last turn → reread note | Keep version/timestamp comparison, derive freshness. Separate mode override from standing mode; no duplicate stale flag. |
+| Choice resolution (`store`, `outgoing`, `turns`) | parsed → open/unattached → delivered → answered or superseded (§5) | Add resolution CHECK (0018); atomic guarded answer claim. Nullable delivery id is intentional after creation/before successful send. |
+| Wipe confirmation (`wipe`) | asked → cancelled / expired / refused / wiped / failed | Keep `WipeButton`, `WipeKind`, signed-by-context callback fields + TTL; no redundant stored status. The callback is not a durable single-use nonce. |
+| Voice settings (`speech`, `store`) | replies off ⇄ on; voice changed independently | Keep boolean + checked voice name. Disabled voice still remembers selected voice. |
+| Persona selection (`speech`) | picker → pending → applied / cancelled / expired; repick replaces | Keep confirmation row as pending state. DELETE RETURNING claims once; topic/message/TTL guards and invalidation trigger. Expired rows may remain until replaced; expiry is derived. |
+| Task lifecycle / schedule / run request (`tasks`) | see §14 | Make lifecycle/action Rust enums with central legal transitions; retain 0013 product constraints, timestamps and boolean request. |
+| Private mode (`actions`, `poller`, `hub`, `store`) | public ⇄ private | Keep independent boolean. Trigger suppresses message writes; history/memory gates check privacy. Switching does not delete old history or reset independent controls. |
+| Retry target (`turns`, `poller`, `store`) | none → latest bot message → newer target; wipe clears | Keep `Option<message id>`: it carries the state and payload together. Private retry is refused; a stored target may outlive the UI button. |
+| Feedback (`poller`, `turns`) | reaction set replaced; pending negative note → consumed by next turn | Keep JSON reaction snapshot + boolean latch; atomic UPDATE consumes the latch. Failure after consumption does not restore it. This is a pending hint, not a feedback delivery queue. |
+| Edited message (`poller`) | unchanged → changed stored body → queued correction | Keep conditional UPDATE and row count; command edits ignored. No separate persistent status needed. |
+| Telegram ingress (`telegram`, `policy`, `poller`, `store`) | normalized → ignored / inline / durable lane → handled → deleted (§8) | Keep `Inbound`, `Action`, `Route` enums and inbox row presence. Offset and enqueue share a transaction. Crash replay can duplicate external effects; this is not exactly-once delivery. |
+| Inbound workers (`poller::InboundLanes`) | absent → channel/worker created → processing FIFO → drained on shutdown; dead sender → recreated | Keep channel ownership and per-topic key. Worker list joins at shutdown; timeout leaves inbox work for restart. No extra enum adds safety to channel state. |
+| Conversation operation locks (`poller::store_and_continue`) | unlocked → owned guard → released on drop | Keep keyed async Mutex; the guard enforces exclusion. Maps persist for process lifetime. |
+| Turn workers / activity (`turns::Lanes`) | absent → worker; pending 0 → queued/running >0 → 0 | Keep channel + count: count includes queued and running parts, not just active requests. Dead sender replaced. In-memory turns do not survive process exit. |
+| Album gathering (`turns::spawn_lane`) | first part → collecting same album → timeout/channel end/different album → run merged turn | Keep local ownership: `next: Option<TurnJob>` buffers the first different job. Wait is 4 s of inactivity after each part; late parts start another turn. Count decreases by merged part count. |
+| Reply waiter (`turns::ReplySlot`, `internal`, `panel`) | sender present → taken/delivered; receiver may time out/drop independently | Keep `Option<oneshot::Sender>` behind shared Mutex: take guarantees at most one delivery. Timeout does not cancel the turn. |
+| Agent run (`agent`, `turns`) | starting/sending → replied / needs answer / failed; CLI timeout → possible thread recovery | Keep `TurnOutcome`/`AgentError`, parse foreign CLI status at boundary. Foreign free-text status is diagnostic only; local decisions use outcome enums. No silent retry of a turn. |
+| Turn progress (`turns::run_turn`) | hidden → shown at 8 s → updated every 5 s → deleted | Keep local `Option<message id>` and timer. Typing task aborted on normal completion. Progress delivery/cleanup errors log warnings; they do not replace the agent result. |
+| Inbound speech (`voice`, `poller`, `inbound_files`) | duration/size checked → downloaded → transcribed → echoed/stored/forwarded; refused/failed exits | Keep sequential async control flow and typed errors/`AnyTranscriber`; no independent resumable speech state. |
+| Outbound speech (`speech`) | disabled/skipped or synthesizing + upload activity → delivered / failure | Keep future scope and speaker trait; text/files can already be delivered when speech fails. Panel speech requests are independent authenticated HTTP operations. |
+| Files and media (`media`, `inbound_files`, `outbound_files`, `imagine`, `format`) | validated → saved/transformed → sent → recorded; refused/failed exits | Keep `FileKind`, `Activity`, refusal/error enums and sequential operations. Document/photo resend is a deliberate format conversion path. Partial file delivery is reachable. |
+| Panel durable ingress (`panel`) | Telegram posted → inbox row → shared setup/turn submit → row deleted | Keep row presence + processing Mutex + transaction. Consumed after submit, not after agent reply. A crash before durable insert can leave a Telegram post without a turn; a crash after submit before delete can replay. |
+| Panel topic provisioning (`panel::new_topic`) | Telegram topic created → conversation/purpose/file saved → ready; each effect may fail | Keep sequential fallible operations; no new lifecycle column can make Telegram and filesystem writes atomic. Partial provisioning is reachable and reported. |
+| Panel reply correlation (`panel`) | message-id → reply slot registered → removed at delivery; waiter completes/times out | Keep map + one-shot ownership. Setup/disabled topics may produce no agent turn; caller timeout is separate from queue consumption. |
+| Memory/preferences projection (`personal`) | DB mutation committed → projection replaced → timestamp advanced; IO failure → repaired at startup/next mutation | Keep singleton timestamp + advisory lock + atomic rename; no extra dirty flag because startup rewrites from DB. DB and file are not one transaction. |
+| Memory forget confirmation (`poller`, `personal`) | requested → cancelled / expired / delete through captured max id | Keep callback TTL/topic guard and captured id; preserves memories added after confirmation. |
+| Task delete confirmation (`tasks::callback`) | requested → keep / confirmed cancel / expired | Keep callback topic/TTL guard. Cancel is idempotent; no extra database state. |
+| Simulation (`simulate`, `main`) | route absent unless enabled; authorized request → edit/reaction or post/file → injected / failed | Keep startup gate, local branches and `AtomicU32` allocation. It has real Telegram effects before injection; no production exercise. |
+| Process / services (`main`, `app`, `db`, `poller`, `tasks`) | configuring → migrating/initializing → serving/polling → shutdown/drain | Keep scoped futures/watch shutdown. Readiness probes DB; polling network failures retry with delay and error records, independently of turn failure policy. |
+| MCP and cross-topic actions (`herbot-mcp`, `hub`, `internal`) | authenticate caller → authorize scope → read / post / enqueue+wait → result/error | Keep request-scoped control flow; caller token is sole authority, no session status or cached grant. `ask_topic` waits on `ReplySlot`; timeout leaves turn running. |
+| Reply parsing/rendering (`outgoing`, `format`, `meta`, `telegram`) | text ↔ code fence across chunks; HTML tag/entity scanning; list/link stacks; table collection → rendered; command/header/choice/file recognition | Keep local parser state, `Option` carries fence/table payload, stacks represent nesting, `CommandParse` distinguishes recognized/foreign commands. Pure bounded transformations need no persisted status; upstream Markdown events drive start/end pairs. |
+| Errors/audit/counters (`errors`, `store`, SQL triggers) | append event / update count on message insert/delete | Keep append-only records and derived counters, not lifecycle status. Private-message trigger prevents suppressed rows contributing counts. |
+
+Migration 0018 clears stale setup prompts outside setup, clears answer metadata on open questions, converts answered-without-answer rows to superseded, and supplies missing closure timestamps from creation time. It never deletes history or schedules. It scans/updates the two tables and takes ALTER TABLE locks; deploy during a quiet period. Validation here uses synthetic legacy rows in a throwaway database, not live data. Ground rules, meta header and MCP tool descriptions are unchanged, so no template version bump is needed.
 
 ## Admin panel (apps/admin)
 

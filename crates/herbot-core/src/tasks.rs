@@ -42,6 +42,86 @@ pub fn next(cron: &str, tz: &str, after: DateTime<Utc>) -> Result<DateTime<Utc>,
         .map(|d| d.with_timezone(&Utc))
         .map_err(|e| TaskError::Invalid(format!("Cron has no future occurrence: {e}")))
 }
+/// Persisted lifecycle; wire values stay compatible with the panel and MCP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+pub enum TaskStatus {
+    Active,
+    Paused,
+    Done,
+    Cancelled,
+}
+
+impl TaskStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Done => "done",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Claiming consumes an active one-off schedule, including a manual run.
+    fn after_claim(self, recurring: bool) -> Self {
+        match (self, recurring) {
+            (Self::Active, false) => Self::Done,
+            _ => self,
+        }
+    }
+
+    /// User transitions. A manual run preserves lifecycle; claiming an active
+    /// one-off consumes its schedule, while a paused/done run stays paused/done.
+    fn transition(self, action: TaskAction) -> Result<Self, TaskError> {
+        match (self, action) {
+            (Self::Active, TaskAction::Pause) => Ok(Self::Paused),
+            (Self::Paused, TaskAction::Resume) => Ok(Self::Active),
+            (_, TaskAction::Cancel) => Ok(Self::Cancelled),
+            (s, TaskAction::Run) if s != Self::Cancelled => Ok(s),
+            _ => Err(TaskError::Invalid(format!(
+                "Cannot {} a {self} task",
+                action.as_str()
+            ))),
+        }
+    }
+}
+
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskAction {
+    Pause,
+    Resume,
+    Cancel,
+    Run,
+}
+
+impl TaskAction {
+    fn parse(value: &str) -> Result<Self, TaskError> {
+        match value {
+            "pause" => Ok(Self::Pause),
+            "resume" => Ok(Self::Resume),
+            "cancel" => Ok(Self::Cancel),
+            "run" => Ok(Self::Run),
+            _ => Err(TaskError::Invalid(format!("Unknown task action: {value}"))),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Cancel => "cancel",
+            Self::Run => "run",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct Task {
     pub id: i64,
@@ -54,7 +134,7 @@ pub struct Task {
     pub next_run_at: Option<DateTime<Utc>>,
     pub last_run_at: Option<DateTime<Utc>>,
     pub run_count: i64,
-    pub status: String,
+    pub status: TaskStatus,
     pub last_error: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -140,28 +220,20 @@ pub async fn change(pool: &PgPool, id: i64, action: &str) -> Result<Task, TaskEr
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| TaskError::Invalid("Task not found".into()))?;
-    let (status, at, requested) = match (action, t.status.as_str()) {
-        ("pause", "active") => ("paused", t.next_run_at, false),
-        ("resume", "paused") => {
-            capacity(&mut tx).await?;
-            (
-                "active",
-                Some(match &t.cron {
-                    Some(c) => next(c, &t.timezone, Utc::now())?,
-                    None => t.next_run_at.unwrap(),
-                }),
-                false,
-            )
-        }
-        ("cancel", _) => ("cancelled", t.next_run_at, false),
-        ("run", s) if s != "cancelled" => (s, t.next_run_at, true),
-        _ => {
-            return Err(TaskError::Invalid(format!(
-                "Cannot {action} a {} task",
-                t.status
-            )));
-        }
+    let action = TaskAction::parse(action)?;
+    let status = t.status.transition(action)?;
+    let at = if action == TaskAction::Resume {
+        capacity(&mut tx).await?;
+        Some(match &t.cron {
+            Some(c) => next(c, &t.timezone, Utc::now())?,
+            None => t
+                .next_run_at
+                .ok_or_else(|| TaskError::Invalid("Paused task has no next run".into()))?,
+        })
+    } else {
+        t.next_run_at
     };
+    let requested = action == TaskAction::Run;
     let result = sqlx::query_as(
         "UPDATE tasks SET status=$2,next_run_at=$3,run_requested=$4 WHERE id=$1 RETURNING *",
     )
@@ -192,7 +264,7 @@ impl<A: TelegramApi> Scheduler<A> {
             let now = Utc::now();
             let task: Option<Task>=sqlx::query_as("SELECT t.* FROM tasks t JOIN conversations c ON c.id=t.conversation_id JOIN chats h ON h.id=c.chat_id WHERE ((t.status='active' AND t.next_run_at <= $1) OR t.run_requested) AND c.enabled AND c.setup_state='ready' AND h.status='active' AND h.is_forum AND h.kind='supergroup' AND ($2::bigint IS NULL OR h.tg_chat_id=$2) ORDER BY t.next_run_at NULLS FIRST,t.id FOR UPDATE OF t SKIP LOCKED LIMIT 1").bind(now).bind(self.home_chat_id).fetch_optional(&mut *tx).await?;
             let Some(t) = task else { break };
-            let scheduled = t.status == "active";
+            let scheduled = t.status == TaskStatus::Active;
             let at = if scheduled {
                 t.cron
                     .as_deref()
@@ -201,11 +273,7 @@ impl<A: TelegramApi> Scheduler<A> {
             } else {
                 t.next_run_at
             };
-            let status = if scheduled && t.cron.is_none() {
-                "done"
-            } else {
-                &t.status
-            };
+            let status = t.status.after_claim(t.cron.is_some());
             let claimed: Task = sqlx::query_as("UPDATE tasks SET next_run_at=$2,status=$3,last_run_at=$4,run_count=run_count+1,last_error=NULL,run_requested=false WHERE id=$1 RETURNING *").bind(t.id).bind(at).bind(status).bind(now).fetch_one(&mut *tx).await?;
             tx.commit().await?;
             if let Err(err) = self.dispatch(&claimed).await {
@@ -328,7 +396,10 @@ pub async fn show<A: TelegramApi>(
 ) -> Result<(), TaskError> {
     let tasks = list(pool, Some(conversation)).await?;
     let tz = default_timezone()?;
-    let visible: Vec<_> = tasks.iter().filter(|t| t.status != "cancelled").collect();
+    let visible: Vec<_> = tasks
+        .iter()
+        .filter(|t| t.status != TaskStatus::Cancelled)
+        .collect();
     if visible.is_empty() {
         api.send_text(
             chat,
@@ -357,10 +428,10 @@ pub async fn show<A: TelegramApi>(
             at
         ));
         let mut buttons = vec![];
-        if t.status == "active" {
+        if t.status == TaskStatus::Active {
             buttons.push(("Pause".into(), format!("task:pause:{}", t.id)));
         }
-        if t.status == "paused" {
+        if t.status == TaskStatus::Paused {
             buttons.push(("Resume".into(), format!("task:resume:{}", t.id)));
         }
         buttons.push(("Delete".into(), format!("task:delete:{}", t.id)));
@@ -446,4 +517,37 @@ pub async fn callback<A: TelegramApi>(
         Err(e) => return Err(e),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    #[test]
+    fn task_transition_matrix_and_wire_values() {
+        use TaskAction::*;
+        use TaskStatus::*;
+        let states = [Active, Paused, Done, Cancelled];
+        let actions = [Pause, Resume, Cancel, Run];
+        let expected = [
+            [Some(Paused), None, Some(Cancelled), Some(Active)],
+            [None, Some(Active), Some(Cancelled), Some(Paused)],
+            [None, None, Some(Cancelled), Some(Done)],
+            [None, None, Some(Cancelled), None],
+        ];
+        for (row, state) in states.into_iter().enumerate() {
+            assert_eq!(serde_json::to_value(state).unwrap(), state.as_str());
+            for (col, action) in actions.into_iter().enumerate() {
+                assert_eq!(state.transition(action).ok(), expected[row][col]);
+                assert_eq!(TaskAction::parse(action.as_str()).unwrap(), action);
+            }
+        }
+        assert_eq!(Active.after_claim(false), Done);
+        assert_eq!(Active.after_claim(true), Active);
+        for state in [Paused, Done, Cancelled] {
+            assert_eq!(state.after_claim(false), state);
+            assert_eq!(state.after_claim(true), state);
+        }
+        assert!(TaskAction::parse("delete").is_err());
+    }
 }

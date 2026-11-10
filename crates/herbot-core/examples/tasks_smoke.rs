@@ -3,7 +3,7 @@ use chrono::{Duration, Utc};
 use herbot_core::{
     db, hub,
     poller::{ApiError, TelegramApi},
-    tasks::{self, CreateTask, Scheduler},
+    tasks::{self, CreateTask, Scheduler, TaskStatus},
     turns::{TurnJob, TurnQueue},
 };
 use std::sync::{
@@ -133,11 +133,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(scheduler.tick().await?, 0);
     let rows = tasks::list(&pool, Some(conversation)).await?;
     let one = rows.iter().find(|t| t.id == once.id).unwrap();
-    assert_eq!(one.status, "done");
+    assert_eq!(one.status, TaskStatus::Done);
     assert_eq!(one.run_count, 1);
     assert!(one.next_run_at.is_none());
     let repeat = rows.iter().find(|t| t.id == recurring.id).unwrap();
-    assert_eq!(repeat.status, "active");
+    assert_eq!(repeat.status, TaskStatus::Active);
     assert_eq!(repeat.run_count, 1);
     assert!(repeat.next_run_at.unwrap() > Utc::now());
     assert_eq!(fake.messages.lock().unwrap().len(), 2);
@@ -156,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rows = tasks::list(&pool, Some(conversation)).await?;
     assert_eq!(
         rows.iter().find(|t| t.id == recurring.id).unwrap().status,
-        "paused"
+        TaskStatus::Paused
     );
     tasks::change(&pool, recurring.id, "resume").await?;
     tasks::change(&pool, recurring.id, "cancel").await?;
