@@ -1,9 +1,11 @@
-import { useSuspenseQuery } from '@tanstack/react-query'
-import { createFileRoute } from '@tanstack/react-router'
-import { errorQuery } from '../../../queries'
-import { CopyButton, PageHeader, Section, Time } from '../../../ui'
-import { ClampedText } from '@/components/clamped-text'
-import { Badge } from '@/components/ui/badge'
+import { useQuery, useSuspenseQuery } from '@tanstack/react-query'
+import { Link, createFileRoute } from '@tanstack/react-router'
+import { ArrowLeftIcon, ChevronLeftIcon, ChevronRightIcon } from 'lucide-react'
+import { exact, when } from '../../../format'
+import { errorQuery, topicsQuery } from '../../../queries'
+import { CopyButton, Section, Time } from '../../../ui'
+import { UserText } from '@/components/user-text'
+import { Button } from '@/components/ui/button'
 
 export const Route = createFileRoute('/_authed/logs/$id')({
   loader: ({ context, params }) => context.queryClient.ensureQueryData(errorQuery(params.id)),
@@ -15,41 +17,109 @@ export const Route = createFileRoute('/_authed/logs/$id')({
   component: ErrorPage,
 })
 
+/** A message longer than this is cut on screen; Copy still takes all of it. */
+const SHOWN_MESSAGE = 20_000
+
 function ErrorPage() {
   const { id } = Route.useParams()
   const { data: e } = useSuspenseQuery(errorQuery(id))
+  const topics = useQuery(topicsQuery)
   const context = JSON.stringify(e.context, null, 2)
+  const conversationId = typeof e.context.conversation_id === 'number' ? e.context.conversation_id : null
+  const topic = conversationId == null ? null : topics.data?.find((t) => t.id === conversationId)
+  const message = e.message.length > SHOWN_MESSAGE ? `${e.message.slice(0, SHOWN_MESSAGE)}\n…` : e.message
+
   return (
     <>
-      <PageHeader title={<span className="font-mono">{e.error_id}</span>}>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-sm text-muted-foreground">
-          <Badge variant="danger" title={e.kind} className="max-w-full">
-            <span className="truncate">{e.kind}</span>
-          </Badge>
-          <Time iso={e.created_at} />
-          <span>
-            (<Time iso={e.created_at} relative />)
-          </span>
-          <CopyButton text={e.error_id} label="Copy id" />
+      <header className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <h1 className="font-mono text-2xl leading-tight font-semibold tracking-tight tabular-nums">{e.error_id}</h1>
+          <nav aria-label="Other errors" className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" asChild className="min-h-11 text-muted-foreground md:min-h-9">
+              <Link to="/logs">
+                <ArrowLeftIcon aria-hidden />
+                All logs
+              </Link>
+            </Button>
+            <Neighbour id={e.id - 1} label="Older error" />
+            <Neighbour id={e.id + 1} label="Newer error" newer />
+          </nav>
         </div>
-      </PageHeader>
-      <div className="flex max-w-[65ch] flex-col gap-2 text-base">
-        <ClampedText lines={10} toggleClassName="text-sm">
-          {e.message}
-        </ClampedText>
-      </div>
-      <Section id="context" title="Context" action={<CopyButton text={context} label="Copy JSON" />}>
+        <dl className="grid max-w-full grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
+          <dt className="text-muted-foreground">Kind</dt>
+          <dd className="min-w-0 font-mono">
+            <UserText lines="all" fallback="unknown kind">
+              {e.kind}
+            </UserText>
+          </dd>
+          <dt className="text-muted-foreground">When</dt>
+          <dd className="tabular-nums">
+            <time dateTime={e.created_at} suppressHydrationWarning>
+              {when(e.created_at)}
+            </time>{' '}
+            <span className="text-muted-foreground">
+              (<Time iso={e.created_at} relative />)
+            </span>
+          </dd>
+          {conversationId != null && (
+            <>
+              <dt className="text-muted-foreground">Topic</dt>
+              <dd className="min-w-0">
+                {topic ? (
+                  <Link to="/topics/$id" params={{ id: topic.id }} className="inline-flex max-w-full">
+                    <UserText>{topic.name}</UserText>
+                  </Link>
+                ) : (
+                  <span className="text-muted-foreground tabular-nums">#{exact(conversationId)} (no longer exists)</span>
+                )}
+              </dd>
+            </>
+          )}
+        </dl>
+      </header>
+
+      <Section id="message" title="Message" action={<CopyButton text={e.message} label="Copy message" />}>
         <pre
           tabIndex={0}
-          aria-label="Error context as JSON"
-          className="scroller max-h-[28rem] overflow-auto rounded-xl border bg-muted/50 px-4 py-3.5 font-mono text-[13px] leading-relaxed break-words whitespace-pre-wrap"
+          aria-label="Error message"
+          dir="auto"
+          className="scroller max-h-[32rem] overflow-auto rounded-xl border bg-card px-4 py-3.5 font-mono text-[13px] leading-relaxed whitespace-pre-wrap shadow-xs wrap-anywhere"
         >
-          {context}
+          {message.trim() || '(no message)'}
         </pre>
+      </Section>
+
+      <Section id="context" title="Context" action={<CopyButton text={context} label="Copy JSON" />}>
+        {context === '{}' ? (
+          <p className="text-sm text-muted-foreground">Nothing else was recorded with this error.</p>
+        ) : (
+          <pre
+            tabIndex={0}
+            aria-label="Error context as JSON"
+            className="scroller max-h-[32rem] overflow-auto rounded-xl border bg-muted/40 px-4 py-3.5 font-mono text-[13px] leading-relaxed whitespace-pre-wrap wrap-anywhere"
+          >
+            {context}
+          </pre>
+        )}
         <p className="text-sm text-muted-foreground">
-          Search the herbot-core logs for <span className="font-mono">{e.error_id}</span> to see the full trace.
+          The herbot-core logs have the full trace: search them for{' '}
+          <span className="font-mono text-foreground">{e.error_id}</span>.
         </p>
       </Section>
     </>
+  )
+}
+
+/** Step to the error recorded just before or after this one (ids are
+ * consecutive; a missing one, if any, shows the page's not-found state). */
+function Neighbour({ id, label, newer = false }: { id: number; label: string; newer?: boolean }) {
+  if (id < 1) return null
+  const Icon = newer ? ChevronRightIcon : ChevronLeftIcon
+  return (
+    <Button variant="ghost" size="icon" asChild className="size-11 text-muted-foreground md:size-9">
+      <Link to="/logs/$id" params={{ id: `E-${id}` }} aria-label={label} title={label}>
+        <Icon aria-hidden />
+      </Link>
+    </Button>
   )
 }
