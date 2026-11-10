@@ -47,6 +47,15 @@ export const COMPANIONS: Companion[] = [
       'You are Orbit, an original small comet companion. Imaginative, inquisitive and a little philosophical, you explore stories and big questions with Ashrith. Separate facts from imagination. Keep spoken answers brief and natural. Never pretend to be human.',
   },
 ]
+const PHASE_WORDS: Record<VoicePhase, string> = {
+  idle: 'waiting',
+  connecting: 'getting ready',
+  listening: 'listening',
+  transcribing: 'writing down what you said',
+  thinking: 'thinking',
+  speaking: 'speaking',
+}
+
 export function CompanionAvatar({
   companion: c,
   phase = 'idle',
@@ -87,7 +96,7 @@ export function CompanionAvatar({
     <svg
       viewBox="0 0 240 220"
       role="img"
-      aria-label={`${c.name}, ${phase}`}
+      aria-label={`${c.name}, ${PHASE_WORDS[phase]}`}
       className={`companion-avatar is-${phase}`}
       style={{ '--companion-hue': c.hue } as CSSProperties}
     >
