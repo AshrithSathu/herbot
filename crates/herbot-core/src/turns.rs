@@ -191,7 +191,9 @@ pub async fn run_turn<A: TelegramApi + 'static, R: AgentRunner>(
 ) {
     let _guard = crate::wipe::lock(&deps.pool, job.conversation_id).await;
     // Use the persisted boundary too, so crash-replayed ingress cannot resurrect a wiped turn.
-    match crate::wipe::predates_wipe(&deps.pool, job.conversation_id, job.sent_at).await {
+    match crate::wipe::predates_wipe(&deps.pool, job.conversation_id, job.sent_at, job.reply_to)
+        .await
+    {
         Ok(true) => {
             if let Some(slot) = &job.reply {
                 slot.deliver(Err("Turn discarded by clean slate".into()));

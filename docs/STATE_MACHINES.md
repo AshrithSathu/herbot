@@ -85,7 +85,7 @@ asked ──tapped in another topic──▶ refused (toast)
 
 - **The button carries everything:** `wipe:<kind|cancel>:<conversation>:<issued_at>` (`wipe.rs`, `CONFIRM_TTL_SECS`).
 - **The admin panel runs the same wipe** behind its own confirmation dialog.
-- **Wipes and turns share a per-database, per-conversation mutex.** A wipe waits for the running turn, deletes its result, then commits `conversations.wiped_at` with the local deletion. Turns and message storage/setup reject messages whose original `sent_at` is at or before that boundary. This also discards older queued and crash-replayed messages. Other conversations proceed independently. Pending scheduled occurrences and panel inbox entries are discarded by the same wipe transaction. The mutex remains held through Forget's setup/file reset.
+- **Wipes and turns share a per-database, per-conversation mutex.** A wipe waits for the running turn, deletes its result, then commits `conversations.wiped_at` with the local deletion. Message storage/setup rejects Telegram IDs at or below the inbound high-water mark captured by the wipe. Turns reject older timestamps only when their reply target is also at or below the captured message high-water mark. Telegram IDs are ordered within a chat, so a fresh message in the wipe's second is accepted. Migration 0022 backfills inbound high-water marks from existing admin message IDs; private input advances only this integer, without retaining its content. This also discards older queued and crash-replayed messages. Other conversations proceed independently. Pending scheduled occurrences and panel inbox entries are discarded by the same wipe transaction. The mutex remains held through Forget's setup/file reset.
 
 ### 7. A turn (one message to the agent)
 

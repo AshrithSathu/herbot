@@ -1026,5 +1026,32 @@ async fn wipes_wait_for_running_turns_and_discard_queued_turns(pool: PgPool) {
         assert_eq!((messages, threads), (0, 0));
         assert_eq!(api.texts().iter().filter(|s| s.as_str() == "ok").count(), 1);
         assert_eq!(runner.calls().len(), 2);
+        if kind == WipeKind::New {
+            let mut fresh = job(1, Some(7), 9999, "a new message in the same second");
+            fresh.sent_at = sqlx::query_scalar(
+                "SELECT date_trunc('second',wiped_at) FROM conversations WHERE id=1",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            run_turn(
+                &TurnDeps {
+                    pool: pool.clone(),
+                    speaker: Arc::new(herbot_core::speech::NoSpeaker),
+                    api: api.clone(),
+                    runner: runner.clone(),
+                    agents_dir: dir.clone(),
+                    bot_user_id: BOT_ID,
+                    auto_effort: "medium".into(),
+                },
+                fresh,
+            )
+            .await;
+            assert_eq!(
+                runner.calls().len(),
+                4,
+                "newer Telegram IDs survive second-precision timestamps"
+            );
+        }
     }
 }

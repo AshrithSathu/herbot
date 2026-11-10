@@ -440,6 +440,8 @@ async fn send(
             size: bytes.len() as u64,
         });
     }
+    sqlx::query("UPDATE conversations SET last_inbound_message_id=GREATEST(last_inbound_message_id,$2) WHERE id=$1")
+        .bind(id).bind(message_id).execute(&s.admin.pool).await.map_err(io)?;
     let queued = QueuedMessage {
         text,
         files: saved,

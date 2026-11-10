@@ -155,10 +155,12 @@ pub(crate) async fn predates_wipe(
     pool: &PgPool,
     id: i64,
     sent: chrono::DateTime<chrono::Utc>,
+    message_id: i32,
 ) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar("SELECT COALESCE($2 <= wiped_at, false) FROM conversations WHERE id=$1")
+    sqlx::query_scalar("SELECT COALESCE($2 <= wiped_at AND $3 <= wiped_through_message_id, false) FROM conversations WHERE id=$1")
         .bind(id)
         .bind(sent)
+        .bind(message_id)
         .fetch_one(pool)
         .await
 }

@@ -991,7 +991,9 @@ pub(crate) async fn store_and_continue<A: TelegramApi, T: Transcriber>(
         .bind(msg.chat.tg_chat_id).bind(msg.topic_id).fetch_optional(ctx.pool).await?;
     let _wipe_guard = if let Some(id) = existing {
         let guard = wipe::lock(ctx.pool, id).await;
-        if wipe::predates_wipe(ctx.pool, id, msg.sent_at).await? {
+        let stale: bool = sqlx::query_scalar("SELECT wiped_at IS NOT NULL AND $2<=wiped_through_inbound_id FROM conversations WHERE id=$1")
+            .bind(id).bind(msg.message_id).fetch_one(ctx.pool).await?;
+        if stale {
             return Ok(());
         }
         Some(guard)

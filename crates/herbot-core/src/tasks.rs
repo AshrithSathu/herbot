@@ -360,6 +360,7 @@ impl<A: TelegramApi> Scheduler<A> {
                 &self.pool,
                 t.conversation_id,
                 t.last_run_at.unwrap_or(t.created_at),
+                0,
             )
             .await?
         {

@@ -24,7 +24,7 @@ Task history loads 50 rows at a time with Load older tasks. History tools search
 
 Panel creation and sends reuse an idempotency key on retry. A request interrupted during Telegram stays explicitly pending, so retry cannot duplicate an uncertain action. Panel inbox workers run independently per topic.
 
-Clean slate waits for active work and discards older queued messages. Scheduled occurrences are saved with their claims and unfinished occurrences resume after a process restart; a crash during an external call can replay that effect.
+Clean slate waits for active work and discards older queued messages using timestamps and Telegram message ordering, including fresh messages sent in the same second. Scheduled occurrences are saved with their claims and unfinished occurrences resume after a process restart; a crash during an external call can replay that effect.
 
 6. If anything fails, you get `❌ Failed (E-1042)` and the details are in the logs. There's no silent fallback.
 
