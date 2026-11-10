@@ -287,10 +287,11 @@ export const saveMode = createServerFn({ method: 'POST' })
     }),
   )
 export const createTopic = createServerFn({ method: 'POST' })
-  .validator((data: { name: string; purpose: string }) => data)
+  .validator((data: { name: string; purpose: string; idempotencyKey: string }) => data)
   .handler(async ({ data }) =>
     (await serverSide())<{ id: number }>('/topics', {
       method: 'POST',
+      idempotencyKey: data.idempotencyKey,
       body: data,
     }),
   )
@@ -324,9 +325,11 @@ export const sendMessage = createServerFn({ method: 'POST' })
     const id = Number(data.get('id'))
     if (!Number.isSafeInteger(id) || id < 1) throw new Error('Invalid topic')
     data.delete('id')
+    const idempotencyKey = String(data.get('idempotencyKey') || '')
+    data.delete('idempotencyKey')
     const response = await fetch(`${env.coreUrl()}/admin/api/conversations/${id}/messages`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${env.adminToken()}` },
+      headers: { authorization: `Bearer ${env.adminToken()}`, "idempotency-key": idempotencyKey },
       body: data,
     })
     const result = (await response.json()) as {
@@ -338,7 +341,7 @@ export const sendMessage = createServerFn({ method: 'POST' })
   })
 
 export const companionReply = createServerFn({ method: 'POST' })
-  .validator((data: { id: number; text: string }) => data)
+  .validator((data: { id: number; text: string; idempotencyKey: string }) => data)
   .handler(async ({ data }) => {
     const { requireSignIn } = await import('./server/auth')
     requireSignIn()
@@ -346,7 +349,7 @@ export const companionReply = createServerFn({ method: 'POST' })
     if (!Number.isSafeInteger(data.id) || data.id < 1) throw new Error('Invalid topic')
     const form = new FormData(); form.set('text', data.text)
     const response = await fetch(`${env.coreUrl()}/admin/api/conversations/${data.id}/messages?wait=true`, {
-      method: 'POST', headers: { authorization: `Bearer ${env.adminToken()}` }, body: form,
+      method: 'POST', headers: { authorization: `Bearer ${env.adminToken()}`, 'idempotency-key': data.idempotencyKey }, body: form,
     })
     const result = await response.json() as { reply: string; error?: string }
     if (!response.ok) throw new Error(result.error ?? 'Conversation failed')

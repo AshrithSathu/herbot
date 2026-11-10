@@ -8,6 +8,7 @@ import { Button } from './ui/button'
 import { Textarea } from './ui/textarea'
 export function Composer({ id, enabled }: { id: number; enabled: boolean }) {
   const client = useQueryClient()
+  const action = useRef<{ text: string; style: string; files: File[]; key: string } | null>(null)
   const [text, setText] = useState(''),
     [files, setFiles] = useState<File[]>([]),
     [style, setStyle] = useState('auto')
@@ -22,6 +23,7 @@ export function Composer({ id, enabled }: { id: number; enabled: boolean }) {
   const send = useMutation({
     mutationFn: (data: FormData) => sendMessage({ data }),
     onSuccess: async () => {
+      action.current = null
       setText('')
       setFiles([])
       await client.invalidateQueries({ queryKey: keys.messages(id) })
@@ -49,6 +51,9 @@ export function Composer({ id, enabled }: { id: number; enabled: boolean }) {
     if (locked.current || !enabled || (!text.trim() && !files.length)) return
     locked.current = true
     const data = new FormData()
+    if (!action.current || action.current.text !== text || action.current.style !== style || action.current.files !== files)
+      action.current = { text, style, files, key: crypto.randomUUID() }
+    data.set('idempotencyKey', action.current.key)
     data.set('id', String(id))
     data.set('text', text)
     data.set('style', style)

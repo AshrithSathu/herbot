@@ -144,6 +144,7 @@ function VoiceConversation({
   const active = useRef(true)
   const busy = useRef(false)
   const generation = useRef(0)
+  const sendAction = useRef<{ text: string; key: string } | null>(null)
   const bottom = useRef<HTMLDivElement>(null)
   function stopPlayback() {
     const m = media.current
@@ -232,12 +233,14 @@ function VoiceConversation({
     stopPlayback()
     setMessages((old) => [...old, { role: 'you', text }])
     setPhase('thinking')
+    if (sendAction.current?.text !== text) sendAction.current = { text, key: crypto.randomUUID() }
     let replied = false
     try {
       const context = unlockAudio()
       const reply = await companionReply({
         data: {
           id: session.id,
+          idempotencyKey: sendAction.current.key,
           text: session.fallback
             ? `[Companion voice conversation: ${c.name}. For this reply only: ${c.purpose}]\n\n${text}`
             : text,
@@ -245,6 +248,7 @@ function VoiceConversation({
       })
       if (!active.current || turn !== generation.current) return
       replied = true
+      sendAction.current = null
       if (!transcribed) setDraft('')
       setMessages((old) => [...old, { role: 'companion', text: reply }])
       const response = await voiceRequest(
@@ -544,6 +548,7 @@ function VoiceConversation({
 }
 // Topic purpose and name identify companion ownership across devices; never repurpose another topic.
 const opening = new Map<string, Promise<Session & { reason?: string }>>()
+const creationKeys = new Map<string, string>()
 function openCompanion(c: Companion): Promise<Session & { reason?: string }> {
   const existing = opening.get(c.name)
   if (existing) return existing
@@ -563,7 +568,9 @@ function openCompanion(c: Companion): Promise<Session & { reason?: string }> {
       return { id: found.id, fallback: false }
     }
     try {
-      const topic = await createTopic({ data: { name, purpose: c.purpose } })
+      if (!creationKeys.has(c.name)) creationKeys.set(c.name, crypto.randomUUID())
+      const topic = await createTopic({ data: { name, purpose: c.purpose, idempotencyKey: creationKeys.get(c.name)! } })
+      creationKeys.delete(c.name)
       return { id: topic.id, fallback: false }
     } catch (e) {
       const general = topics.find(
