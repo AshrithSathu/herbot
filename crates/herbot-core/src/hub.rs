@@ -242,18 +242,22 @@ async fn lines(
     pool: &PgPool,
     rows: Vec<(i64, DateTime<Utc>, bool, String)>,
 ) -> Result<Vec<Line>, HubError> {
-    let mut names = std::collections::HashMap::new();
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<i64> = rows.iter().map(|row| row.0).collect();
+    let names: std::collections::HashMap<_, _> = store::conversation_statuses_by_id(pool, &ids)
+        .await?
+        .into_iter()
+        .map(|status| (status.conversation_id, status.place()))
+        .collect();
     let mut out = Vec::with_capacity(rows.len());
     for (conversation_id, sent_at, from_bot, body) in rows {
-        if let std::collections::hash_map::Entry::Vacant(e) = names.entry(conversation_id) {
-            e.insert(
-                store::conversation_status_by_id(pool, conversation_id)
-                    .await?
-                    .place(),
-            );
-        }
+        let topic = names
+            .get(&conversation_id)
+            .ok_or(sqlx::Error::RowNotFound)?;
         out.push(Line {
-            topic: names[&conversation_id].clone(),
+            topic: topic.clone(),
             sent_at,
             from: speaker(from_bot),
             text: body,

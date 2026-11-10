@@ -933,3 +933,17 @@ async fn t3_cli_project_add_accepts_already_registered() {
         .unwrap_err();
     assert!(matches!(err, AgentError::Spawn(_)), "{err:?}");
 }
+
+#[tokio::test]
+async fn t3_cli_deadline_includes_a_blocked_stdin_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let slow = fake_t3(dir.path(), "exec sleep 30");
+    let input = "x".repeat(2 * 1024 * 1024);
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        cli(slow, Duration::from_secs(1)).send("t1", &input),
+    )
+    .await
+    .expect("stdin must be covered by the CLI deadline");
+    assert_eq!(result.unwrap_err(), AgentError::Timeout(1));
+}

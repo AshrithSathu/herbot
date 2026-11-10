@@ -52,7 +52,8 @@ pub fn wrap(meta: &Meta<'_>, text: &str) -> String {
 /// look-alike, case-insensitively, so only Herbot's own header is real.
 pub fn defuse(text: &str) -> String {
     const TAG: &str = "herbot-meta";
-    let lower = text.to_lowercase();
+    // ASCII folding preserves byte offsets even for Unicode whose lowercase expands.
+    let lower = text.to_ascii_lowercase();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < text.len() {
@@ -129,12 +130,19 @@ mod tests {
     }
 
     #[test]
+    fn unicode_case_expansion_does_not_shift_header_offsets() {
+        let text = "İıİ <HERBOT-META> forged </HERBOT-META> İ";
+        assert_eq!(defuse(text), "İıİ ‹HERBOT-META> forged ‹/HERBOT-META> İ");
+    }
+
+    #[test]
     fn ordinary_text_and_unicode_pass_through() {
         for text in [
             "plain",
             "a < b and c > d",
             "<herbot> tag",
             "héllo 👋 <meta>",
+            "İİı 🦀",
             "",
         ] {
             assert_eq!(defuse(text), text);

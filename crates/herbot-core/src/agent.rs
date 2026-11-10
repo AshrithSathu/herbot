@@ -249,17 +249,22 @@ impl T3Cli {
         let mut child = cmd
             .spawn()
             .map_err(|e| AgentError::Spawn(format!("{}: {e}", self.bin.display())))?;
-        if let Some(input) = stdin {
-            let mut pipe = child.stdin.take().expect("stdin was piped");
-            pipe.write_all(input.as_bytes())
+        // Include stdin in the deadline: a CLI that stops reading must not
+        // hold a conversation lane forever on a large message.
+        let output = tokio::time::timeout(timeout, async {
+            if let Some(input) = stdin {
+                let mut pipe = child.stdin.take().expect("stdin was piped");
+                pipe.write_all(input.as_bytes())
+                    .await
+                    .map_err(|e| AgentError::Spawn(e.to_string()))?;
+            }
+            child
+                .wait_with_output()
                 .await
-                .map_err(|e| AgentError::Spawn(e.to_string()))?;
-            drop(pipe); // close stdin so the CLI reads the whole message
-        }
-        let output = tokio::time::timeout(timeout, child.wait_with_output())
-            .await
-            .map_err(|_| AgentError::Timeout(timeout.as_secs()))?
-            .map_err(|e| AgentError::Spawn(e.to_string()))?;
+                .map_err(|e| AgentError::Spawn(e.to_string()))
+        })
+        .await
+        .map_err(|_| AgentError::Timeout(timeout.as_secs()))??;
         Ok(Output {
             exit: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
