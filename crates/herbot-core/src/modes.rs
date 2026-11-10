@@ -98,7 +98,6 @@ pub enum Style {
     Think,
     Heavy,
     DeepSearch,
-    Video,
     Imagine,
     Sticker,
     Summary,
@@ -111,7 +110,6 @@ pub enum Style {
 impl Style {
     pub fn as_str(self) -> &'static str {
         match self {
-            Style::Video => "video",
             Style::Imagine => "imagine",
             Style::Sticker => "sticker",
             Style::Summary => "summary",
@@ -132,7 +130,7 @@ impl Style {
             Style::Think => Mode::Expert.effort(auto),
             Style::Heavy => Mode::Heavy.effort(auto),
             Style::DeepSearch | Style::X | Style::Wiki => "high",
-            Style::Video | Style::Imagine | Style::Sticker | Style::Summary => auto,
+            Style::Imagine | Style::Sticker | Style::Summary => auto,
         }
     }
 
@@ -143,7 +141,6 @@ impl Style {
             Style::Think => Mode::Expert.instruction().expect("expert has one"),
             Style::Heavy => HEAVY,
             Style::DeepSearch => DEEPSEARCH,
-            Style::Video => crate::imagine::VIDEO_INSTRUCTION,
             Style::Imagine => crate::imagine::IMAGE_INSTRUCTION,
             Style::Sticker => crate::imagine::STICKER_INSTRUCTION,
             Style::Summary => crate::imagine::SUMMARY_INSTRUCTION,
@@ -155,7 +152,6 @@ impl Style {
     /// What's shown in the chat while it works.
     pub fn working(self) -> &'static str {
         match self {
-            Style::Video => "🎬 Generating your video",
             Style::Imagine => "🎨 Generating your image",
             Style::Sticker => "🎨 Making your sticker",
             Style::Summary => "📝 Summarising",

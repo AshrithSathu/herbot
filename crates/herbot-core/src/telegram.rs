@@ -90,7 +90,6 @@ pub const COMMAND_MENU: &[(&str, &str)] = &[
         "An encyclopedia article (Grokipedia, Wikipedia, sources)",
     ),
     ("imagine", "Generate or edit an image"),
-    ("video", "Generate a video"),
     ("voice", "Spoken replies and voice picker"),
     ("speak", "Read a replied-to bot message aloud"),
     ("retry", "Answer your last message again"),
@@ -477,7 +476,6 @@ fn normalize_message(msg: &Message, bot_username: &str) -> Option<Inbound> {
             crate::modes::Style::Sticker
                 | crate::modes::Style::Summary
                 | crate::modes::Style::Imagine
-                | crate::modes::Style::Video
         )
         && let Some(replied) = msg.reply_to_message().filter(|r| {
             Some(r.id.0) != topic
@@ -616,10 +614,9 @@ fn parse_command(text: &str, bot_username: &str) -> CommandParse {
             style: crate::modes::Style::Wiki,
             question: args(rest, word),
         },
-        "fast" | "think" | "heavy" | "deepsearch" | "deepersearch" | "research" | "video"
-        | "imagine" | "sticker" | "summary" => {
+        "fast" | "think" | "heavy" | "deepsearch" | "deepersearch" | "research" | "imagine"
+        | "sticker" | "summary" => {
             let style = match name.to_ascii_lowercase().as_str() {
-                "video" => crate::modes::Style::Video,
                 "imagine" => crate::modes::Style::Imagine,
                 "sticker" => crate::modes::Style::Sticker,
                 "summary" => crate::modes::Style::Summary,
@@ -670,7 +667,6 @@ mod tests {
     fn parses_commands_for_this_bot() {
         let bot = "Herbot_Bot";
         for (command, style) in [
-            ("video", crate::modes::Style::Video),
             ("imagine", crate::modes::Style::Imagine),
             ("sticker", crate::modes::Style::Sticker),
             ("summary", crate::modes::Style::Summary),

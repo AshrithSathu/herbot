@@ -676,7 +676,6 @@ Thinking\n\
 /wiki <topic>: an encyclopedia article (Grokipedia, Wikipedia, sources)\n\n\
 Making things\n\
 /imagine <prompt>: an image (or edit a photo you reply to)\n\
-/video <prompt>: a video\n\
 /sticker: a sticker from a photo you reply to, or a prompt\n\n\
 Voice\n\
 /voice: spoken replies on or off, and the voice\n\
@@ -923,12 +922,7 @@ async fn hand_to_agent<A: TelegramApi, T: Transcriber>(
     if let Some(style) = style.filter(|s| {
         matches!(
             s,
-            Style::DeepSearch
-                | Style::Heavy
-                | Style::Video
-                | Style::Imagine
-                | Style::Sticker
-                | Style::Summary
+            Style::DeepSearch | Style::Heavy | Style::Imagine | Style::Sticker | Style::Summary
         )
     }) {
         // Long runs: say what's happening (typing alone looks stuck).

@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 /// out, image generation, modes and DeepSearch.
 /// v6 added memory, custom instructions, voice, tasks, conversation actions
 /// and media shortcuts. v7 added X, Grokipedia and topic languages.
-pub const TEMPLATE_VERSION: i32 = 7;
+pub const TEMPLATE_VERSION: i32 = 9;
 
 /// What every agent can do (Grok parity). Feature sections from other
 /// modules are appended in [`feature_sections`].

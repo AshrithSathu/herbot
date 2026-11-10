@@ -2,7 +2,9 @@
 
 Everything Grok does (grok.com, the apps, Grok in Telegram), and how Herbot does it. Herbot's surfaces are the Telegram group (every topic an agent) and the admin panel (the web app). The agent is Codex in T3 on the Codex subscription. Codex has its own image generation, image viewing, web search, multi-agent and memories.
 
-Status: ✅ built and run once for real (simulated messages through the live bot, 2026-11-10)
+Status: ✅ built and run once for real (simulated messages through the live bot, 2026-11-10); ⛔ out of scope by Ashrith's decision.
+
+Out of scope: video generation, and replying when tagged on X (Grok's @grok replies). `/x` (reading what people post on X) stays.
 
 | # | Grok feature | Herbot | Owner | Status |
 |---|---|---|---|---|
@@ -14,7 +16,7 @@ Status: ✅ built and run once for real (simulated messages through the live bot
 | 6 | File uploads (PDFs, docs, code, spreadsheets) | Documents are saved in the topic's `files/` folder and the agent reads them | W0 | ✅ |
 | 7 | Video understanding (Grok 4.3) | Videos and video notes: frames, plus the soundtrack transcribed, go to the agent | W0 | ✅ |
 | 8 | Imagine: image generation and editing | Codex's built-in image generation and editing; the agent sends the result as a photo (`[[file: …]]`) | W0 | ✅ |
-| 9 | Imagine: video generation | `/video <prompt>` and the agents' `generate_video` tool: xAI's Grok Imagine when `XAI_API_KEY` is set; otherwise storyboard videos from the OpenAI key (keyframes from OpenAI image models, each an edit of the last so the subject holds, animated with ffmpeg camera moves and crossfades). Ran live: an 8 s MP4 sent as a Telegram video | W6/lead | ✅ |
+| 9 | Imagine: video generation | Not in scope (Ashrith's call, 2026-11-10). Agents say Herbot doesn't make videos; they can still turn images Codex generates into a GIF or slideshow with ffmpeg if asked | – | ⛔ out of scope |
 | 10 | Rich answers (Markdown, code, tables, links) | Markdown rendered as Telegram formatting; long answers split safely | W0 | ✅ |
 | 11 | Files and documents from the assistant (Studio, document generation) | The agent writes files (PDF, DOCX, MD, HTML, CSV, charts) and sends them with `[[file: …]]` | W0 | ✅ |
 | 12 | Voice mode (talk, hear it answer) | Voice notes in (✅) and spoken replies out (OpenAI speech): `/voice on|off`, a choice of voices, 🔊 Read aloud | W1 | ✅ |
@@ -32,7 +34,7 @@ Status: ✅ built and run once for real (simulated messages through the live bot
 | 24 | Streaming / progress | Typing and "uploading…" while working; after 8 s a live "Working on it… 0:12" message, removed when the reply lands (T3 doesn't expose what the agent is doing, so it shows elapsed time) | W5 | ✅ |
 | 25 | Connectors (MCP, apps) | Codex MCP servers; Herbot-wide ones in `agents/.codex/config.toml`; panel Connectors page | W4 | ✅ |
 | 26 | Web app (grok.com) | Admin panel becomes a chat app: chat with any topic, attachments, new topics, settings | W4 | ✅ |
-| 27 | Telegram extras (summaries, stickers) | Summarise a topic or reply thread; `/sticker` makes a sticker from an image or prompt | W6 | ✅ |
+| 27 | Telegram extras (summaries, stickers) | Summarise a topic or reply thread; `/sticker` makes a sticker from an image or prompt, drawn by Codex's own image generation (no other image API); Herbot only converts it to 512px WebP | W6 | ✅ |
 | 28 | Real-time X (Twitter) analysis | `/x <topic>` and the agents' `search_x` tool (X API v2 recent search: posts, authors, dates, engagement, links) with `X_BEARER_TOKEN`; without it, live web search of x.com plus X's public post endpoint (verified) for reading posts | lead | ✅ (full real-time search with `X_BEARER_TOKEN`) |
 | 29 | Grokipedia | `/wiki <topic>`: an encyclopedia article from Grokipedia (grokipedia.com), Wikipedia and primary sources, noting where they disagree; agents use Grokipedia for lookups | lead | ✅ |
 | 30 | Many languages | English by default (your rule); `/language <name>` makes a topic answer in any language, with its voice notes and video soundtracks transcribed in it and spoken replies following it. Ran live in Spanish | lead | ✅ |
@@ -40,7 +42,7 @@ Status: ✅ built and run once for real (simulated messages through the live bot
 
 ## How it was checked
 
-Each ✅ row ran once through the live bot with `/internal/simulate` (Ashrith was offline): real Telegram, real T3/Codex, real OpenAI. Highlights: a live-web answer with cited Rust release posts; a photo read back exactly; a generated fox and a teal hummingbird logo sent as photos; a PDF summarised and returned as DOCX; a DeepSearch report plus its Markdown file; remember → PERSONAL.md → metric answers with the custom TL;DR; a spoken reply; a 2-minute reminder that fired on time; /retry, /search, /export, /persona, /summary; a sticker; private mode storing nothing; audio and video understood (transcript plus stills); Heavy mode with parallel sub-agents; a message sent from the panel's chat answered in Telegram. Also live: `/video` (a storyboard MP4 sent as a video), `/wiki`, `/language Spanish` with a Spanish voice note, and the panel's New agent up to Telegram's permission check (the bot needs the "Manage topics" right; it reports that clearly with an error id).
+Each ✅ row ran once through the live bot with `/internal/simulate` (Ashrith was offline): real Telegram, real T3/Codex, real OpenAI. Highlights: a live-web answer with cited Rust release posts; a photo read back exactly; a generated fox and a teal hummingbird logo sent as photos; a PDF summarised and returned as DOCX; a DeepSearch report plus its Markdown file; remember → PERSONAL.md → metric answers with the custom TL;DR; a spoken reply; a 2-minute reminder that fired on time; /retry, /search, /export, /persona, /summary; a sticker; private mode storing nothing; audio and video understood (transcript plus stills); Heavy mode with parallel sub-agents; a message sent from the panel's chat answered in Telegram. Also live: `/wiki`, `/language Spanish` with a Spanish voice note, and the panel's New agent up to Telegram's permission check (the bot needs the "Manage topics" right; it reports that clearly with an error id).
 
 ## Workstreams
 
@@ -52,7 +54,7 @@ Each ✅ row ran once through the live bot with `/internal/simulate` (Ashrith wa
 | W3 | Memory and custom instructions | 0014 |
 | W4 | Panel as a chat app, files, connectors, settings, search | 0015 |
 | W5 | Retry/edit, export, `/search`, private chat, feedback, progress | 0016 |
-| W6 | Video generation, stickers, summaries | 0017 |
+| W6 | Stickers, summaries (video generation built, then dropped as out of scope) | 0017 |
 
 Rules for every workstream:
 - Use only your migration number.

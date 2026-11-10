@@ -163,7 +163,6 @@ async fn lists_all_tools_with_caller_required(pool: PgPool) {
             "ask_topic",
             "cancel_task",
             "forget",
-            "generate_video",
             "list_tasks",
             "list_topics",
             "pause_task",
@@ -242,13 +241,6 @@ async fn general_sees_everything_and_a_topic_only_itself(pool: PgPool) {
 
     let (err, text) = mcp
         .call("list_topics", json!({ "caller": "hb_forged" }))
-        .await;
-    assert!(err && text.contains("unknown caller token"), "{text}");
-    let (err, text) = mcp
-        .call(
-            "generate_video",
-            json!({"caller": "hb_forged", "prompt": "a boat"}),
-        )
         .await;
     assert!(err && text.contains("unknown caller token"), "{text}");
 }
