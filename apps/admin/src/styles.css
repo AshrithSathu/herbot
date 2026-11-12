@@ -19,8 +19,10 @@
   --pane: oklch(0.995 0.002 240);     /* a pane's surface */
   --sunken: oklch(0.972 0.006 240);   /* wells: code, inputs, hovered rows */
   --ink: oklch(0.22 0.02 245);
-  --mute: oklch(0.5 0.022 245);
-  --faint: oklch(0.5 0.02 245); /* ≥4.5:1 on panes and on your bubbles */
+  /* Two quiet steps, both readable: mute (secondary text, ~7:1) and faint
+   * (tertiary: times, counts, placeholders; ≥4.5:1 on panes and bubbles). */
+  --mute: oklch(0.43 0.022 245);
+  --faint: oklch(0.5 0.02 245);
   --line: oklch(0.25 0.03 245 / 0.09); /* hairline rules */
   --accent-strong: oklch(0.58 0.135 237);
   --accent-ink: oklch(0.99 0.003 240);
@@ -81,7 +83,7 @@
     --pane: oklch(0.2 0.014 245);
     --sunken: oklch(0.175 0.013 245);
     --ink: oklch(0.94 0.006 240);
-    --mute: oklch(0.72 0.016 240);
+    --mute: oklch(0.8 0.014 240);
     --faint: oklch(0.7 0.016 240); /* ≥4.5:1 on panes and on your bubbles */
     --line: oklch(0.3 0.016 245);  /* solid on dark: translucent lines glow */
     --accent-strong: oklch(0.7 0.11 237);
@@ -234,31 +236,24 @@
   }
 }
 
-/* Reduced motion is gentler, not zero: fades and colour changes stay,
- * movement goes. tw-animate's enter/exit read these variables, so dialogs,
- * sheets and pills fade in place instead of zooming or sliding. */
+/* Reduced motion means none: no movement, no fades, no press scaling, in
+ * every component (Radix/tw-animate enters and exits, CSS transitions,
+ * spinners, the working rule). State changes still happen, instantly. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    --tw-enter-scale: 1 !important;
-    --tw-exit-scale: 1 !important;
-    --tw-enter-rotate: 0 !important;
-    --tw-exit-rotate: 0 !important;
-    --tw-enter-translate-x: 0 !important;
-    --tw-enter-translate-y: 0 !important;
-    --tw-exit-translate-x: 0 !important;
-    --tw-exit-translate-y: 0 !important;
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
   }
-  [data-slot="button"]:active {
+  :active {
     scale: none !important;
   }
-  /* Moving parts that aren't enter/exit animations. */
-  [data-slot="switch-thumb"] {
-    transition: none !important;
-  }
 }
-
 
 /* Sonner animates toasts for 400–500ms; UI motion stays under 300ms, and
  * exits are quicker than entrances. Doubled attribute selectors outrank
@@ -270,10 +265,9 @@
 :root [data-sonner-toaster][data-sonner-toaster] [data-sonner-toast][data-removed="true"] {
   transition-duration: 180ms !important;
 }
-/* Sonner drops every transition under reduced motion; keep the fade. */
 @media (prefers-reduced-motion: reduce) {
   :root [data-sonner-toaster][data-sonner-toaster] [data-sonner-toast] {
-    transition: opacity 150ms ease-out !important;
+    transition: none !important;
   }
 }
 /* One z-index scale: header 10, sidebar rail 20, overlays 50, toasts 60
