@@ -3,16 +3,15 @@
 // thousands of characters with no spaces, or stacked with combining marks.
 // Everything that shows such text goes through here, so none of it can
 // break a layout.
-import type { ReactNode } from 'react'
+import type { HTMLAttributes, ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
-type Props = {
+type Props = Omit<HTMLAttributes<HTMLElement>, 'children' | 'dir'> & {
   children: string | null | undefined
   /** One line with an ellipsis (default), N lines, or the whole text. */
   lines?: 1 | 2 | 3 | 'all'
   /** Shown when the text is empty or only spaces. */
   fallback?: ReactNode
-  className?: string
   /** Element to render; inline by default. */
   as?: 'span' | 'p' | 'div'
 }
@@ -25,16 +24,23 @@ type Props = {
  * - `overflow: clip` on a fixed line box: combining marks (Zalgo) can't paint
  *   over the rows above and below.
  * - Truncated text keeps its full value in `title`.
+ * - Other attributes (`id`, `aria-*`) pass through, so a dialog title or a
+ *   label can point at it.
  */
-export function UserText({ children, lines = 1, fallback = 'Untitled', className, as: Tag = 'span' }: Props) {
+export function UserText({ children, lines = 1, fallback = 'Untitled', className, as: Tag = 'span', ...rest }: Props) {
   const text = (children ?? '').trim()
   if (!text) {
-    return <Tag className={cn('text-muted-foreground italic', lines === 1 && 'block truncate', className)}>{fallback}</Tag>
+    return (
+      <Tag {...rest} className={cn('text-mute italic', lines === 1 && 'block truncate', className)}>
+        {fallback}
+      </Tag>
+    )
   }
   return (
     <Tag
-      dir="auto"
       title={lines === 'all' ? undefined : text}
+      {...rest}
+      dir="auto"
       className={cn(
         'user-text',
         lines === 1 && 'block truncate',

@@ -13,18 +13,22 @@ type PaneProps = {
   title: string
   /** Under the title: status, group. */
   subtitle?: ReactNode
-  /** Closes the pane (desktop) or goes back to the chat (phones). */
+  /** Closes the pane (desktop) or goes back (phones). */
   onClose?: () => void
+  /** The pane's accessible name ("Topic details", "Memory"). */
+  label?: string
+  /** The phone back button's label ("Back to the chat", "Back to memories"). */
+  backLabel?: string
   children: ReactNode
   className?: string
 }
 
-export function DetailsPane({ title, subtitle, onClose, children, className }: PaneProps) {
+export function DetailsPane({ title, subtitle, onClose, label = 'Topic details', backLabel = 'Back to the chat', children, className }: PaneProps) {
   return (
-    <section aria-label="Topic details" className={cn('flex min-h-0 flex-1 flex-col', className)}>
+    <section aria-label={label} className={cn('flex min-h-0 flex-1 flex-col', className)}>
       <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-line px-2 md:px-4">
         {onClose && (
-          <Button variant="ghost" size="icon" onClick={onClose} aria-label="Back to the chat" className="wide:hidden">
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label={backLabel} className="wide:hidden">
             <ChevronLeftIcon aria-hidden />
           </Button>
         )}

@@ -3,7 +3,7 @@
 // matches the risk: typing a word for irreversible, rare actions (forgetting
 // a topic); "Keep" as the primary with the red action alone below a rule for
 // the rest (clean slate, forgetting a memory).
-import { useState, type FormEvent, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Dialog } from 'radix-ui'
 import { XIcon } from 'lucide-react'
 import { UserText } from '@/components/user-text'
@@ -34,15 +34,74 @@ type FrameProps = {
   children: ReactNode
 }
 
+/**
+ * Where focus goes when a dialog closes: back to whatever opened it, even
+ * when the dialog was opened from state (no Radix trigger). If a confirmed
+ * delete removed that element, focus moves to the row that took its place
+ * in the same list ([data-hb-list] rows carry data-index), else the row
+ * before it, else the list, else the main pane.
+ */
+function useReturnFocus(open: boolean) {
+  const opener = useRef<{ el: HTMLElement; list: HTMLElement | null; index: number } | null>(null)
+  // A layout effect runs before Radix moves focus into the dialog.
+  useLayoutEffect(() => {
+    if (!open) return
+    const el = document.activeElement
+    if (!(el instanceof HTMLElement) || el === document.body) return
+    const list = el.closest<HTMLElement>('[data-hb-list]')
+    const row = el.closest<HTMLElement>('[data-index]')
+    opener.current = { el, list, index: row ? Number(row.dataset.index) : -1 }
+  }, [open])
+  return (event: Event) => {
+    const saved = opener.current
+    opener.current = null
+    if (!saved) return
+    event.preventDefault()
+    const focusIn = (root: Element | null | undefined) => {
+      const target = root?.matches('a,button,input,[tabindex]') ? root : root?.querySelector<HTMLElement>('a[href],button:not([disabled]),input,[tabindex]:not([tabindex="-1"])')
+      if (target instanceof HTMLElement) {
+        target.focus()
+        return true
+      }
+      return false
+    }
+    if (saved.el.isConnected) {
+      saved.el.focus()
+      return
+    }
+    // The opener's row is gone (deleted): the next row now has its index.
+    requestAnimationFrame(() => {
+      const list = saved.list?.isConnected ? saved.list : null
+      if (list && saved.index >= 0) {
+        if (focusIn(list.querySelector(`[data-index="${saved.index}"]`))) return
+        if (focusIn(list.querySelector(`[data-index="${saved.index - 1}"]`))) return
+      }
+      if (list) {
+        list.tabIndex = -1
+        list.focus()
+        return
+      }
+      document.getElementById('content')?.focus()
+    })
+  }
+}
+
 function Frame({ open, onOpenChange, title, description, busy = false, children }: FrameProps) {
+  const returnFocus = useReturnFocus(open)
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !busy && onOpenChange(o)}>
       <Dialog.Portal>
         <Dialog.Overlay className={OVERLAY} />
         <Dialog.Content
           className={CONTENT}
-          onEscapeKeyDown={(e) => busy && e.preventDefault()}
+          onEscapeKeyDown={(e) => {
+            // While a combobox's list is open (TopicPicker), Escape closes
+            // the list, not the dialog: Radix hears Escape first, at the document.
+            const t = e.target instanceof Element ? e.target : null
+            if (busy || t?.closest('[role="combobox"][aria-expanded="true"]')) e.preventDefault()
+          }}
           onPointerDownOutside={(e) => busy && e.preventDefault()}
+          onCloseAutoFocus={returnFocus}
         >
           <div aria-hidden className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-line md:hidden" />
           <div className="flex items-start gap-3 px-5 pt-4 md:pt-5">
@@ -93,13 +152,15 @@ type ConfirmProps = {
   /** What stays, so the reader knows the edges. */
   keeps?: ReactNode
   actionLabel: string
+  /** The safe choice's label for the separated guard ("Keep editing"). */
+  keepLabel?: string
   onConfirm: () => void
   guard: Guard
   pending?: boolean
   error?: Error | string | null
 }
 
-export function ConfirmDialog({ open, onOpenChange, title, subject, consequences, keeps, actionLabel, onConfirm, guard, pending = false, error }: ConfirmProps) {
+export function ConfirmDialog({ open, onOpenChange, title, subject, consequences, keeps, actionLabel, keepLabel = 'Keep everything', onConfirm, guard, pending = false, error }: ConfirmProps) {
   const [typed, setTyped] = useState('')
   const armed = guard.kind === 'separated' || typed.trim().toLowerCase() === guard.word
   const close = (o: boolean) => {
@@ -163,7 +224,7 @@ export function ConfirmDialog({ open, onOpenChange, title, subject, consequences
           <div className="flex flex-col gap-3">
             <Dialog.Close asChild>
               <Button variant="primary" disabled={pending} className="h-11 w-full">
-                Keep everything
+                {keepLabel}
               </Button>
             </Dialog.Close>
             <div className="flex items-center justify-between gap-3 border-t border-line pt-3">

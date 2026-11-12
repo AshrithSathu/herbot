@@ -2,10 +2,10 @@
 // segmented choices with the chosen option's description underneath (a menu
 // on phones), light buttons, labels above fields, destructive actions as
 // quiet red text that always confirm elsewhere.
-import { useId, type ComponentProps, type ReactNode } from 'react'
+import { useId, useRef, type ComponentProps, type ReactNode } from 'react'
 import { Slot } from 'radix-ui'
 import { cva, type VariantProps } from 'class-variance-authority'
-import { ChevronDownIcon, LoaderIcon } from 'lucide-react'
+import { ChevronDownIcon, LoaderIcon, SearchIcon, XIcon } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 
@@ -66,17 +66,21 @@ type FieldProps = {
   id?: string
   hint?: ReactNode
   error?: ReactNode
+  /** Shown alongside an error, not instead of it (Caps Lock is on). */
+  warning?: ReactNode
   /** Code-point count against a limit, shown near the limit. */
   counter?: { count: number; max: number }
   children: (props: { id: string; 'aria-invalid'?: true; 'aria-describedby'?: string }) => ReactNode
   className?: string
 }
 
-/** Label above, the control, then the error or hint next to it. */
-export function Field({ label, id, hint, error, counter, children, className }: FieldProps) {
+/** Label above, the control, then the warning, and the error or hint. */
+export function Field({ label, id, hint, error, warning, counter, children, className }: FieldProps) {
   const auto = useId()
   const fieldId = id ?? auto
   const noteId = `${fieldId}-note`
+  const warnId = `${fieldId}-warn`
+  const describedBy = [warning ? warnId : null, error || hint ? noteId : null].filter(Boolean).join(' ') || undefined
   const near = counter && counter.count > counter.max * 0.8
   return (
     <div className={cn('flex min-w-0 flex-col gap-1.5', className)}>
@@ -90,7 +94,12 @@ export function Field({ label, id, hint, error, counter, children, className }: 
           </span>
         )}
       </div>
-      {children({ id: fieldId, 'aria-invalid': error ? true : undefined, 'aria-describedby': error || hint ? noteId : undefined })}
+      {children({ id: fieldId, 'aria-invalid': error ? true : undefined, 'aria-describedby': describedBy })}
+      {warning && (
+        <p id={warnId} className="text-[12.5px] text-warning">
+          {warning}
+        </p>
+      )}
       {(error || hint) && (
         <p id={noteId} className={cn('text-[12.5px]', error ? 'text-destructive' : 'text-mute')}>
           {error ?? hint}
@@ -101,7 +110,7 @@ export function Field({ label, id, hint, error, counter, children, className }: 
 }
 
 const control =
-  'w-full min-w-0 rounded-lg bg-sunken px-3 text-base text-ink shadow-[inset_0_0_0_var(--hair)_var(--line)] outline-none transition-[box-shadow] duration-150 ease-out placeholder:text-faint focus-visible:shadow-[inset_0_0_0_1px_var(--mute)] aria-invalid:shadow-[inset_0_0_0_1px_var(--destructive)] disabled:opacity-60 md:text-[14px]'
+  'w-full min-w-0 rounded-lg bg-sunken px-3 text-base text-ink shadow-[inset_0_0_0_var(--hair)_var(--line)] outline-none transition-[box-shadow] duration-150 ease-out placeholder:text-faint focus-visible:shadow-[inset_0_0_0_1px_var(--mute)] aria-invalid:shadow-[inset_0_0_0_1px_var(--destructive)] disabled:opacity-60 pointer-fine:text-[14px]'
 
 export function TextInput({ className, ...props }: ComponentProps<'input'>) {
   return <input className={cn(control, 'h-10', className)} {...props} />
@@ -222,6 +231,61 @@ export function SwitchRow({ label, description, checked, onCheckedChange, pendin
         </span>
       </label>
       {error && <p className="text-[12.5px] text-destructive">{error}</p>}
+    </div>
+  )
+}
+
+type SearchInputProps = Omit<ComponentProps<'input'>, 'type' | 'value' | 'onChange'> & {
+  /** Visible label for screen readers (the field has no visible label). */
+  label: string
+  value: string
+  onValueChange: (value: string) => void
+}
+
+/** A search field: icon inside, a clear button that refocuses, Escape
+ * clears. 16px text on touch screens (no iOS zoom), 14px with a mouse. */
+export function SearchInput({ label, value, onValueChange, className, id, onKeyDown, ...props }: SearchInputProps) {
+  const auto = useId()
+  const fieldId = id ?? auto
+  const input = useRef<HTMLInputElement>(null)
+  return (
+    <div className={cn('relative', className)}>
+      <label htmlFor={fieldId} className="sr-only">
+        {label}
+      </label>
+      <SearchIcon aria-hidden className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-faint" />
+      <input
+        ref={input}
+        id={fieldId}
+        type="search"
+        value={value}
+        onChange={(e) => onValueChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && value) {
+            e.preventDefault()
+            e.stopPropagation()
+            onValueChange('')
+          }
+          onKeyDown?.(e)
+        }}
+        autoComplete="off"
+        spellCheck={false}
+        {...props}
+        className="h-10 w-full rounded-lg bg-sunken pr-10 pl-9 text-base text-ink outline-none placeholder:text-faint focus-visible:shadow-[inset_0_0_0_1px_var(--mute)] pointer-fine:text-[14px] [&::-webkit-search-cancel-button]:hidden"
+      />
+      {value && (
+        <button
+          type="button"
+          onClick={() => {
+            onValueChange('')
+            input.current?.focus()
+          }}
+          aria-label="Clear"
+          className="absolute top-1/2 right-1 grid size-9 -translate-y-1/2 place-items-center rounded-md text-faint hover:text-ink pointer-coarse:size-11"
+        >
+          <XIcon className="size-4" aria-hidden />
+        </button>
+      )}
     </div>
   )
 }

@@ -5,7 +5,7 @@
 //   keeping the small file chips; Enter makes a new line on touch screens;
 // - typing /fast, /think, /heavy or /deepsearch at the start sets that mode,
 //   the same commands as in Telegram.
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { DropdownMenu } from 'radix-ui'
 import { ArrowUpIcon, CheckIcon, ChevronDownIcon, LoaderIcon, PaperclipIcon, XIcon } from 'lucide-react'
 import { charCount } from '../../format'
@@ -38,8 +38,13 @@ type ComposerProps = {
   /** A send is in flight. */
   sending?: boolean
   placeholder?: string
-  /** Text to put back (Edit on a message that failed). */
+  /** Text to start with. */
   initialText?: string
+  /** Puts text back into the box (Edit on a failed message, or a voice
+   * turn that failed). A new `key` restores again, even the same text. */
+  restore?: { text: string; key: string | number }
+  /** Beside the send button: a mic for voice turns (companions). */
+  voice?: ReactNode
   className?: string
 }
 
@@ -53,7 +58,7 @@ function fileProblem(files: File[]): string | null {
 
 const coarse = () => typeof window !== 'undefined' && matchMedia('(pointer: coarse)').matches
 
-export function Composer({ onSend, disabledReason, sending = false, placeholder = 'Message this agent', initialText = '', className }: ComposerProps) {
+export function Composer({ onSend, disabledReason, sending = false, placeholder = 'Message this agent', initialText = '', restore, voice, className }: ComposerProps) {
   const [text, setText] = useState(initialText)
   const [files, setFiles] = useState<File[]>([])
   const [mode, setMode] = useState<Mode>('auto')
@@ -66,7 +71,12 @@ export function Composer({ onSend, disabledReason, sending = false, placeholder 
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`
   }, [text])
-  useLayoutEffect(() => setText(initialText), [initialText])
+  // Restoring writes state, never returns anything from the effect.
+  useLayoutEffect(() => {
+    if (!restore) return
+    setText(restore.text)
+    box.current?.focus()
+  }, [restore?.key]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const count = charCount(text)
   const over = count > MAX_CHARS
@@ -114,7 +124,7 @@ export function Composer({ onSend, disabledReason, sending = false, placeholder 
       }}
       className={cn('flex flex-col gap-1.5', className)}
     >
-      <div className="rounded-2xl bg-pane shadow-raised transition-[box-shadow] duration-150 ease-out focus-within:shadow-[var(--raised),0_0_0_3px_var(--accent-soft)]">
+      <div className="rounded-2xl bg-pane shadow-raised transition-[box-shadow] duration-150 ease-out focus-within:shadow-[var(--raised),0_0_0_1px_var(--mute)]">
         {files.length > 0 && (
           <ul aria-label="Attachments" className="flex gap-2 overflow-x-auto px-3 pt-3 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {files.map((f, i) => {
@@ -163,7 +173,7 @@ export function Composer({ onSend, disabledReason, sending = false, placeholder 
             onKeyDown={onKey}
             placeholder={placeholder}
             aria-describedby="hb-composer-status"
-            className="block w-full resize-none self-center bg-transparent px-2 py-2.5 text-base leading-6 text-ink outline-none [grid-area:text] placeholder:text-faint md:px-2 md:pt-3 md:text-[15px]"
+            className="block w-full resize-none self-center bg-transparent px-2 py-2.5 text-base leading-6 text-ink outline-none [grid-area:text] placeholder:text-faint md:px-2 md:pt-3 pointer-fine:text-[15px]"
           />
           <label
             className="grid size-10 cursor-pointer place-items-center rounded-full text-mute [grid-area:attach] hover:bg-sunken hover:text-ink has-focus-visible:ring-2 has-focus-visible:ring-ring pointer-coarse:size-11"
@@ -187,14 +197,17 @@ export function Composer({ onSend, disabledReason, sending = false, placeholder 
           <span className={cn('hidden self-center px-1 text-[12px] tabular-nums [grid-area:count] md:inline', count > MAX_CHARS * 0.8 ? '' : 'invisible', over ? 'font-medium text-destructive' : 'text-mute')}>
             {(MAX_CHARS - count).toLocaleString('en-GB')}
           </span>
+          <span className="flex items-center gap-1 [grid-area:send]">
+          {voice}
           <button
             type="submit"
             disabled={!canSend}
             aria-label={sending ? 'Sending' : 'Send message'}
-            className="grid size-10 shrink-0 place-items-center rounded-full bg-accent-strong text-accent-ink transition-[background-color,color,scale] duration-150 ease-out [grid-area:send] active:scale-[0.96] disabled:bg-sunken disabled:text-faint pointer-coarse:size-11"
+            className="grid size-10 shrink-0 place-items-center rounded-full bg-accent-strong text-accent-ink transition-[background-color,color,scale] duration-150 ease-out active:scale-[0.96] disabled:bg-sunken disabled:text-faint pointer-coarse:size-11"
           >
             {sending ? <LoaderIcon className="size-[18px] motion-safe:animate-spin" aria-hidden /> : <ArrowUpIcon className="size-[18px]" aria-hidden />}
           </button>
+          </span>
         </div>
       </div>
       <p id="hb-composer-status" role="status" className={cn('min-h-5 px-3 text-[12px]', problem ? 'text-destructive' : 'text-faint')}>

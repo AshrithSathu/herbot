@@ -75,24 +75,38 @@ export function InPlaceError({ title, error, onRetry, retrying = false, classNam
 }
 
 function CopyId({ id }: { id: string }) {
+  return (
+    <CopyButton value={id} label={`Copy ${id}`} className="font-mono">
+      {id}
+    </CopyButton>
+  )
+}
+
+/** Copies a value: swaps to a check for 1.5 s, says "Copied" to screen
+ * readers, and says so when the clipboard refuses. */
+export function CopyButton({ value, label = 'Copy', children, className }: { value: string; label?: string; children?: ReactNode; className?: string }) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
   return (
     <button
       type="button"
       onClick={async () => {
         try {
-          await navigator.clipboard.writeText(id)
+          await navigator.clipboard.writeText(value)
           setState('copied')
           setTimeout(() => setState('idle'), 1500)
         } catch {
           setState('failed')
         }
       }}
-      className="inline-flex h-9 items-center gap-1.5 rounded-md px-2 font-mono text-[12.5px] text-mute hover:bg-sunken hover:text-ink pointer-coarse:h-11"
-      aria-label={`Copy ${id}`}
+      className={cn(
+        'inline-flex h-9 items-center gap-1.5 rounded-md px-2 text-[12.5px] text-mute transition-[background-color,color] duration-150 ease-out hover:bg-sunken hover:text-ink pointer-coarse:h-11',
+        className,
+      )}
+      aria-label={label}
     >
-      {id}
+      {children}
       {state === 'copied' ? <CheckIcon aria-hidden className="size-3.5 text-ok" /> : <CopyIcon aria-hidden className="size-3.5" />}
+      {!children && <span>{state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : 'Copy'}</span>}
       <span className="sr-only" aria-live="polite">
         {state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : ''}
       </span>
@@ -127,10 +141,16 @@ export function ChatSkeleton() {
   )
 }
 
-type StripProps = { tone?: 'warn' | 'off'; children: ReactNode; action?: ReactNode }
+type StripProps = {
+  tone?: 'warn' | 'off'
+  children: ReactNode
+  /** One short line for phones ("Telegram is off"); the full text from md. */
+  short?: ReactNode
+  action?: ReactNode
+}
 
 /** System-wide state (Telegram off, the panel offline), shown on every pane. */
-export function StatusStrip({ tone = 'warn', children, action }: StripProps) {
+export function StatusStrip({ tone = 'warn', children, short, action }: StripProps) {
   return (
     <div
       role="status"
@@ -140,7 +160,14 @@ export function StatusStrip({ tone = 'warn', children, action }: StripProps) {
       )}
     >
       <span aria-hidden className={cn('size-1.5 shrink-0 rounded-full', tone === 'off' ? 'bg-off' : 'bg-warn')} />
-      <span className="min-w-0 flex-1">{children}</span>
+      {short ? (
+        <>
+          <span className="min-w-0 flex-1 md:hidden">{short}</span>
+          <span className="hidden min-w-0 flex-1 md:inline">{children}</span>
+        </>
+      ) : (
+        <span className="min-w-0 flex-1">{children}</span>
+      )}
       {action}
     </div>
   )
@@ -155,4 +182,10 @@ export function notify(message: string, undo?: { label?: string; run: () => void
     duration,
     action: undo ? { label: undo.label ?? 'Undo', onClick: undo.run } : undefined,
   })
+}
+
+/** The one failure that may arrive as a toast: an Undo that didn't work
+ * (the row it would show in is already gone). Stays until dismissed. */
+export function notifyFailure(message: string) {
+  toast.error(message, { duration: Infinity, closeButton: true })
 }

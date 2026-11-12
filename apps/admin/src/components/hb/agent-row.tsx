@@ -3,14 +3,14 @@
 // unread; a thin running rule under a working agent), with Monogram's quiet
 // purpose preview as the second line while the agent is fine. The second
 // line turns into facts in colour only when the agent needs you.
+import type { MouseEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import type { Topic } from '../../api'
 import { ago, compact, exact } from '../../format'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
-import { topicTone } from './status'
-
-const MODE: Record<string, string> = { fast: 'Fast', auto: 'Auto', expert: 'Expert', heavy: 'Heavy' }
+import { topicModeLabel } from './modes'
+import { MetaLine, topicTone } from './status'
 
 export const AGENT_ROW_CSS = `
 .hb-working { position: absolute; inset-inline: 0; bottom: 0; height: 2px; overflow: hidden; pointer-events: none; }
@@ -27,8 +27,9 @@ type AgentRowProps = {
   unread?: boolean
   /** A turn is running now. */
   working?: boolean
-  /** Called after navigating (phones switch to the conversation pane). */
-  onSelect?: (id: number) => void
+  /** Called on click, before navigating. Call `event.preventDefault()` to
+   * stay where you are (a picker, a management mode). */
+  onSelect?: (id: number, event: MouseEvent<HTMLAnchorElement>) => void
 }
 
 /** The row's accessible name: just the facts, never the whole purpose. */
@@ -44,7 +45,7 @@ export function AgentRow({ topic: t, active = false, unread = false, working = f
     <Link
       to="/topics/$id"
       params={{ id: t.id }}
-      onClick={() => onSelect?.(t.id)}
+      onClick={(e) => onSelect?.(t.id, e)}
       aria-label={rowLabel(t, status.label, working, unread)}
       aria-current={active ? 'page' : undefined}
       className={cn(
@@ -65,17 +66,17 @@ export function AgentRow({ topic: t, active = false, unread = false, working = f
       {working ? (
         <span className="truncate text-[12.5px] font-medium text-accent-strong">Working on a reply…</span>
       ) : needsYou ? (
-        <span className="flex min-w-0 items-baseline gap-1.5 text-[12.5px] text-mute">
-          <span className={cn('shrink-0', status.tone === 'warn' ? 'text-warning' : status.tone === 'off' ? 'text-destructive' : 'text-mute')}>
-            {status.label}
-          </span>
-          <span aria-hidden className="text-faint">·</span>
-          <span className="shrink-0">{MODE[t.mode] ?? t.mode}</span>
-          <span aria-hidden className="text-faint">·</span>
-          <span className="truncate tabular-nums" title={`${exact(t.messages)} messages`}>
-            {compact(t.messages)} messages
-          </span>
-        </span>
+        <MetaLine className="text-[12.5px] text-mute">
+          {[
+            <span key="s" className={cn(status.tone === 'warn' ? 'text-warning' : status.tone === 'off' ? 'text-destructive' : 'text-mute')}>
+              {status.label}
+            </span>,
+            <span key="m">{topicModeLabel(t.mode)}</span>,
+            <span key="n" className="tabular-nums" title={`${exact(t.messages)} messages`}>
+              {compact(t.messages)} messages
+            </span>,
+          ]}
+        </MetaLine>
       ) : (
         <UserText className="text-[12.5px] text-mute" fallback="No purpose yet">
           {t.purpose}

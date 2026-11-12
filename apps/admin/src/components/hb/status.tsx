@@ -106,3 +106,24 @@ export function BigNumber({ label, value, of, alarm = false, compactAbove = true
     </div>
   )
 }
+
+/**
+ * Small facts joined by "·", wrapping without a dangling separator: each item
+ * carries its separator in front, and the line's first separator is clipped
+ * (the inner row is pulled left by one separator's width inside a clipping
+ * box), so a wrap never leaves "·" at the end or the start of a line.
+ */
+export function MetaLine({ children, className }: { children: ReactNode[]; className?: string }) {
+  const items = children.filter((c) => c !== null && c !== undefined && c !== false && c !== '')
+  return (
+    <div className={cn('min-w-0 overflow-hidden', className)}>
+      <div className="-ml-[1.1em] flex min-w-0 flex-wrap items-baseline">
+        {items.map((item, i) => (
+          <span key={i} className="inline-flex min-w-0 items-baseline before:w-[1.1em] before:shrink-0 before:text-center before:text-faint before:content-['·']">
+            {item}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
