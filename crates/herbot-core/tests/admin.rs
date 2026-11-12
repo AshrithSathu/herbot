@@ -960,7 +960,7 @@ async fn panel_records_returned_reason_and_search_includes_sender_and_time(pool:
             .unwrap();
     assert_eq!(
         message,
-        "Telegram is disabled; chat and topic creation need the running bot"
+        "Telegram is off: Herbot can't send messages or create topics until the bot is running"
     );
     assert_eq!(body["error"], format!("E-{id}: {message}"));
     assert_eq!(context, json!({"path":"/admin/api/topics","status":503}));

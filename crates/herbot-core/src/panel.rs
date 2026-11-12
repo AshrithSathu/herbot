@@ -46,11 +46,19 @@ type Result<T> = std::result::Result<T, Failure>;
 fn fail(code: StatusCode, message: impl ToString) -> Failure {
     (code, Json(json!({"error": message.to_string()})))
 }
+/// An internal failure, with its real cause (scrubbed and shortened) so the
+/// recorded error says what went wrong. The panel is admin-only.
 fn io(e: impl std::fmt::Display) -> Failure {
     tracing::error!(error = %e, "panel request failed");
+    let cause = crate::outgoing::scrub(&e.to_string());
+    let cause: String = cause.chars().take(300).collect();
     fail(
         StatusCode::INTERNAL_SERVER_ERROR,
-        "Panel operation failed; check logs",
+        if cause.trim().is_empty() {
+            "Panel operation failed".to_string()
+        } else {
+            format!("Panel operation failed: {cause}")
+        },
     )
 }
 fn auth(s: &Panel, h: &HeaderMap) -> Result<()> {
@@ -64,7 +72,7 @@ fn live(s: &Panel) -> Result<&Live> {
     s.live.as_ref().ok_or_else(|| {
         fail(
             StatusCode::SERVICE_UNAVAILABLE,
-            "Telegram is disabled; chat and topic creation need the running bot",
+            "Telegram is off: Herbot can't send messages or create topics until the bot is running",
         )
     })
 }
