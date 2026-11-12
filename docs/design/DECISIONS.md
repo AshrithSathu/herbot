@@ -1,5 +1,7 @@
 # Panel design decisions
 
+> **Shipped** on 2026-11-12 as the panel's three-pane redesign. The prototype routes (`/proto/*`) and `src/proto/` were deleted that day; the decisions below remain the spec, and the prototypes are in git history (`step-13/panel-redesign`).
+
 Decided by prototyping (emil-prototype) against worst-case data (`make admin-stress`). Each entry keeps what was chosen and what was left behind, so the same discussion doesn't happen twice.
 
 ## Stage 1: direction, decided from /proto/direction (Current, Ledger, Conversation, Editorial)
