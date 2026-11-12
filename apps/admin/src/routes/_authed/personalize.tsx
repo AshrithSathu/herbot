@@ -159,7 +159,9 @@ function PersonalizePage() {
                   document.getElementById(`pv-tab-${next}`)?.focus()
                 }}
                 className={cn(
-                  'h-8 rounded-md px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-150 ease-out pointer-coarse:h-11',
+                  // 32px to look at, 40px to hit on desktop (the strip's 2px padding
+                  // plus a 4px band above and below); 44px on touch.
+                  'relative h-8 rounded-md px-3 text-[13px] font-medium outline-none transition-[background-color,color,box-shadow] duration-150 ease-out before:absolute before:inset-x-0 before:-inset-y-1 focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:h-11 pointer-coarse:before:inset-y-0',
                   tab === t ? 'bg-pane text-ink shadow-raised' : 'text-mute hover:text-ink',
                 )}
               >

@@ -4,13 +4,14 @@
 // time (the list, then the error with a way back). The selected error lives
 // in the URL (?e=3999), so /logs/E-3999 links, reloads and Back all land on
 // it.
+import { When } from '@/components/hb/when'
 import { useMedia } from '@/components/hb/use-media'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ChevronLeftIcon, ChevronRightIcon, HashIcon, MessageCircleIcon } from 'lucide-react'
 import type { ErrorSummary } from '../../../api'
-import { ago, clip, exact, when } from '../../../format'
+import { clip, exact } from '../../../format'
 import { errorQuery, errorSearchQuery, errorsTotalQuery, topicsQuery } from '../../../queries'
 import { Button, SearchInput } from '@/components/hb/controls'
 import { CopyButton, InPlaceEmpty, InPlaceError, ListSkeleton } from '@/components/hb/feedback'
@@ -144,7 +145,7 @@ function LogsPage() {
       width: '5.5rem',
       align: 'end',
       phone: 'aside',
-      cell: (r) => <When iso={r.created_at} className="text-[12.5px]" />,
+      cell: (r) => <When iso={r.created_at} className="text-[12.5px] whitespace-nowrap text-mute" />,
     },
   ]
 
@@ -167,14 +168,14 @@ function LogsPage() {
       <section
         aria-label="Errors"
         className={cn(
-          'flex min-h-0 min-w-0 flex-col wide:w-[27rem] wide:shrink-0 wide:border-r wide:border-line',
+          '@container/logs flex min-h-0 min-w-0 flex-col wide:w-[27rem] wide:shrink-0 wide:border-r wide:border-line',
           e != null ? 'max-wide:hidden' : 'flex-1',
         )}
       >
-        <header className="flex flex-col gap-3 px-4 pt-5 pb-3 md:px-5">
+        <header className="flex flex-col gap-3 px-4 pt-6 pb-3 md:px-5 md:pt-8">
           <div className="flex flex-col items-start gap-1">
             <BackToAgents />
-            <h1 className="font-serif text-[30px] leading-[1.1] font-semibold tracking-[-0.015em]">Logs</h1>
+            <h1 className="font-serif text-[30px] leading-[1.1] font-semibold tracking-[-0.015em] text-balance md:text-[34px]">Logs</h1>
             <p className="text-[13px] text-mute tabular-nums" aria-live="polite">
               {query.isSuccess
                 ? q
@@ -210,17 +211,19 @@ function LogsPage() {
         <div
           data-hb-scroll
           className={cn(
-            'scroller min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-[max(1rem,env(safe-area-inset-bottom))] transition-opacity duration-150 ease-out md:px-2',
+            // Row text lines up with the title above: compact rows pad 4px, the wide
+            // grid (the table's own box ≥ 40rem, i.e. this column ≥ 42rem) pads 12px.
+            'scroller min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-[max(1rem,env(safe-area-inset-bottom))] transition-opacity duration-150 ease-out md:px-4 @min-[42rem]/logs:px-2',
             query.isPlaceholderData && 'opacity-60',
           )}
         >
           {query.isPending ? (
-            <ListSkeleton rows={12} lines={2} className="px-3" />
+            <ListSkeleton rows={12} lines={2} className="px-1" />
           ) : query.isError && !query.isFetchNextPageError ? (
-            <InPlaceError title="Couldn’t load the logs" error={query.error} onRetry={() => void query.refetch()} retrying={query.isRefetching} className="px-3" />
+            <InPlaceError title="Couldn’t load the logs" error={query.error} onRetry={() => void query.refetch()} retrying={query.isRefetching} className="px-1" />
           ) : rows.length === 0 ? (
             <InPlaceEmpty
-              className="px-3"
+              className="px-1"
               title={q ? `No error matches “${clip(q, 60)}”` : 'No errors recorded'}
               action={q ? <Button onClick={() => setDraft('')}>Clear search</Button> : undefined}
             >
@@ -273,19 +276,12 @@ function Kind({ kind, className }: { kind: string; className?: string }) {
   return <UserText className={cn('font-mono text-[12.5px] text-mute', className)}>{kind}</UserText>
 }
 
-function When({ iso, className }: { iso: string; className?: string }) {
-  return (
-    <time dateTime={iso} title={when(iso)} className={cn('text-[13px] whitespace-nowrap text-mute tabular-nums', className)} suppressHydrationWarning>
-      {ago(iso)}
-    </time>
-  )
-}
 
 /** Under the list: loading older, every error shown, or a retry. */
 function ListFooter({ query, count }: { query: { isFetchNextPageError: boolean; hasNextPage: boolean; isFetchingNextPage: boolean; fetchNextPage: () => unknown }; count: number }) {
   if (query.isFetchNextPageError)
     return (
-      <div className="flex items-center gap-3 px-3 py-4 text-[13px] text-destructive">
+      <div className="flex items-center gap-3 px-1 py-4 text-[13px] text-destructive">
         Couldn’t load older errors.
         <Button size="sm" onClick={() => void query.fetchNextPage()}>
           Try again
@@ -294,7 +290,7 @@ function ListFooter({ query, count }: { query: { isFetchNextPageError: boolean; 
     )
   if (query.hasNextPage)
     return (
-      <div className="flex items-center gap-3 px-3 py-4 text-[13px] text-mute tabular-nums">
+      <div className="flex items-center gap-3 px-1 py-4 text-[13px] text-mute tabular-nums">
         {query.isFetchingNextPage ? 'Loading older errors…' : `${exact(count)} loaded`}
         {!query.isFetchingNextPage && (
           <Button size="sm" variant="ghost" onClick={() => void query.fetchNextPage()}>
@@ -303,7 +299,7 @@ function ListFooter({ query, count }: { query: { isFetchNextPageError: boolean; 
         )}
       </div>
     )
-  return <p className="px-3 py-4 text-[13px] text-faint tabular-nums">That’s every error: {exact(count)}.</p>
+  return <p className="px-1 py-4 text-[13px] text-faint tabular-nums">That’s every error: {exact(count)}.</p>
 }
 
 /** The topic an error's context names, as a link (when it still exists). */
@@ -395,7 +391,7 @@ function ErrorDetail({ id, onGo, back }: { id: number; onGo: (id: number) => voi
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
           <Kind kind={err.kind} className="max-w-full" />
           <span className="text-[13px] text-mute tabular-nums">
-            {when(err.created_at)} · <When iso={err.created_at} className="text-[13px]" />
+            <When iso={err.created_at} format="day" /> · <When iso={err.created_at} />
           </span>
         </div>
         <RelatedTopic context={context} />

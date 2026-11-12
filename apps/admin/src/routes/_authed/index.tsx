@@ -1,14 +1,15 @@
 // Overview (docs/design/DECISIONS.md, "Overview"): four serif figures, then
 // "Needs you" naming the first few items of each kind with one action each,
 // then the last error. Figures are the glance; Needs you is where you act.
+import { When } from '@/components/hb/when'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute, useNavigate, type LinkProps } from '@tanstack/react-router'
 import { PlusIcon } from 'lucide-react'
 import { changeTask, setEnabled, type ErrorSummary, type Task, type Topic } from '../../api'
-import { ago, exact } from '../../format'
+import { exact } from '../../format'
 import { errorSearchQuery, keys, overviewQuery, tasksQuery, topicsQuery } from '../../queries'
-import { Button } from '@/components/hb/controls'
+import { Button, DisclosureButton } from '@/components/hb/controls'
 import { InPlaceEmpty, InPlaceError, ListSkeleton, notify } from '@/components/hb/feedback'
 import { QuietAction } from '@/components/hb/rows'
 import { ShellPage, useShell } from '@/components/hb/shell'
@@ -168,9 +169,7 @@ function OverviewPage() {
                     {o.last_error.error_id}
                   </Link>
                   <UserText className="min-w-0 font-mono text-mute">{o.last_error.kind}</UserText>
-                  <span className="ml-auto shrink-0 text-faint" suppressHydrationWarning>
-                    {ago(o.last_error.created_at)}
-                  </span>
+                  <When iso={o.last_error.created_at} className="ml-auto shrink-0 text-faint" />
                 </div>
                 <UserText lines={3} as="p" className="font-mono text-[12.5px] leading-relaxed text-mute">
                   {o.last_error.message}
@@ -227,14 +226,9 @@ function Group<T>({ tone, title, items, count, more = false, all, itemKey, row }
               {label ? `Show all ${label}` : 'Show all'}
             </Link>
           ) : (
-            <button
-              type="button"
-              onClick={() => setExpanded((v) => !v)}
-              aria-expanded={expanded}
-              className="relative shrink-0 text-[13px] font-medium text-accent-strong before:absolute before:-inset-x-2 before:-inset-y-3 hover:underline"
-            >
+            <DisclosureButton open={expanded} onClick={() => setExpanded((v) => !v)} className="shrink-0 self-center">
               {expanded ? 'Show fewer' : label ? `Show all ${label}` : 'Show all'}
-            </button>
+            </DisclosureButton>
           ))}
       </div>
       {shown.length > 0 && (
@@ -285,9 +279,11 @@ function UnreadGroup({ topics }: { topics: Topic[] }) {
                 <span key="n" className="font-medium text-accent-strong tabular-nums">
                   {t.unread >= 99 ? '99+' : exact(t.unread)} new
                 </span>,
-                <span key="a" suppressHydrationWarning>
-                  active {ago(t.last_activity)}
-                </span>,
+                t.last_activity ? (
+                  <span key="a">
+                    active <When iso={t.last_activity} />
+                  </span>
+                ) : null,
               ]}
             </MetaLine>
           </Item>

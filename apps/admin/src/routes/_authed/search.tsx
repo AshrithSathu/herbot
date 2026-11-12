@@ -6,10 +6,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
+import { HitFacts } from '@/components/hb/hit-facts'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowRightIcon, HashIcon, MessageCircleIcon } from 'lucide-react'
 import { searchMessages, type SearchHit, type Topic } from '../../api'
-import { clip, exact, when } from '../../format'
+import { clip, exact } from '../../format'
 import { topicsQuery } from '../../queries'
 import { Button, SearchInput } from '@/components/hb/controls'
 import { InPlaceEmpty, InPlaceError, ListSkeleton } from '@/components/hb/feedback'
@@ -114,7 +115,20 @@ function SearchPage() {
                 what's showing instead of "60+ in 1+". */}
             {query.hasNextPage ? 'Newest ' : ''}
             {exact(hits.length)} {hits.length === 1 ? 'match' : 'matches'} in {exact(groups.length)} {groups.length === 1 ? 'topic' : 'topics'}
-            {query.hasNextPage ? '; older ones load as you scroll' : ''}
+            {query.hasNextPage && (
+              <>
+                {' · '}
+                {/* A button, not "load as you scroll": a short list may not scroll at all. */}
+                <button
+                  type="button"
+                  className="relative rounded-sm font-medium text-accent-strong outline-none before:absolute before:-inset-x-2 before:-inset-y-3 hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                  disabled={query.isFetchingNextPage}
+                  onClick={() => void query.fetchNextPage()}
+                >
+                  {query.isFetchingNextPage ? 'Loading older matches…' : 'Load older matches'}
+                </button>
+              </>
+            )}
           </p>
           <Groups
             groups={groups}
@@ -230,20 +244,6 @@ function Groups({ groups, names, onEnd }: { groups: Group[]; names: Map<number, 
   )
 }
 
-/** Who wrote it and when, when the API says (older herbot-core builds don't). */
-function HitFacts({ hit }: { hit: SearchHit }) {
-  if (!hit.sent_at && hit.from_bot == null) return null
-  return (
-    <span className="mb-0.5 flex items-baseline gap-1.5 text-[12.5px] text-faint tabular-nums">
-      {hit.from_bot != null && <span className="font-medium text-mute">{hit.from_bot ? 'Agent' : 'You'}</span>}
-      {hit.sent_at && (
-        <time dateTime={hit.sent_at} title={when(hit.sent_at)} suppressHydrationWarning>
-          {when(hit.sent_at)}
-        </time>
-      )}
-    </span>
-  )
-}
 
 /** herbot-core marks matches with ⟦ ⟧ (ts_headline); everything else is the
  * message's own text, rendered as plain text. */

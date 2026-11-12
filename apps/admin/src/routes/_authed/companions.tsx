@@ -548,10 +548,10 @@ function Conversation({ call, companion: c, onPick }: { call: CallState; compani
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex shrink-0 flex-col gap-3 border-b border-line px-3 pt-2 pb-3 md:px-6 md:pt-4">
+      <header className="flex shrink-0 flex-col gap-3 border-b border-line px-4 pt-6 pb-3 md:px-8 md:pt-8">
         <div className="flex min-h-11 items-center gap-2">
           <BackToAgents />
-          <h1 className="font-serif text-[22px] leading-none font-semibold md:text-[26px]">Companions</h1>
+          <h1 className="font-serif text-[30px] leading-[1.1] font-semibold tracking-[-0.015em] md:text-[34px]">Companions</h1>
           <span className="min-w-2 flex-1" />
           <CallBar call={call} companion={c} open={detailsOpen} onToggle={() => setDetailsOpen(!detailsOpen)} />
         </div>
@@ -559,7 +559,7 @@ function Conversation({ call, companion: c, onPick }: { call: CallState; compani
       </header>
 
       {call.session?.fallback && (
-        <div role="status" className="shrink-0 border-b border-line bg-warning-soft px-4 py-2.5 text-[13px] md:px-6">
+        <div role="status" className="shrink-0 border-b border-line bg-warning-soft px-4 py-2.5 text-[13px] md:px-8">
           <p className="font-medium text-ink">Talking through General, with shared history</p>
           <p className="text-mute">
             Herbot couldn’t give {c.name} a topic of its own
@@ -580,7 +580,9 @@ function Conversation({ call, companion: c, onPick }: { call: CallState; compani
             <InPlaceError title={`Couldn’t open the conversation with ${c.name}`} error={call.connection.status === 'failed' ? call.connection.error : ''} onRetry={call.retryOpen} />
           ) : call.messages.length === 0 && !call.failed && call.phase !== 'thinking' ? (
             <InPlaceEmpty title={`Say hello to ${c.name}`} className="my-auto">
-              Talk out loud with the microphone, or type below. The conversation shows here and in Telegram, like any topic.
+              {call.voiceOff
+                ? 'Type below. Voice needs OpenAI on the server, so this is a typed conversation for now. It shows here and in Telegram, like any topic.'
+                : 'Talk out loud with the microphone, or type below. The conversation shows here and in Telegram, like any topic.'}
             </InPlaceEmpty>
           ) : (
             <ol aria-label={`Conversation with ${c.name}`} aria-live="polite" aria-relevant="additions" className="flex flex-col">

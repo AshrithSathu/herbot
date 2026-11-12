@@ -119,8 +119,8 @@ function NewAgentDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
     >
       {telegramOff && (
         <p role="note" className="rounded-lg bg-warning-soft px-3 py-2.5 text-[13.5px] text-ink">
-          <span className="font-medium text-warning">Telegram isn’t connected.</span> Each agent is a topic in the Herbot group, so
-          creating one needs the bot running. You can write the name and purpose now and create it once the bot is back.
+          <span className="font-medium text-warning">Telegram isn’t connected,</span> so the topic can’t be made yet. You can write the
+          name and purpose now and create it once the bot is back.
         </p>
       )}
       <Field id="new-agent-name" label="Name" error={nameError}>
