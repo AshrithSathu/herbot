@@ -2,7 +2,7 @@
 // segmented choices with the chosen option's description underneath (a menu
 // on phones), light buttons, labels above fields, destructive actions as
 // quiet red text that always confirm elsewhere.
-import { useId, useRef, type ComponentProps, type ReactNode } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { Slot, Tabs as TabsPrimitive } from 'radix-ui'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { ChevronDownIcon, LoaderIcon, SearchIcon, XIcon } from 'lucide-react'
@@ -136,22 +136,57 @@ type SegmentedProps<V extends string> = {
 }
 
 /** A segmented radio group with the chosen option's description under it.
- * Below `md` it becomes a native select (the phone's own picker): five
- * segments don't fit a phone. */
+ * When its labels don't fit its own width (a phone, a narrow pane, a long
+ * count), it becomes a native select instead of truncating them: the choice
+ * is decided by measuring, not by the window's breakpoint. Before the first
+ * measurement (server render) it follows `md`. */
 export function Segmented<V extends string>({ label, value, options, onValueChange, disabled, className }: SegmentedProps<V>) {
   const id = useId()
   const current = options.find((o) => o.value === value)
   const index = options.findIndex((o) => o.value === value)
+  const box = useRef<HTMLDivElement>(null)
+  const natural = useRef<HTMLDivElement>(null)
+  const [fits, setFits] = useState<boolean | null>(null)
+  useLayoutEffect(() => {
+    const el = box.current
+    const ruler = natural.current
+    if (!el || !ruler) return
+    const measure = () => {
+      if (el.clientWidth === 0) return // hidden pane: keep the last answer
+      // Segments share the row equally, so the widest label decides.
+      const widths = Array.from(ruler.children, (c) => (c as HTMLElement).offsetWidth)
+      const widest = Math.max(0, ...widths)
+      setFits(widest * widths.length + 4 <= el.clientWidth)
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [options])
+  const segments = fits === null ? 'hidden md:flex' : fits ? 'flex' : 'hidden'
+  const select = fits === null ? 'md:hidden' : fits ? 'hidden' : ''
   return (
     <div className={cn('flex min-w-0 flex-col gap-1.5', className)}>
       <span id={`${id}-label`} className="text-[13px] font-medium text-ink">
         {label}
       </span>
+      <div ref={box} className="relative min-w-0">
+        {/* The labels at their natural width, never shown (clipped, so the
+            ruler can't widen any scroller): what "fits" means. */}
+        <div aria-hidden className="pointer-events-none invisible absolute inset-0 overflow-hidden">
+          <div ref={natural} className="flex w-max">
+            {options.map((o) => (
+              <span key={o.value} className="px-2 text-[13px] font-medium whitespace-nowrap">
+                {o.label}
+              </span>
+            ))}
+          </div>
+        </div>
       <div
         role="radiogroup"
         aria-labelledby={`${id}-label`}
         aria-describedby={current?.hint ? `${id}-hint` : undefined}
-        className="hidden min-w-0 rounded-lg bg-sunken p-0.5 shadow-[inset_0_0_0_var(--hair)_var(--line)] md:flex"
+        className={cn('min-w-0 rounded-lg bg-sunken p-0.5 shadow-[inset_0_0_0_var(--hair)_var(--line)]', segments)}
         onKeyDown={(e) => {
           const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
           if (!step || disabled) return
@@ -185,7 +220,7 @@ export function Segmented<V extends string>({ label, value, options, onValueChan
           )
         })}
       </div>
-      <div className="relative md:hidden">
+      <div className={cn('relative', select)}>
         <select
           aria-labelledby={`${id}-label`}
           value={value}
@@ -200,6 +235,7 @@ export function Segmented<V extends string>({ label, value, options, onValueChan
           ))}
         </select>
         <ChevronDownIcon aria-hidden className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-mute" />
+      </div>
       </div>
       {current?.hint && (
         <p id={`${id}-hint`} className="text-[12.5px] text-mute">
@@ -343,5 +379,25 @@ export function TabPanel({ value, children, className }: { value: string; childr
     <TabsPrimitive.Content value={value} tabIndex={-1} className={cn('flex min-h-0 min-w-0 flex-1 flex-col outline-none', className)}>
       {children}
     </TabsPrimitive.Content>
+  )
+}
+
+/** "Show all / Show less" inside content (a clamped memory, a folded message,
+ * a long prompt, AGENTS.md): one look everywhere, accent text, a neutral
+ * focus ring, a 40px hit area on desktop (44px on touch) around a small label.
+ * Pass aria-controls for the region it opens. */
+export function DisclosureButton({ open, className, children, ...rest }: ComponentProps<'button'> & { open: boolean }) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      {...rest}
+      className={cn(
+        "relative self-start rounded-sm text-[13px] font-medium text-accent-strong outline-none before:absolute before:-inset-x-2 before:-inset-y-3 before:content-[''] hover:underline hover:underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-pane pointer-coarse:before:-inset-y-3.5",
+        className,
+      )}
+    >
+      {children}
+    </button>
   )
 }

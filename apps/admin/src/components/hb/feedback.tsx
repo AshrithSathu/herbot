@@ -7,7 +7,7 @@ import { CheckIcon, CopyIcon, RotateCcwIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
-import { Button } from './controls'
+import { Button, DisclosureButton } from './controls'
 
 type EmptyProps = {
   title: ReactNode
@@ -91,9 +91,9 @@ export function InPlaceError({ title, error, onRetry, retrying = false, classNam
           </Button>
         )}
         {text.length > 140 && (
-          <Button variant="ghost" onClick={() => setFull((f) => !f)} aria-expanded={full}>
+          <DisclosureButton open={full} onClick={() => setFull((f) => !f)} className="self-center">
             {full ? 'Show less' : 'Show full error'}
-          </Button>
+          </DisclosureButton>
         )}
         {id && <CopyId id={id} />}
       </div>

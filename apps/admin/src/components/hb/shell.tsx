@@ -327,7 +327,8 @@ function Rail({ onSignOut, signingOut }: { onSignOut: () => void; signingOut: bo
 }
 
 const RAIL_ITEM =
-  'relative grid size-10 place-items-center rounded-xl outline-none transition-[background-color,color] duration-150 ease-out focus-visible:ring-2 focus-visible:ring-ring'
+  // 40px with a mouse; 44px on a touch screen (a tablet wide enough for the rail).
+  'relative grid size-10 place-items-center rounded-xl outline-none transition-[background-color,color] duration-150 ease-out focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-11'
 
 const TIP =
   'pointer-events-none absolute top-1/2 left-[calc(100%+10px)] z-30 -translate-y-1/2 scale-[0.97] rounded-md bg-ink px-2 py-1 text-[12px] font-medium whitespace-nowrap text-pane opacity-0 transition-[opacity,scale] duration-150 ease-out [transform-origin:left_center] group-hover/item:scale-100 group-hover/item:opacity-100 group-hover/item:delay-300 group-focus-visible/item:scale-100 group-focus-visible/item:opacity-100 group-data-[warm]/rail:delay-0 motion-reduce:scale-100 motion-reduce:transition-none'

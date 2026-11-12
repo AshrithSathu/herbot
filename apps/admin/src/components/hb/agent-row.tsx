@@ -6,11 +6,12 @@
 import type { MouseEvent } from 'react'
 import { Link } from '@tanstack/react-router'
 import type { Topic } from '../../api'
-import { ago, compact, exact } from '../../format'
+import { compact, exact } from '../../format'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
 import { topicModeLabel } from './modes'
 import { MetaLine, topicTone } from './status'
+import { When } from './when'
 
 export const AGENT_ROW_CSS = `
 .hb-working { position: absolute; inset-inline: 0; bottom: 0; height: 2px; overflow: hidden; pointer-events: none; }
@@ -58,9 +59,7 @@ export function AgentRow({ topic: t, active = false, unread = false, working = f
         {unread ? (
           <span className="shrink-0 self-center rounded-full bg-accent-strong px-1.5 text-[10.5px] leading-4 font-semibold text-accent-ink">New</span>
         ) : (
-          <span className="shrink-0 text-[11.5px] text-faint tabular-nums" suppressHydrationWarning>
-            {t.last_activity ? ago(t.last_activity) : ''}
-          </span>
+          t.last_activity && <When iso={t.last_activity} format="list" className="shrink-0 text-[11.5px] text-faint" />
         )}
       </span>
       {working ? (

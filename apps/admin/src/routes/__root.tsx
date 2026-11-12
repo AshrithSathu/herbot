@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { HeadContent, Outlet, Scripts, createRootRouteWithContext } from '@tanstack/react-router'
 import { Toaster } from '@/components/ui/sonner'
@@ -29,7 +29,30 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   ),
 })
 
+/** When the system flips between light and dark, switch colours at once:
+ * transitions are off for two frames (styles.css, `.theme-switching`). */
+function useInstantThemeSwitch() {
+  useEffect(() => {
+    const scheme = matchMedia('(prefers-color-scheme: dark)')
+    let frame = 0
+    const onChange = () => {
+      const root = document.documentElement
+      root.classList.add('theme-switching')
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => root.classList.remove('theme-switching'))
+      })
+    }
+    scheme.addEventListener('change', onChange)
+    return () => {
+      scheme.removeEventListener('change', onChange)
+      cancelAnimationFrame(frame)
+    }
+  }, [])
+}
+
 function Document({ children }: { children: ReactNode }) {
+  useInstantThemeSwitch()
   return (
     <html lang="en">
       <head>

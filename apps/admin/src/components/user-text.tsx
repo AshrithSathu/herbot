@@ -54,9 +54,10 @@ type Props = Omit<HTMLAttributes<HTMLElement>, 'children' | 'dir'> & {
  * - Truncated text keeps its full value in `title`.
  * - Other attributes (`id`, `aria-*`) pass through, so a dialog title or a
  *   label can point at it.
- * - One line aligns with what's around it (`text-align: match-parent`), so
- *   an Arabic name in a left-aligned row starts at the left like its
- *   neighbours instead of jumping right; its letters still run right to left.
+ * - One line starts at the left like everything around it (the panel's
+ *   interface is left to right), so an Arabic name in a header or a row
+ *   lines up with its neighbours instead of jumping right; its letters still
+ *   run right to left. Wrapped text keeps its natural direction.
  */
 export function UserText({ children, lines = 1, fallback = 'Untitled', className, as: Tag = 'span', ...rest }: Props) {
   const text = (children ?? '').trim()
@@ -74,7 +75,7 @@ export function UserText({ children, lines = 1, fallback = 'Untitled', className
       dir="auto"
       className={cn(
         'user-text',
-        lines === 1 && 'block truncate [text-align:match-parent]',
+        lines === 1 && 'block truncate text-left',
         lines === 2 && 'line-clamp-2',
         lines === 3 && 'line-clamp-3',
         lines === 'all' && 'whitespace-pre-wrap',

@@ -46,6 +46,22 @@ function textOf(node: ReactNode): string {
   return ''
 }
 
+/** True when a message is one fenced code block, so its code header's Copy
+ * is the only Copy it needs. Markdown closes a fence left open at the end of
+ * the message, so an unclosed fence counts too. */
+export function isOnlyCode(body: string): boolean {
+  const t = body.trim()
+  const open = /^(`{3,}|~{3,})[^\n]*\n/.exec(t)
+  if (!open) return false
+  const fence = open[1]
+  const rest = t.slice(open[0].length)
+  // Another fence opener of the same kind inside means more than one block.
+  const lines = rest.split('\n')
+  const close = lines.findIndex((l) => l.trim().startsWith(fence[0].repeat(3)))
+  if (close === -1) return true // never closed: one block to the end
+  return lines.slice(close + 1).join('\n').trim() === ''
+}
+
 /** The language a fenced block declared (`language-ts`), for its header. */
 function languageOf(node: ReactNode): string | null {
   const child = Array.isArray(node) ? node[0] : node

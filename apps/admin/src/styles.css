@@ -163,7 +163,24 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
+  }
+  /* Every focusable thing shows a clear, neutral ring by keyboard: text
+   * links ("Show all", "All logs"), in-bubble Copy, anything without its own
+   * ring. Components with their own ring set outline-none/outline-hidden,
+   * which (as utilities) outrank this. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  /* While the system flips between light and dark, nothing transitions, so
+   * colours switch at once instead of sweeping across the page (__root.tsx
+   * adds the class for two frames). */
+  html.theme-switching *,
+  html.theme-switching *::before,
+  html.theme-switching *::after {
+    transition: none !important;
   }
   html {
     -webkit-text-size-adjust: 100%;

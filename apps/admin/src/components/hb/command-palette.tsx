@@ -10,6 +10,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { CornerDownLeftIcon, HashIcon, MessageCircleIcon, MessageSquareTextIcon, SearchIcon, type LucideIcon } from 'lucide-react'
 import { searchMessages, type SearchHit, type Topic } from '../../api'
+import { HitFacts } from './hit-facts'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
 import { fold } from './agent-list'
@@ -204,7 +205,11 @@ export function CommandPalette({ open, onOpenChange, topics, actions = [], initi
                       <UserText className="min-w-0 flex-1">{item.label}</UserText>
                     ) : item.kind === 'message' ? (
                       <span className="flex min-w-0 flex-1 flex-col">
-                        <UserText className="text-[12px] text-mute">{item.hit.name}</UserText>
+                        {/* Topic, sender and time: six identical snippets stay tellable apart. */}
+                        <span className="flex min-w-0 items-baseline gap-1.5">
+                          <UserText className="min-w-0 text-[12px] text-mute">{item.hit.name}</UserText>
+                          <HitFacts hit={item.hit} className="shrink-0 text-[12px]" />
+                        </span>
                         <UserText className="min-w-0">{item.label}</UserText>
                       </span>
                     ) : (
