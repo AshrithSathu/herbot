@@ -1,118 +1,123 @@
+// Connectors (docs/design/DECISIONS.md, "Connectors": List). A plain
+// reference page: the MCP servers your agents can reach (from Codex's and
+// Herbot's configuration), then Herbot's own 13 tools and who may use them.
+// Read-only: both come from config files, so they change there.
 import { queryOptions, useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { GlobeIcon, PlugIcon, TerminalIcon } from 'lucide-react'
 import { getConnectors } from '../../api'
-import { EmptyState, ErrorNote, PageHeader } from '../../ui'
+import { InPlaceEmpty, InPlaceError, ListSkeleton } from '@/components/hb/feedback'
+import { LedgerTable, type Column } from '@/components/hb/rows'
+import { BackToAgents, ShellPage } from '@/components/hb/shell'
 import { UserText } from '@/components/user-text'
-import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 
 const connectorsQuery = queryOptions({ queryKey: ['connectors'], queryFn: () => getConnectors(), staleTime: 60_000 })
 
 export const Route = createFileRoute('/_authed/connectors')({
   // Warm the cache so the page paints filled; a failure is shown in the page.
   loader: ({ context }) => context.queryClient.prefetchQuery(connectorsQuery),
-  staticData: { crumb: 'Connectors' },
+  staticData: { crumb: 'Connectors', shell: 'page' },
   head: () => ({ meta: [{ title: 'Connectors · Herbot admin' }] }),
   component: ConnectorsPage,
 })
 
+type Server = { name: string; source: string; command: string | null; url: string | null }
+type Tool = { name: string; scope: string }
+
+/** One line on what each herbot-mcp tool does (its tool docs in herbot-mcp). */
+const TOOL_DOES: Record<string, string> = {
+  list_topics: 'Lists the topics it can see',
+  search_messages: 'Searches stored history',
+  read_topic: 'Reads a topic’s recent messages',
+  ask_topic: 'Asks another topic’s agent and waits for the answer',
+  post_to_topic: 'Posts a message into another topic',
+  remember: 'Saves a shared memory',
+  recall: 'Finds shared memories',
+  forget: 'Forgets a shared memory',
+  schedule_task: 'Schedules a one-off or recurring prompt',
+  list_tasks: 'Lists scheduled tasks',
+  pause_task: 'Pauses a task',
+  resume_task: 'Resumes a paused task',
+  cancel_task: 'Cancels a task',
+}
+
+/** Where a server runs: a URL is remote; a command runs on this machine. */
+function reach(s: Server): { kind: 'Remote' | 'Local'; where: string } {
+  if (s.url) return { kind: 'Remote', where: s.url }
+  return { kind: 'Local', where: s.command ?? 'Command not shown' }
+}
+
+const SERVER_COLUMNS: Column<Server>[] = [
+  { id: 'name', header: 'Server', width: 'minmax(8rem,1fr)', phone: 'title', cell: (s) => <UserText className="font-medium">{s.name}</UserText> },
+  { id: 'kind', header: 'Runs', width: '5.5rem', phone: 'aside', cell: (s) => <span className="text-mute">{reach(s).kind}</span> },
+  {
+    id: 'where',
+    header: 'Command or address',
+    width: 'minmax(10rem,2fr)',
+    phone: 'below',
+    cell: (s) => <UserText className="font-mono text-[12.5px] text-mute">{reach(s).where}</UserText>,
+  },
+  { id: 'source', header: 'From', width: '6rem', phone: 'below', cell: (s) => <span className="text-mute">{s.source}</span> },
+]
+
+const TOOL_COLUMNS: Column<Tool>[] = [
+  { id: 'name', header: 'Tool', width: 'minmax(9rem,12rem)', phone: 'title', cell: (t) => <code className="font-mono text-[13px]">{t.name}</code> },
+  {
+    id: 'does',
+    header: 'What it does',
+    width: 'minmax(10rem,1fr)',
+    phone: 'below',
+    cell: (t) => <span className="text-mute">{TOOL_DOES[t.name] ?? 'Not described yet'}</span>,
+  },
+  {
+    id: 'scope',
+    header: 'Who can use it',
+    width: '8.5rem',
+    phone: 'aside',
+    cell: (t) => <span className={t.scope === 'every topic' ? 'text-mute' : 'text-ink'}>{t.scope === 'every topic' ? 'Every topic' : t.scope}</span>,
+  },
+]
+
 function ConnectorsPage() {
-  const query = useQuery(connectorsQuery)
+  const q = useQuery(connectorsQuery)
   return (
-    <>
-      <PageHeader
-        title="Connectors"
-        description="Tools your agents can call. They come from Codex’s configuration (~/.codex/config.toml), so they’re read-only here."
-      />
-
-      {query.isError && (
-        <ErrorNote title="Couldn’t read the connectors">
-          {query.error.message}{' '}
-          <Button variant="link" className="align-baseline" onClick={() => void query.refetch()}>
-            Try again
-          </Button>
-        </ErrorNote>
-      )}
-
-      <section aria-labelledby="servers" className="flex flex-col gap-3">
-        <div className="flex items-baseline justify-between gap-3">
-          <h2 id="servers" className="text-base font-semibold tracking-tight">
-            MCP servers
-          </h2>
-          {query.data && (
-            <span className="text-sm text-muted-foreground tabular-nums">{query.data.servers.length}</span>
-          )}
-        </div>
-        {query.isPending ? (
-          <ul className="divide-y rounded-xl border bg-card" aria-busy="true" aria-label="Loading connectors">
-            {[0, 1, 2].map((i) => (
-              <li key={i} className="flex items-center gap-3 p-4">
-                <Skeleton className="size-8 rounded-md" />
-                <div className="flex flex-1 flex-col gap-1.5">
-                  <Skeleton className="h-4 w-32" />
-                  <Skeleton className="h-3.5 w-56" />
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : query.data && query.data.servers.length === 0 ? (
-          <EmptyState icon={PlugIcon} title="No MCP servers">
-            Add one under <code className="font-mono text-[0.9em]">[mcp_servers]</code> in Codex’s config and it shows up
-            here for every agent.
-          </EmptyState>
-        ) : query.data ? (
-          <ul className="divide-y rounded-xl border bg-card">
-            {query.data.servers.map((s, i, all) => {
-              // Where it's configured only says something when they differ.
-              const mixedSources = all.some((o) => o.source !== all[0].source)
-              const remote = Boolean(s.url)
-              const Icon = remote ? GlobeIcon : TerminalIcon
-              const target = s.url || s.command
-              return (
-                <li key={`${s.name}-${i}`} className="flex items-start gap-3 p-4 sm:px-5">
-                  <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
-                    <Icon className="size-4" aria-hidden />
-                  </span>
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <div className="flex min-w-0 items-baseline gap-2">
-                      <UserText className="min-w-0 font-medium">{s.name}</UserText>
-                      <span className="shrink-0 text-xs text-muted-foreground">{remote ? 'Remote' : 'Local command'}</span>
-                    </div>
-                    {target ? (
-                      <UserText className="font-mono text-xs text-muted-foreground">{target}</UserText>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">No command or URL in the config</span>
-                    )}
-                  </div>
-                  {mixedSources && <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">from {s.source}</span>}
-                </li>
-              )
-            })}
-          </ul>
-        ) : null}
-      </section>
-
-      {query.data && (
-        <section aria-labelledby="herbot-tools" className="flex flex-col gap-3">
-          <div className="flex flex-col gap-0.5">
-            <h2 id="herbot-tools" className="text-base font-semibold tracking-tight">
-              Herbot’s own tools
+    <ShellPage
+      wide
+      back={<BackToAgents />}
+      title="Connectors"
+      description="What your agents can reach besides the live web: MCP servers from Codex’s and Herbot’s configuration, and Herbot’s own tools. Read-only here; they change in the config files."
+    >
+      {q.isPending ? (
+        <ListSkeleton rows={6} lines={1} />
+      ) : q.isError ? (
+        <InPlaceError title="Couldn’t read the connectors" error={q.error} onRetry={() => void q.refetch()} retrying={q.isFetching} />
+      ) : (
+        <>
+          <section aria-labelledby="servers" className="flex flex-col gap-3">
+            <h2 id="servers" className="text-[15px] font-semibold">
+              MCP servers <span className="font-normal text-faint tabular-nums">{q.data.servers.length}</span>
             </h2>
-            <p className="text-sm text-muted-foreground">Built in, through the herbot MCP server.</p>
-          </div>
-          <ul className="grid gap-x-6 gap-y-2 rounded-xl border bg-card p-4 sm:grid-cols-2 sm:px-5">
-            {query.data.tools.map((tool) => (
-              <li key={tool.name} className="flex min-w-0 items-baseline gap-2">
-                <code className="truncate font-mono text-sm">{tool.name}</code>
-                {tool.scope !== 'every topic' && (
-                  <span className="shrink-0 text-xs text-muted-foreground">{tool.scope}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
+            {q.data.servers.length === 0 ? (
+              <InPlaceEmpty title="No MCP servers configured">
+                Add one under <code className="font-mono text-[12.5px]">[mcp_servers]</code> in{' '}
+                <code className="font-mono text-[12.5px]">~/.codex/config.toml</code>; every topic’s agent can then use it.
+              </InPlaceEmpty>
+            ) : (
+              <LedgerTable label="MCP servers" rows={q.data.servers} columns={SERVER_COLUMNS} rowKey={(s) => `${s.source}:${s.name}`} />
+            )}
+          </section>
+          <section aria-labelledby="tools" className="flex flex-col gap-3">
+            <div className="flex flex-col gap-0.5">
+              <h2 id="tools" className="text-[15px] font-semibold">
+                Herbot’s own tools <span className="font-normal text-faint tabular-nums">{q.data.tools.length}</span>
+              </h2>
+              <p className="text-[13.5px] text-mute">
+                Built in, through the herbot MCP server. A topic’s agent sees only its own topic; General sees the whole group.
+              </p>
+            </div>
+            <LedgerTable label="Herbot’s tools" rows={q.data.tools} columns={TOOL_COLUMNS} rowKey={(t) => t.name} />
+          </section>
+        </>
       )}
-    </>
+    </ShellPage>
   )
 }
