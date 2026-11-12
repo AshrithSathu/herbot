@@ -19,6 +19,18 @@ import { Route as AuthedPersonalizeRouteImport } from './routes/_authed/personal
 import { Route as AuthedSearchRouteImport } from './routes/_authed/search'
 import { Route as AuthedLogsIndexRouteImport } from './routes/_authed/logs/index'
 import { Route as AuthedLogsIdRouteImport } from './routes/_authed/logs/$id'
+import { Route as AuthedProtoAgentRowRouteImport } from './routes/_authed/proto/agent-row'
+import { Route as AuthedProtoComposerRouteImport } from './routes/_authed/proto/composer'
+import { Route as AuthedProtoControlsRouteImport } from './routes/_authed/proto/controls'
+import { Route as AuthedProtoDetailsRouteImport } from './routes/_authed/proto/details'
+import { Route as AuthedProtoDialogRouteImport } from './routes/_authed/proto/dialog'
+import { Route as AuthedProtoDirectionRouteImport } from './routes/_authed/proto/direction'
+import { Route as AuthedProtoFeedbackRouteImport } from './routes/_authed/proto/feedback'
+import { Route as AuthedProtoKitRouteImport } from './routes/_authed/proto/kit'
+import { Route as AuthedProtoMessageRouteImport } from './routes/_authed/proto/message'
+import { Route as AuthedProtoNavigationRouteImport } from './routes/_authed/proto/navigation'
+import { Route as AuthedProtoRowsRouteImport } from './routes/_authed/proto/rows'
+import { Route as AuthedProtoStatusRouteImport } from './routes/_authed/proto/status'
 import { Route as AuthedTasksIndexRouteImport } from './routes/_authed/tasks/index'
 import { Route as AuthedTopicsIndexRouteImport } from './routes/_authed/topics/index'
 import { Route as AuthedTopicsIdRouteImport } from './routes/_authed/topics/$id'
@@ -74,6 +86,66 @@ const AuthedLogsIdRoute = AuthedLogsIdRouteImport.update({
   path: '/logs/$id',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedProtoAgentRowRoute = AuthedProtoAgentRowRouteImport.update({
+  id: '/proto/agent-row',
+  path: '/proto/agent-row',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoComposerRoute = AuthedProtoComposerRouteImport.update({
+  id: '/proto/composer',
+  path: '/proto/composer',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoControlsRoute = AuthedProtoControlsRouteImport.update({
+  id: '/proto/controls',
+  path: '/proto/controls',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoDetailsRoute = AuthedProtoDetailsRouteImport.update({
+  id: '/proto/details',
+  path: '/proto/details',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoDialogRoute = AuthedProtoDialogRouteImport.update({
+  id: '/proto/dialog',
+  path: '/proto/dialog',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoDirectionRoute = AuthedProtoDirectionRouteImport.update({
+  id: '/proto/direction',
+  path: '/proto/direction',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoFeedbackRoute = AuthedProtoFeedbackRouteImport.update({
+  id: '/proto/feedback',
+  path: '/proto/feedback',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoKitRoute = AuthedProtoKitRouteImport.update({
+  id: '/proto/kit',
+  path: '/proto/kit',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoMessageRoute = AuthedProtoMessageRouteImport.update({
+  id: '/proto/message',
+  path: '/proto/message',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoNavigationRoute = AuthedProtoNavigationRouteImport.update({
+  id: '/proto/navigation',
+  path: '/proto/navigation',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoRowsRoute = AuthedProtoRowsRouteImport.update({
+  id: '/proto/rows',
+  path: '/proto/rows',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedProtoStatusRoute = AuthedProtoStatusRouteImport.update({
+  id: '/proto/status',
+  path: '/proto/status',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedTasksIndexRoute = AuthedTasksIndexRouteImport.update({
   id: '/tasks/',
   path: '/tasks/',
@@ -109,6 +181,18 @@ export interface FileRoutesByFullPath {
   '/personalize': typeof AuthedPersonalizeRoute
   '/search': typeof AuthedSearchRoute
   '/logs/$id': typeof AuthedLogsIdRoute
+  '/proto/agent-row': typeof AuthedProtoAgentRowRoute
+  '/proto/composer': typeof AuthedProtoComposerRoute
+  '/proto/controls': typeof AuthedProtoControlsRoute
+  '/proto/details': typeof AuthedProtoDetailsRoute
+  '/proto/dialog': typeof AuthedProtoDialogRoute
+  '/proto/direction': typeof AuthedProtoDirectionRoute
+  '/proto/feedback': typeof AuthedProtoFeedbackRoute
+  '/proto/kit': typeof AuthedProtoKitRoute
+  '/proto/message': typeof AuthedProtoMessageRoute
+  '/proto/navigation': typeof AuthedProtoNavigationRoute
+  '/proto/rows': typeof AuthedProtoRowsRoute
+  '/proto/status': typeof AuthedProtoStatusRoute
   '/topics/$id': typeof AuthedTopicsIdRoute
   '/api/files/$': typeof ApiFilesSplatRoute
   '/api/voice/$': typeof ApiVoiceSplatRoute
@@ -125,6 +209,18 @@ export interface FileRoutesByTo {
   '/search': typeof AuthedSearchRoute
   '/': typeof AuthedIndexRoute
   '/logs/$id': typeof AuthedLogsIdRoute
+  '/proto/agent-row': typeof AuthedProtoAgentRowRoute
+  '/proto/composer': typeof AuthedProtoComposerRoute
+  '/proto/controls': typeof AuthedProtoControlsRoute
+  '/proto/details': typeof AuthedProtoDetailsRoute
+  '/proto/dialog': typeof AuthedProtoDialogRoute
+  '/proto/direction': typeof AuthedProtoDirectionRoute
+  '/proto/feedback': typeof AuthedProtoFeedbackRoute
+  '/proto/kit': typeof AuthedProtoKitRoute
+  '/proto/message': typeof AuthedProtoMessageRoute
+  '/proto/navigation': typeof AuthedProtoNavigationRoute
+  '/proto/rows': typeof AuthedProtoRowsRoute
+  '/proto/status': typeof AuthedProtoStatusRoute
   '/topics/$id': typeof AuthedTopicsIdRoute
   '/api/files/$': typeof ApiFilesSplatRoute
   '/api/voice/$': typeof ApiVoiceSplatRoute
@@ -143,6 +239,18 @@ export interface FileRoutesById {
   '/_authed/search': typeof AuthedSearchRoute
   '/_authed/': typeof AuthedIndexRoute
   '/_authed/logs/$id': typeof AuthedLogsIdRoute
+  '/_authed/proto/agent-row': typeof AuthedProtoAgentRowRoute
+  '/_authed/proto/composer': typeof AuthedProtoComposerRoute
+  '/_authed/proto/controls': typeof AuthedProtoControlsRoute
+  '/_authed/proto/details': typeof AuthedProtoDetailsRoute
+  '/_authed/proto/dialog': typeof AuthedProtoDialogRoute
+  '/_authed/proto/direction': typeof AuthedProtoDirectionRoute
+  '/_authed/proto/feedback': typeof AuthedProtoFeedbackRoute
+  '/_authed/proto/kit': typeof AuthedProtoKitRoute
+  '/_authed/proto/message': typeof AuthedProtoMessageRoute
+  '/_authed/proto/navigation': typeof AuthedProtoNavigationRoute
+  '/_authed/proto/rows': typeof AuthedProtoRowsRoute
+  '/_authed/proto/status': typeof AuthedProtoStatusRoute
   '/_authed/topics/$id': typeof AuthedTopicsIdRoute
   '/api/files/$': typeof ApiFilesSplatRoute
   '/api/voice/$': typeof ApiVoiceSplatRoute
@@ -161,6 +269,18 @@ export interface FileRouteTypes {
     | '/personalize'
     | '/search'
     | '/logs/$id'
+    | '/proto/agent-row'
+    | '/proto/composer'
+    | '/proto/controls'
+    | '/proto/details'
+    | '/proto/dialog'
+    | '/proto/direction'
+    | '/proto/feedback'
+    | '/proto/kit'
+    | '/proto/message'
+    | '/proto/navigation'
+    | '/proto/rows'
+    | '/proto/status'
     | '/topics/$id'
     | '/api/files/$'
     | '/api/voice/$'
@@ -177,6 +297,18 @@ export interface FileRouteTypes {
     | '/search'
     | '/'
     | '/logs/$id'
+    | '/proto/agent-row'
+    | '/proto/composer'
+    | '/proto/controls'
+    | '/proto/details'
+    | '/proto/dialog'
+    | '/proto/direction'
+    | '/proto/feedback'
+    | '/proto/kit'
+    | '/proto/message'
+    | '/proto/navigation'
+    | '/proto/rows'
+    | '/proto/status'
     | '/topics/$id'
     | '/api/files/$'
     | '/api/voice/$'
@@ -194,6 +326,18 @@ export interface FileRouteTypes {
     | '/_authed/search'
     | '/_authed/'
     | '/_authed/logs/$id'
+    | '/_authed/proto/agent-row'
+    | '/_authed/proto/composer'
+    | '/_authed/proto/controls'
+    | '/_authed/proto/details'
+    | '/_authed/proto/dialog'
+    | '/_authed/proto/direction'
+    | '/_authed/proto/feedback'
+    | '/_authed/proto/kit'
+    | '/_authed/proto/message'
+    | '/_authed/proto/navigation'
+    | '/_authed/proto/rows'
+    | '/_authed/proto/status'
     | '/_authed/topics/$id'
     | '/api/files/$'
     | '/api/voice/$'
@@ -281,6 +425,90 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedLogsIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/proto/agent-row': {
+      id: '/_authed/proto/agent-row'
+      path: '/proto/agent-row'
+      fullPath: '/proto/agent-row'
+      preLoaderRoute: typeof AuthedProtoAgentRowRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/composer': {
+      id: '/_authed/proto/composer'
+      path: '/proto/composer'
+      fullPath: '/proto/composer'
+      preLoaderRoute: typeof AuthedProtoComposerRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/controls': {
+      id: '/_authed/proto/controls'
+      path: '/proto/controls'
+      fullPath: '/proto/controls'
+      preLoaderRoute: typeof AuthedProtoControlsRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/details': {
+      id: '/_authed/proto/details'
+      path: '/proto/details'
+      fullPath: '/proto/details'
+      preLoaderRoute: typeof AuthedProtoDetailsRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/dialog': {
+      id: '/_authed/proto/dialog'
+      path: '/proto/dialog'
+      fullPath: '/proto/dialog'
+      preLoaderRoute: typeof AuthedProtoDialogRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/direction': {
+      id: '/_authed/proto/direction'
+      path: '/proto/direction'
+      fullPath: '/proto/direction'
+      preLoaderRoute: typeof AuthedProtoDirectionRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/feedback': {
+      id: '/_authed/proto/feedback'
+      path: '/proto/feedback'
+      fullPath: '/proto/feedback'
+      preLoaderRoute: typeof AuthedProtoFeedbackRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/kit': {
+      id: '/_authed/proto/kit'
+      path: '/proto/kit'
+      fullPath: '/proto/kit'
+      preLoaderRoute: typeof AuthedProtoKitRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/message': {
+      id: '/_authed/proto/message'
+      path: '/proto/message'
+      fullPath: '/proto/message'
+      preLoaderRoute: typeof AuthedProtoMessageRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/navigation': {
+      id: '/_authed/proto/navigation'
+      path: '/proto/navigation'
+      fullPath: '/proto/navigation'
+      preLoaderRoute: typeof AuthedProtoNavigationRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/rows': {
+      id: '/_authed/proto/rows'
+      path: '/proto/rows'
+      fullPath: '/proto/rows'
+      preLoaderRoute: typeof AuthedProtoRowsRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/proto/status': {
+      id: '/_authed/proto/status'
+      path: '/proto/status'
+      fullPath: '/proto/status'
+      preLoaderRoute: typeof AuthedProtoStatusRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/tasks/': {
       id: '/_authed/tasks/'
       path: '/tasks'
@@ -327,6 +555,18 @@ interface AuthedRouteChildren {
   AuthedSearchRoute: typeof AuthedSearchRoute
   AuthedIndexRoute: typeof AuthedIndexRoute
   AuthedLogsIdRoute: typeof AuthedLogsIdRoute
+  AuthedProtoAgentRowRoute: typeof AuthedProtoAgentRowRoute
+  AuthedProtoComposerRoute: typeof AuthedProtoComposerRoute
+  AuthedProtoControlsRoute: typeof AuthedProtoControlsRoute
+  AuthedProtoDetailsRoute: typeof AuthedProtoDetailsRoute
+  AuthedProtoDialogRoute: typeof AuthedProtoDialogRoute
+  AuthedProtoDirectionRoute: typeof AuthedProtoDirectionRoute
+  AuthedProtoFeedbackRoute: typeof AuthedProtoFeedbackRoute
+  AuthedProtoKitRoute: typeof AuthedProtoKitRoute
+  AuthedProtoMessageRoute: typeof AuthedProtoMessageRoute
+  AuthedProtoNavigationRoute: typeof AuthedProtoNavigationRoute
+  AuthedProtoRowsRoute: typeof AuthedProtoRowsRoute
+  AuthedProtoStatusRoute: typeof AuthedProtoStatusRoute
   AuthedTopicsIdRoute: typeof AuthedTopicsIdRoute
   AuthedLogsIndexRoute: typeof AuthedLogsIndexRoute
   AuthedTasksIndexRoute: typeof AuthedTasksIndexRoute
@@ -341,6 +581,18 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSearchRoute: AuthedSearchRoute,
   AuthedIndexRoute: AuthedIndexRoute,
   AuthedLogsIdRoute: AuthedLogsIdRoute,
+  AuthedProtoAgentRowRoute: AuthedProtoAgentRowRoute,
+  AuthedProtoComposerRoute: AuthedProtoComposerRoute,
+  AuthedProtoControlsRoute: AuthedProtoControlsRoute,
+  AuthedProtoDetailsRoute: AuthedProtoDetailsRoute,
+  AuthedProtoDialogRoute: AuthedProtoDialogRoute,
+  AuthedProtoDirectionRoute: AuthedProtoDirectionRoute,
+  AuthedProtoFeedbackRoute: AuthedProtoFeedbackRoute,
+  AuthedProtoKitRoute: AuthedProtoKitRoute,
+  AuthedProtoMessageRoute: AuthedProtoMessageRoute,
+  AuthedProtoNavigationRoute: AuthedProtoNavigationRoute,
+  AuthedProtoRowsRoute: AuthedProtoRowsRoute,
+  AuthedProtoStatusRoute: AuthedProtoStatusRoute,
   AuthedTopicsIdRoute: AuthedTopicsIdRoute,
   AuthedLogsIndexRoute: AuthedLogsIndexRoute,
   AuthedTasksIndexRoute: AuthedTasksIndexRoute,

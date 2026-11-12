@@ -4,91 +4,102 @@
 /* Dark mode follows the system setting. No toggle, so nothing can flash. */
 @custom-variant dark (@media (prefers-color-scheme: dark));
 
-/* Herbot palette, in OKLCH so lightness steps are honest.
- * - Primary: a clear blue (it administers a Telegram bot); the only colour
- *   that means "do this".
- * - Neutrals: cool slate, tinted toward the primary's hue so greys agree with it.
- * - Green / amber / red mean status only (fine / waiting / off or failed),
- *   so "go" and "it worked" never look alike. */
+/* Herbot palette: "Conversation+" (docs/design/DECISIONS.md), in OKLCH.
+ * - Canvas behind three raised panes; one Telegram-ish blue accent is the
+ *   only colour that means "do this".
+ * - Neutrals are cool, tinted toward the accent's hue.
+ * - Green / amber / red mean status only. Dot colours (--ok, --warn, --off)
+ *   are bright; text colours (--success, --warning, --destructive) are darker
+ *   so they pass contrast as words.
+ * - The serif is for page titles and big numerals only. */
 :root {
   --radius: 0.625rem;
 
-  --background: oklch(0.984 0.003 250);
-  --foreground: oklch(0.22 0.02 260);
-  --card: oklch(1 0 0);
-  --card-foreground: var(--foreground);
-  --popover: oklch(1 0 0);
-  --popover-foreground: var(--foreground);
+  --canvas: oklch(0.955 0.008 240);   /* behind the panes */
+  --pane: oklch(0.995 0.002 240);     /* a pane's surface */
+  --sunken: oklch(0.972 0.006 240);   /* wells: code, inputs, hovered rows */
+  --ink: oklch(0.22 0.02 245);
+  --mute: oklch(0.5 0.022 245);
+  --faint: oklch(0.6 0.018 245);
+  --line: oklch(0.25 0.03 245 / 0.09); /* hairline rules */
+  --accent-strong: oklch(0.58 0.135 237);
+  --accent-ink: oklch(0.99 0.003 240);
+  --accent-soft: oklch(0.93 0.035 237);
+  --ok: oklch(0.6 0.13 150);
+  --warn: oklch(0.7 0.13 75);
+  --off: oklch(0.58 0.17 25);
+  --raised: 0 0 0 1px oklch(0.25 0.03 245 / 0.06), 0 1px 3px oklch(0.25 0.03 245 / 0.06), 0 6px 16px -6px oklch(0.25 0.03 245 / 0.08);
+  --hair: 1px;
+  --serif: ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif;
 
-  --primary: oklch(0.5 0.155 252); /* 5.9:1 with white text, 4.8:1 at hover (primary/90) */
-  --primary-foreground: oklch(0.99 0.003 250);
-  --secondary: oklch(0.955 0.006 255);
-  --secondary-foreground: var(--foreground);
-  --muted: oklch(0.958 0.005 255);
-  --muted-foreground: oklch(0.49 0.022 258);
-  --accent: oklch(0.95 0.018 252);
-  --accent-foreground: oklch(0.32 0.07 256);
+  /* shadcn names, mapped onto the palette so existing pieces match. */
+  --background: var(--canvas);
+  --foreground: var(--ink);
+  --card: var(--pane);
+  --card-foreground: var(--ink);
+  --popover: var(--pane);
+  --popover-foreground: var(--ink);
+  --primary: var(--accent-strong); /* 4.6:1 with white text */
+  --primary-foreground: var(--accent-ink);
+  --secondary: var(--sunken);
+  --secondary-foreground: var(--ink);
+  --muted: var(--sunken);
+  --muted-foreground: var(--mute);
+  --accent: var(--sunken);
+  --accent-foreground: var(--ink);
 
-  --destructive: oklch(0.55 0.2 27);
+  --destructive: oklch(0.55 0.19 27);
   --destructive-soft: oklch(0.96 0.025 27);
   --success: oklch(0.5 0.12 155);
   --success-soft: oklch(0.955 0.04 155);
   --warning: oklch(0.53 0.11 65);
   --warning-soft: oklch(0.96 0.05 85);
 
-  /* Light mode: translucent borders recede into whatever they sit on. */
-  --border: oklch(0.3 0.03 258 / 0.11);
-  --input: oklch(0.3 0.03 258 / 0.2);
+  --border: var(--line);
+  --input: oklch(0.25 0.03 245 / 0.18);
   /* Focus rings stay neutral, never a brand colour. */
-  --ring: oklch(0.45 0.02 258);
+  --ring: oklch(0.45 0.02 245);
 
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
 
-  /* Sidebar: a quiet canvas the inset page sits on. */
-  --sidebar: oklch(0.966 0.006 252);
-  --sidebar-foreground: oklch(0.32 0.02 258);
+  --sidebar: var(--canvas);
+  --sidebar-foreground: var(--ink);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: oklch(0.925 0.012 252);
-  --sidebar-accent-foreground: var(--foreground);
-  --sidebar-border: var(--border);
+  --sidebar-accent: var(--sunken);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--line);
   --sidebar-ring: var(--ring);
+}
+@media (min-resolution: 2dppx) {
+  :root { --hair: 0.5px; }
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: oklch(0.165 0.012 258);
-    /* Raised surfaces are lighter than the canvas. */
-    --card: oklch(0.205 0.014 258);
-    --popover: oklch(0.225 0.015 258);
-    --foreground: oklch(0.95 0.006 250);
+    --canvas: oklch(0.15 0.012 245);
+    --pane: oklch(0.2 0.014 245);
+    --sunken: oklch(0.175 0.013 245);
+    --ink: oklch(0.94 0.006 240);
+    --mute: oklch(0.72 0.016 240);
+    --faint: oklch(0.6 0.016 240);
+    --line: oklch(0.3 0.016 245);  /* solid on dark: translucent lines glow */
+    --accent-strong: oklch(0.7 0.11 237);
+    --accent-ink: oklch(0.16 0.02 245);
+    --accent-soft: oklch(0.29 0.045 237);
+    --ok: oklch(0.76 0.12 150);
+    --warn: oklch(0.82 0.11 80);
+    --off: oklch(0.72 0.14 25);
+    --raised: 0 0 0 1px oklch(1 0 0 / 0.07);
 
-    /* Brand colours lose some saturation on dark so they don't vibrate. */
-    --primary: oklch(0.7 0.12 250);
-    --primary-foreground: oklch(0.17 0.02 258);
-    --secondary: oklch(0.255 0.014 258);
-    --muted: oklch(0.24 0.013 258);
-    --muted-foreground: oklch(0.72 0.016 255);
-    --accent: oklch(0.27 0.03 254);
-    --accent-foreground: oklch(0.93 0.02 250);
-
-    --destructive: oklch(0.7 0.15 25);
+    --input: oklch(0.36 0.016 245);
+    --ring: oklch(0.75 0.015 245);
+    --destructive: oklch(0.72 0.14 25);
     --destructive-soft: oklch(0.25 0.035 25);
     --success: oklch(0.77 0.12 155);
     --success-soft: oklch(0.26 0.045 155);
     --warning: oklch(0.82 0.1 80);
     --warning-soft: oklch(0.27 0.045 80);
-
-    /* Dark mode: solid borders sit quietly; translucent ones glow. */
-    --border: oklch(0.285 0.014 258);
-    --input: oklch(0.34 0.015 258);
-    --ring: oklch(0.75 0.015 255);
-
-    /* The sidebar is the darkest layer; the page inset is raised above it. */
-    --sidebar: oklch(0.14 0.011 258);
-    --sidebar-foreground: oklch(0.82 0.012 252);
-    --sidebar-accent: oklch(0.23 0.014 258);
-    --sidebar-accent-foreground: var(--foreground);
   }
 }
 
@@ -130,6 +141,22 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
+  --color-canvas: var(--canvas);
+  --color-pane: var(--pane);
+  --color-sunken: var(--sunken);
+  --color-ink: var(--ink);
+  --color-mute: var(--mute);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-off: var(--off);
+  --font-serif: var(--serif);
+  --shadow-raised: var(--raised);
+  --breakpoint-wide: 68.75rem; /* three panes from here (1,100 px) */
 }
 
 @layer base {

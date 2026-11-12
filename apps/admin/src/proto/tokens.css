@@ -1,0 +1,45 @@
+/* "Conversation+" tokens, decided in Stage 1 (docs/design/DECISIONS.md).
+ * Every component and page prototype scopes itself under .hb so variants
+ * share one material. Throwaway with src/proto; the winners' values move to
+ * styles.css in the implementation stage. */
+.hb {
+  --c-canvas: oklch(0.955 0.008 240);   /* behind the panes */
+  --c-pane: oklch(0.995 0.002 240);     /* a pane's surface */
+  --c-sunken: oklch(0.972 0.006 240);   /* wells: code, inputs, hovered rows */
+  --c-ink: oklch(0.22 0.02 245);
+  --c-mute: oklch(0.5 0.022 245);
+  --c-faint: oklch(0.64 0.018 245);
+  --c-line: oklch(0.25 0.03 245 / 0.09); /* hairline rules (Ledger) */
+  --c-accent: oklch(0.58 0.135 237);    /* Telegram-ish blue: the only "do this" colour */
+  --c-accent-ink: oklch(0.99 0.003 240);
+  --c-accent-soft: oklch(0.93 0.035 237);
+  --c-ok: oklch(0.6 0.13 150);
+  --c-warn: oklch(0.7 0.13 75);
+  --c-off: oklch(0.58 0.17 25);
+  --c-raised: 0 0 0 1px oklch(0.25 0.03 245 / 0.06), 0 1px 3px oklch(0.25 0.03 245 / 0.06), 0 6px 16px -6px oklch(0.25 0.03 245 / 0.08);
+  --hair: 1px;
+  /* One distinctive type decision (Editorial): serif for page titles and big numerals only. */
+  --serif: ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  background: var(--c-canvas);
+  color: var(--c-ink);
+}
+@media (min-resolution: 2dppx) { .hb { --hair: 0.5px; } }
+@media (prefers-color-scheme: dark) {
+  .hb {
+    --c-canvas: oklch(0.15 0.012 245);
+    --c-pane: oklch(0.2 0.014 245);
+    --c-sunken: oklch(0.175 0.013 245);
+    --c-ink: oklch(0.94 0.006 240);
+    --c-mute: oklch(0.72 0.016 240);
+    --c-faint: oklch(0.58 0.016 240);
+    --c-line: oklch(0.3 0.016 245);
+    --c-accent: oklch(0.7 0.11 237);
+    --c-accent-ink: oklch(0.16 0.02 245);
+    --c-accent-soft: oklch(0.29 0.045 237);
+    --c-ok: oklch(0.76 0.12 150);
+    --c-warn: oklch(0.82 0.11 80);
+    --c-off: oklch(0.72 0.14 25);
+    --c-raised: 0 0 0 1px oklch(1 0 0 / 0.07);
+  }
+}
+.hb .serif { font-family: var(--serif); }
