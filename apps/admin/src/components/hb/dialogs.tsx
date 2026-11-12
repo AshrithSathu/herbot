@@ -9,17 +9,27 @@ import { XIcon } from 'lucide-react'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
 import { Button, TextInput } from './controls'
-import { splitErrorId } from './feedback'
+import { ErrorText } from './feedback'
 
-const OVERLAY =
-  'fixed inset-0 z-50 bg-[oklch(0_0_0/0.4)] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-150'
+// Overlay and content move as one: the same durations and the same strong
+// ease-out at each size (a sheet on phones: 250 ms in, 180 ms out; a modal
+// from md: 200 ms in, 150 ms out). Exits are faster than entrances.
+const TIMING =
+  'ease-[cubic-bezier(0.32,0.72,0,1)] data-[state=open]:duration-250 data-[state=closed]:duration-180 md:data-[state=open]:duration-200 md:data-[state=closed]:duration-150'
 
-// Phones: a sheet from the bottom that clears the home indicator. From `md`:
-// centred, scaling from 0.97 (never from 0), exits faster than it enters.
+const OVERLAY = cn(
+  'fixed inset-0 z-50 bg-[oklch(0_0_0/0.4)] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0',
+  TIMING,
+)
+
+// Phones: a sheet from the bottom that clears the home indicator (no drag
+// handle: it doesn't drag, so it doesn't pretend to). From `md`: centred,
+// scaling from 0.97 (never from 0).
 const CONTENT = cn(
   'fixed z-50 flex max-h-[min(90dvh,48rem)] flex-col bg-pane text-ink shadow-raised outline-none',
   'inset-x-0 bottom-0 rounded-t-2xl pb-[max(1rem,env(safe-area-inset-bottom))]',
-  'data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom data-[state=open]:duration-250 data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom data-[state=closed]:duration-180',
+  'data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom',
+  TIMING,
   'md:inset-x-auto md:top-1/2 md:bottom-auto md:left-1/2 md:w-[min(32rem,calc(100vw-2rem))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-2xl md:pb-0',
   'md:data-[state=open]:slide-in-from-bottom-0 md:data-[state=open]:zoom-in-[0.97] md:data-[state=open]:fade-in-0 md:data-[state=closed]:slide-out-to-bottom-0 md:data-[state=closed]:zoom-out-[0.97] md:data-[state=closed]:fade-out-0',
 )
@@ -86,6 +96,24 @@ function useReturnFocus(open: boolean) {
   }
 }
 
+/**
+ * Where focus lands when a dialog opens: an element marked `data-autofocus`
+ * (the safe choice in a confirmation), else the first field, but fields only
+ * with a mouse or trackpad (on touch, focusing a field throws the keyboard
+ * up unasked). Otherwise the dialog itself, never the Close button.
+ */
+function focusFirst(event: Event) {
+  event.preventDefault()
+  const root = event.currentTarget
+  if (!(root instanceof HTMLElement)) return
+  const fine = matchMedia('(pointer: fine)').matches
+  const field = (el: Element | null) => el instanceof HTMLElement && el.matches('input,textarea,select')
+  const marked = root.querySelector<HTMLElement>('[data-autofocus]')
+  if (marked && (fine || !field(marked))) return marked.focus()
+  const first = fine ? root.querySelector<HTMLElement>('input:not([type=hidden]):not([disabled]),textarea:not([disabled]),select:not([disabled])') : null
+  ;(first ?? root).focus()
+}
+
 function Frame({ open, onOpenChange, title, description, busy = false, children }: FrameProps) {
   const returnFocus = useReturnFocus(open)
   return (
@@ -101,10 +129,10 @@ function Frame({ open, onOpenChange, title, description, busy = false, children 
             if (busy || t?.closest('[role="combobox"][aria-expanded="true"]')) e.preventDefault()
           }}
           onPointerDownOutside={(e) => busy && e.preventDefault()}
+          onOpenAutoFocus={focusFirst}
           onCloseAutoFocus={returnFocus}
         >
-          <div aria-hidden className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-line md:hidden" />
-          <div className="flex items-start gap-3 px-5 pt-4 md:pt-5">
+          <div className="flex items-start gap-3 px-5 pt-5">
             <div className="flex min-w-0 flex-1 flex-col gap-1">
               <Dialog.Title className="text-[17px] leading-snug font-semibold text-balance">{title}</Dialog.Title>
               {description ? (
@@ -128,13 +156,9 @@ function Frame({ open, onOpenChange, title, description, busy = false, children 
 
 function ErrorLine({ error }: { error: Error | string | null | undefined }) {
   if (!error) return null
-  const { id, text } = splitErrorId(typeof error === 'string' ? error : error.message)
   return (
     <p role="alert" className="text-[13px] text-destructive">
-      {id && <span className="font-mono">{id} · </span>}
-      <UserText lines={3} as="span">
-        {text}
-      </UserText>
+      <ErrorText error={error} lines={3} />
     </p>
   )
 }
@@ -154,13 +178,16 @@ type ConfirmProps = {
   actionLabel: string
   /** The safe choice's label for the separated guard ("Keep editing"). */
   keepLabel?: string
+  /** Under the separated guard's rule: how final this is. Say it truthfully
+   * per action ("You can undo this for 10 seconds."); null shows nothing. */
+  note?: ReactNode
   onConfirm: () => void
   guard: Guard
   pending?: boolean
   error?: Error | string | null
 }
 
-export function ConfirmDialog({ open, onOpenChange, title, subject, consequences, keeps, actionLabel, keepLabel = 'Keep everything', onConfirm, guard, pending = false, error }: ConfirmProps) {
+export function ConfirmDialog({ open, onOpenChange, title, subject, consequences, keeps, actionLabel, keepLabel = 'Keep everything', note = 'This can’t be undone.', onConfirm, guard, pending = false, error }: ConfirmProps) {
   const [typed, setTyped] = useState('')
   const armed = guard.kind === 'separated' || typed.trim().toLowerCase() === guard.word
   const close = (o: boolean) => {
@@ -223,12 +250,12 @@ export function ConfirmDialog({ open, onOpenChange, title, subject, consequences
         ) : (
           <div className="flex flex-col gap-3">
             <Dialog.Close asChild>
-              <Button variant="primary" disabled={pending} className="h-11 w-full">
+              <Button variant="primary" disabled={pending} className="h-11 w-full" data-autofocus>
                 {keepLabel}
               </Button>
             </Dialog.Close>
-            <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
-              <span className="text-[12.5px] text-mute">This can’t be undone.</span>
+            <div className={cn('flex items-center gap-3 border-t border-line pt-3', note ? 'justify-between' : 'justify-end')}>
+              {note && <span className="text-[12.5px] text-mute">{note}</span>}
               <Button type="submit" variant="danger" pending={pending}>
                 {actionLabel}
               </Button>

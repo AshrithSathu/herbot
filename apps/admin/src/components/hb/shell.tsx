@@ -26,6 +26,9 @@ type ShellContextValue = {
   detailsOpen: boolean
   /** Shows or hides the details pane; on wide screens the choice is remembered. */
   setDetailsOpen: (open: boolean) => void
+  /** Whether the system strip (Telegram off, offline) is showing, so a page
+   * doesn't say the same thing again in its own copy. */
+  stripShown: boolean
   /** Internal: <ShellDetails> registers here. */
   registerDetails: (defaultOpen: boolean) => () => void
   detailsTarget: HTMLElement | null
@@ -134,6 +137,7 @@ export function Shell({ agents, details, strip, onSignOut, signingOut = false, t
     }, []),
     detailsOpen,
     setDetailsOpen,
+    stripShown: Boolean(strip),
     registerDetails,
     detailsTarget,
   }
@@ -168,7 +172,7 @@ export function Shell({ agents, details, strip, onSignOut, signingOut = false, t
           </div>
 
           {hasDetails && (
-            <DetailsSlot open={detailsOpen} onClose={() => setDetailsOpen(false)}>
+            <DetailsSlot open={detailsOpen} modal={!wide} onClose={() => setDetailsOpen(false)}>
               {details ?? <div ref={setDetailsTarget} className="flex min-h-0 flex-1 flex-col" />}
             </DetailsSlot>
           )}
@@ -196,22 +200,76 @@ export function ShellDetails({ children, defaultOpen = true }: { children: React
 }
 
 /** Three panes from 68.75rem: the details pane sits beside the main pane.
- * Below that it opens over the main pane (full screen on phones). */
-function DetailsSlot({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
+ * Below that it opens over the main pane (full screen on phones) as a modal:
+ * labelled, focus moved in and kept in, Escape closes, and focus goes back to
+ * whatever opened it. Everything behind is `inert` meanwhile (see Shell). */
+function DetailsSlot({ open, modal, onClose, children }: { open: boolean; modal: boolean; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLElement>(null)
+  const opener = useRef<HTMLElement | null>(null)
+  const overlay = open && modal
+  // A layout effect, so the opener is read before focus moves into the pane.
+  useLayoutEffect(() => {
+    if (!overlay) return
+    const active = document.activeElement
+    opener.current = active instanceof HTMLElement && active !== document.body ? active : null
+    ref.current?.focus()
+    return () => {
+      const back = opener.current
+      opener.current = null
+      // The pane has closed (or gone wide): return focus if it was inside.
+      requestAnimationFrame(() => {
+        if (back?.isConnected && (!document.activeElement || document.activeElement === document.body || ref.current?.contains(document.activeElement))) back.focus()
+      })
+    }
+  }, [overlay])
+  // A native listener: the pane's content arrives through a React portal
+  // from the page, so React's synthetic keydown never bubbles to this aside;
+  // the DOM event does.
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
   useEffect(() => {
-    if (open && !matchMedia(WIDE).matches) ref.current?.focus()
-  }, [open])
+    const el = ref.current
+    if (!el) return
+    function onKey(e: KeyboardEvent) {
+      if (e.defaultPrevented) return
+      if (e.key === 'Escape') {
+        // Only as an overlay: on wide screens the pane is part of the page.
+        if (!overlay) return
+        e.stopPropagation()
+        onCloseRef.current()
+        return
+      }
+      // Keep Tab inside while it covers the page.
+      if (!overlay || e.key !== 'Tab' || !el) return
+      const focusable = [...el.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter((n) => n.offsetParent !== null)
+      if (focusable.length === 0) {
+        e.preventDefault()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === el)) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    el.addEventListener('keydown', onKey)
+    return () => el.removeEventListener('keydown', onKey)
+  }, [overlay])
   return (
     <>
-      {open && (
-        <button type="button" aria-label="Close details" onClick={onClose} className="fixed inset-0 z-40 hidden bg-[oklch(0_0_0/0.3)] md:block wide:hidden" />
+      {overlay && (
+        <button type="button" tabIndex={-1} aria-hidden onClick={onClose} className="fixed inset-0 z-40 hidden bg-[oklch(0_0_0/0.3)] md:block" />
       )}
       <aside
         ref={ref}
         tabIndex={-1}
         aria-label="Details"
-        onKeyDown={(e) => e.key === 'Escape' && onClose()}
+        role={overlay ? 'dialog' : undefined}
+        aria-modal={overlay || undefined}
         className={cn(
           PANE,
           'outline-none',
@@ -289,7 +347,7 @@ function RailItem({ label, icon: Icon, active = false, to, onClick, disabled }: 
       {inner}
     </Link>
   ) : (
-    <button type="button" aria-label={label} onClick={onClick} disabled={disabled} className={cn(cls, 'disabled:opacity-50')}>
+    <button type="button" aria-label={label} onClick={onClick} disabled={disabled} className={cn(cls, 'disabled:text-faint')}>
       {inner}
     </button>
   )
@@ -297,7 +355,7 @@ function RailItem({ label, icon: Icon, active = false, to, onClick, disabled }: 
 
 /** Phones: Agents, the most used pages, and More. */
 function TabBar({ onMore }: { onMore: () => void }) {
-  const { phonePane, showAgents } = useShell()
+  const { phonePane, showAgents, showMain } = useShell()
   const active = useActive()
   const tabs = PHONE_TABS.map((to) => PAGES.find((p) => p.to === to)!)
   const onAgent = Boolean(useMatchRoute()({ to: '/topics/$id' }))
@@ -309,6 +367,9 @@ function TabBar({ onMore }: { onMore: () => void }) {
         <Link
           key={p.to}
           to={p.to}
+          // Tapping the tab you're already on (from the agents list) changes
+          // no URL, so show the page here rather than waiting for one.
+          onClick={showMain}
           aria-current={phonePane === 'main' && active(p) ? 'page' : undefined}
           className={cn('flex min-h-[52px] flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium', phonePane === 'main' && active(p) ? 'text-accent-strong' : 'text-mute')}
         >
@@ -341,13 +402,12 @@ function MoreSheet({ open, onOpenChange, onSignOut }: { open: boolean; onOpenCha
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-[oklch(0_0_0/0.4)] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-[oklch(0_0_0/0.4)] ease-[cubic-bezier(0.32,0.72,0,1)] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-250 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-180" />
         <Dialog.Content
           aria-describedby={undefined}
-          className="fixed inset-x-0 bottom-0 z-50 flex flex-col rounded-t-2xl bg-pane pb-[max(12px,env(safe-area-inset-bottom))] text-ink outline-none data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom data-[state=open]:duration-250 data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom data-[state=closed]:duration-180"
+          className="fixed inset-x-0 bottom-0 z-50 flex flex-col rounded-t-2xl bg-pane pb-[max(12px,env(safe-area-inset-bottom))] text-ink outline-none ease-[cubic-bezier(0.32,0.72,0,1)] data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom data-[state=open]:duration-250 data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom data-[state=closed]:duration-180"
         >
-          <div aria-hidden className="mx-auto mt-2 h-1 w-9 rounded-full bg-line" />
-          <Dialog.Title className="px-5 pt-3 pb-1 text-[13px] font-semibold text-mute">More</Dialog.Title>
+          <Dialog.Title className="px-5 pt-5 pb-1 text-[13px] font-semibold text-mute">More</Dialog.Title>
           <ul className="flex flex-col px-2">
             {rest.map((p) => (
               <li key={p.to}>
@@ -389,12 +449,17 @@ export function ShellPage({ title, description, actions, back, children, wide = 
   wide?: boolean
   children: ReactNode
 }) {
+  // Bottom-tab pages are destinations of their own on phones: no "‹ Agents".
+  const pathname = useLocation({ select: (l) => l.pathname })
+  const isTab = (PHONE_TABS as string[]).includes(pathname)
+  // One left edge for every page: the column is always the same width and
+  // centred; narrow pages cap their content inside it, starting at its edge.
   return (
     <div data-hb-scroll className="scroller min-h-0 flex-1 overflow-y-auto overscroll-contain">
-      <div className={cn('mx-auto flex w-full flex-col gap-8 px-4 pt-6 pb-[max(3rem,env(safe-area-inset-bottom))] md:px-8 md:pt-8', wide ? 'max-w-6xl' : 'max-w-3xl')}>
+      <div className={cn('mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 pt-6 pb-[max(3rem,env(safe-area-inset-bottom))] md:px-8 md:pt-8', !wide && '[&>*]:max-w-3xl')}>
         <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex min-w-0 flex-col items-start gap-1">
-            {back}
+            {!isTab && back}
             <div className="flex min-w-0 flex-col gap-1.5">
               <h1 className="font-serif text-[30px] leading-[1.1] font-semibold tracking-[-0.015em] text-balance md:text-[34px]">{title}</h1>
               {description && <p className="max-w-[60ch] text-[14px] text-mute text-pretty">{description}</p>}
@@ -431,7 +496,7 @@ export function AgentsHeader({ count, action }: { count?: number; action?: React
       <button
         type="button"
         onClick={() => openPalette()}
-        className="hidden h-7 items-center rounded-md px-2 text-[11.5px] text-mute shadow-[inset_0_0_0_var(--hair)_var(--line)] hover:text-ink md:inline-flex"
+        className="relative hidden h-7 items-center rounded-md px-2 text-[11.5px] text-mute shadow-[inset_0_0_0_var(--hair)_var(--line)] before:absolute before:-inset-x-1 before:-inset-y-1.5 before:content-[''] hover:text-ink md:inline-flex"
         aria-label="Open the command palette"
       >
         {mod} K
