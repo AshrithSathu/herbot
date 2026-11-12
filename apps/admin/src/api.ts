@@ -281,6 +281,8 @@ export interface SearchHit {
   conversation_id: number
   name: string
   snippet: string
+  sent_at: string
+  from_bot: boolean
 }
 export const getActivity = createServerFn({ method: 'GET' })
   .validator((id: number) => id)
@@ -387,4 +389,27 @@ export const markRead = createServerFn({ method: 'POST' })
     (await serverSide())<ReadMarker>(`/conversations/${data.id}/read`, {
       method: 'POST', body: { through_message_id: data.through_message_id },
     }),
+  )
+
+export interface MessageWindow extends MessagePage {
+  has_more_before: boolean
+  has_more_after: boolean
+}
+export const getMessagesAround = createServerFn({ method: 'GET' })
+  .validator((data: { id: number; around: number; limit?: number }) => data)
+  .handler(async ({ data }) => {
+    const params = new URLSearchParams({ around: String(data.around) })
+    if (data.limit != null) params.set('limit', String(data.limit))
+    return (await serverSide())<MessageWindow>(`/conversations/${data.id}/messages?${params}`)
+  })
+
+export type TaskCounts = Record<Task['status'], number>
+export const getTaskCounts = createServerFn({ method: 'GET' }).handler(async () =>
+  (await serverSide())<TaskCounts>('/tasks/counts'),
+)
+/** When capped, total is a lower bound of 10,000. Matches the error list's filter. */
+export const getErrorsTotal = createServerFn({ method: 'GET' })
+  .validator((data: { q: string }) => data)
+  .handler(async ({ data }) =>
+    (await serverSide())<{ total: number; capped: boolean }>(`/errors/total?${new URLSearchParams({ q: data.q })}`),
   )

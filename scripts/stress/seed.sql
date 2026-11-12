@@ -72,7 +72,8 @@ INSERT INTO bodies VALUES
 INSERT INTO messages (conversation_id, tg_message_id, from_tg_user_id, from_bot, body, sent_at, attachments, is_voice)
 SELECT 2, g, CASE WHEN g % 2 = 0 THEN 999 ELSE 1221260701 END, g % 2 = 0,
        b.body, now() - ((6000 - g) || ' minutes')::interval, b.attachments, b.n = 11
-FROM generate_series(1, 6000) g JOIN bodies b ON b.n = g % 20;
+FROM generate_series(1, 6000) g JOIN bodies b ON b.n = g % 20
+ORDER BY g;
 
 -- A sprinkling of messages elsewhere (topic 3 has none at all).
 INSERT INTO messages (conversation_id, tg_message_id, from_tg_user_id, from_bot, body, sent_at)

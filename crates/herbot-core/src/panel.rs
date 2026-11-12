@@ -200,10 +200,21 @@ async fn record_failure(
         return response;
     }
     let code = response.status();
+    let bytes = match axum::body::to_bytes(response.into_body(), 64 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!(error = %e, "could not read panel failure response");
+            axum::body::Bytes::new()
+        }
+    };
+    let message = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_else(|| "Panel operation failed; check logs".into());
     let error_id = match crate::errors::record(
         &s.admin.pool,
         "panel.request",
-        "Panel operation failed",
+        &message,
         json!({"path":path,"status":code.as_u16()}),
     )
     .await
@@ -211,10 +222,10 @@ async fn record_failure(
         Ok(id) => id.to_string(),
         Err(e) => {
             tracing::error!(error = %e, "could not record panel failure");
-            return response;
+            return fail(code, message).into_response();
         }
     };
-    tracing::error!(%error_id,%path,"panel operation failed");
+    tracing::error!(%error_id,%path,%message,"panel operation failed");
     if let Some(id) = path
         .strip_prefix("/admin/api/conversations/")
         .and_then(|p| p.strip_suffix("/messages"))
@@ -233,14 +244,6 @@ async fn record_failure(
         }
     }
 
-    // Preserve the useful explanation (for example, Telegram permissions), adding its log id.
-    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
-        .await
-        .unwrap_or_default();
-    let message = serde_json::from_slice::<Value>(&bytes)
-        .ok()
-        .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned))
-        .unwrap_or_else(|| "Panel operation failed; check logs".into());
     fail(code, format!("{error_id}: {message}")).into_response()
 }
 
@@ -866,8 +869,8 @@ async fn search(
     if q.q.len() > 500 {
         return Err(fail(StatusCode::BAD_REQUEST, "Search is too long"));
     }
-    let rows:Vec<(i64,i64,String,String)>=sqlx::query_as("SELECT m.id,m.conversation_id,c.name,ts_headline('simple',m.body,websearch_to_tsquery('simple',$1),'StartSel=⟦, StopSel=⟧, MaxWords=40, MinWords=15') FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.search @@ websearch_to_tsquery('simple',$1) AND ($2::bigint IS NULL OR m.id<$2) ORDER BY m.id DESC LIMIT 30").bind(q.q.trim()).bind(q.before).fetch_all(&s.admin.pool).await.map_err(io)?;
-    Ok(Json(json!(rows.into_iter().map(|(id,conversation_id,name,snippet)|json!({"id":id,"conversation_id":conversation_id,"name":name,"snippet":snippet})).collect::<Vec<_>>())))
+    let rows:Vec<(i64,i64,String,String,chrono::DateTime<Utc>,bool)>=sqlx::query_as("SELECT m.id,m.conversation_id,c.name,ts_headline('simple',m.body,websearch_to_tsquery('simple',$1),'StartSel=⟦, StopSel=⟧, MaxWords=40, MinWords=15'),m.sent_at,m.from_bot FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE m.search @@ websearch_to_tsquery('simple',$1) AND ($2::bigint IS NULL OR m.id<$2) ORDER BY m.id DESC LIMIT 30").bind(q.q.trim()).bind(q.before).fetch_all(&s.admin.pool).await.map_err(io)?;
+    Ok(Json(json!(rows.into_iter().map(|(id,conversation_id,name,snippet,sent_at,from_bot)|json!({"id":id,"conversation_id":conversation_id,"name":name,"snippet":snippet,"sent_at":sent_at,"from_bot":from_bot})).collect::<Vec<_>>())))
 }
 async fn connectors(State(s): State<Arc<Panel>>, h: HeaderMap) -> Result<Json<Value>> {
     auth(&s, &h)?;

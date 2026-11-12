@@ -56,6 +56,7 @@ pub fn router(state: Arc<AdminState>) -> Router {
             get(get_preferences).put(save_preferences),
         )
         .route("/admin/api/tasks", get(task_list).post(task_create))
+        .route("/admin/api/tasks/counts", get(task_counts))
         .route("/admin/api/tasks/{id}/{action}", post(task_change))
         .route("/admin/api/overview", get(overview))
         .route("/admin/api/conversations", get(conversations))
@@ -72,6 +73,7 @@ pub fn router(state: Arc<AdminState>) -> Router {
             post(wipe_conversation),
         )
         .route("/admin/api/errors", get(errors))
+        .route("/admin/api/errors/total", get(error_total))
         .route("/admin/api/errors/{id}", get(error))
         .with_state(state)
 }
@@ -346,6 +348,8 @@ async fn conversation(
 
 #[derive(Debug, Deserialize)]
 struct MessagesQuery {
+    /// Includes the target, with older/newer neighbours within the limit.
+    around: Option<i64>,
     /// Older than this message id (to load earlier history).
     before: Option<i64>,
     /// Newer than this message id (to pick up what arrived since).
@@ -372,6 +376,15 @@ async fn messages(
         Ok(true) => {}
         Ok(false) => return fail(StatusCode::NOT_FOUND, "no such conversation"),
         Err(e) => return db_fail(e),
+    }
+    if let Some(target) = query.around {
+        if query.before.is_some() || query.after.is_some() {
+            return fail(
+                StatusCode::BAD_REQUEST,
+                "around cannot be combined with before or after",
+            );
+        }
+        return messages_around(&state.pool, id, target, limit).await;
     }
     let rows: Result<Vec<MessageRow>, _> = match query.after {
         Some(after) => {
@@ -408,6 +421,45 @@ async fn messages(
         rows.reverse(); // fetched newest first; pages read oldest first
     }
     ok(json!({ "messages": rows, "has_more": has_more }))
+}
+
+/// At most `limit` rows including the target: (limit-1)/2 older, limit/2 newer.
+/// Empty space at a history boundary is not filled from the other direction.
+async fn messages_around(pool: &PgPool, id: i64, target: i64, limit: i64) -> Reply {
+    let rows: Vec<MessageRow> = match sqlx::query_as(
+        "WITH target AS (SELECT * FROM messages WHERE conversation_id=$1 AND id=$2),
+         older AS (SELECT m.* FROM messages m WHERE m.conversation_id=$1 AND m.id<$2
+                   AND EXISTS(SELECT 1 FROM target) ORDER BY m.id DESC LIMIT $3),
+         newer AS (SELECT m.* FROM messages m WHERE m.conversation_id=$1 AND m.id>$2
+                   AND EXISTS(SELECT 1 FROM target) ORDER BY m.id ASC LIMIT $4)
+         SELECT id,sent_at,from_bot,is_voice,body,attachments FROM
+         (SELECT * FROM older UNION ALL SELECT * FROM target UNION ALL SELECT * FROM newer) message_window
+         ORDER BY id ASC",
+    ).bind(id).bind(target).bind((limit-1)/2).bind(limit/2).fetch_all(pool).await {
+        Ok(rows) => rows,
+        Err(e) => return db_fail(e),
+    };
+    let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
+        return fail(
+            StatusCode::NOT_FOUND,
+            "no such message in this conversation",
+        );
+    };
+    let more: (bool, bool) = match sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id=$1 AND id<$2),
+                EXISTS(SELECT 1 FROM messages WHERE conversation_id=$1 AND id>$3)",
+    )
+    .bind(id)
+    .bind(first.id)
+    .bind(last.id)
+    .fetch_one(pool)
+    .await
+    {
+        Ok(more) => more,
+        Err(e) => return db_fail(e),
+    };
+    ok(json!({"messages":rows,"has_more":more.0 || more.1,
+              "has_more_before":more.0,"has_more_after":more.1}))
 }
 
 #[derive(Debug, Deserialize)]
@@ -647,6 +699,33 @@ async fn error_summaries(
     Ok(rows)
 }
 
+/// Bounded work even for a large log. The total covers the filter, not a page cursor.
+async fn error_total(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Query(query): Query<ErrorQuery>,
+) -> Reply {
+    guard!(headers, state);
+    let q = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let by_id = q.and_then(|q| q.parse::<ErrorId>().ok()).map(|id| id.0);
+    let count: i64 = match sqlx::query_scalar(
+        "SELECT count(*) FROM (SELECT 1 FROM errors
+         WHERE ($1::bigint IS NOT NULL AND id=$1)
+            OR ($1::bigint IS NULL AND ($2::text IS NULL
+                OR kind ILIKE '%' || $2 || '%' OR message ILIKE '%' || $2 || '%'))
+         LIMIT 10001) matches",
+    )
+    .bind(by_id)
+    .bind(q.map(like_literal))
+    .fetch_one(&state.pool)
+    .await
+    {
+        Ok(count) => count,
+        Err(e) => return db_fail(e),
+    };
+    ok(json!({"total":count.min(10000),"capped":count>10000}))
+}
+
 async fn errors(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
@@ -823,6 +902,23 @@ async fn set_voice(
 struct TaskPage {
     before: Option<i64>,
 }
+async fn task_counts(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
+    guard!(headers, state);
+    let rows: Vec<(String, i64)> =
+        match sqlx::query_as("SELECT status,count(*) FROM tasks GROUP BY status")
+            .fetch_all(&state.pool)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => return db_fail(e),
+        };
+    let mut counts = json!({"active":0,"paused":0,"done":0,"cancelled":0});
+    for (status, count) in rows {
+        counts[status] = json!(count);
+    }
+    ok(counts)
+}
+
 async fn task_list(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
