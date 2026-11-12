@@ -34,10 +34,10 @@ function Document({ children }: { children: ReactNode }) {
     <html lang="en">
       <head>
         <HeadContent />
-        {/* Browser chrome matches the page (--background in each theme). Written
+        {/* Browser chrome matches the canvas (--canvas in each theme). Written
             here, not in head(), because HeadContent keeps one meta per name. */}
-        <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8fafc" />
-        <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0b0f14" />
+        <meta name="theme-color" media="(prefers-color-scheme: light)" content="#edf1f4" />
+        <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0b1015" />
       </head>
       <body>
         {children}

@@ -4,7 +4,8 @@
 // opens over the main pane), one on phones with a bottom tab bar
 // (Agents, Overview, Search, Tasks, More). A strip on top carries
 // system-wide state. ⌘K opens the palette.
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Dialog } from 'radix-ui'
 import { Link, useLocation, useMatchRoute } from '@tanstack/react-router'
 import { LogOutIcon, MessageCircleIcon, MoreHorizontalIcon, type LucideIcon } from 'lucide-react'
@@ -19,9 +20,14 @@ type ShellContextValue = {
   phonePane: PhonePane
   showAgents: () => void
   showMain: () => void
-  openPalette: () => void
+  /** Opens ⌘K, optionally with a query typed in. */
+  openPalette: (query?: string) => void
   detailsOpen: boolean
+  /** Shows or hides the details pane; on wide screens the choice is remembered. */
   setDetailsOpen: (open: boolean) => void
+  /** Internal: <ShellDetails> registers here. */
+  registerDetails: (defaultOpen: boolean) => () => void
+  detailsTarget: HTMLElement | null
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null)
@@ -36,7 +42,8 @@ export function useShell(): ShellContextValue {
 type ShellProps = {
   /** The agents pane's content (usually <AgentList>). */
   agents: ReactNode
-  /** The details pane's content, when the page has one. */
+  /** The details pane's content, when it's fixed (pages usually render
+   * <ShellDetails> instead, which portals into the pane). */
   details?: ReactNode
   /** System-wide state (Telegram off, offline): <StatusStrip>. */
   strip?: ReactNode
@@ -50,13 +57,54 @@ type ShellProps = {
 
 const PANE = 'flex min-h-0 min-w-0 flex-col bg-pane md:rounded-2xl md:shadow-raised'
 
+const WIDE = '(min-width: 68.75rem)'
+const DETAILS_KEY = 'herbot.details-pane'
+
+function readDetailsPref(fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem(DETAILS_KEY)
+    return v === null ? fallback : v === 'open'
+  } catch {
+    return fallback
+  }
+}
+
 export function Shell({ agents, details, strip, onSignOut, signingOut = false, topics = [], actions, children }: ShellProps) {
   const [phonePane, setPhonePane] = useState<PhonePane>('main')
   const [palette, setPalette] = useState(false)
+  const [paletteQuery, setPaletteQuery] = useState('')
   const [more, setMore] = useState(false)
-  const [detailsOpen, setDetailsOpen] = useState(false)
+  const [detailsOpen, setDetailsOpenState] = useState(false)
+  const [registered, setRegistered] = useState(0)
+  const [detailsTarget, setDetailsTarget] = useState<HTMLElement | null>(null)
   const pathname = useLocation({ select: (l) => l.pathname })
-  usePaletteHotkey(setPalette)
+  usePaletteHotkey(
+    useCallback(() => {
+      setPaletteQuery('')
+      setPalette((o) => !o)
+    }, []),
+  )
+
+  // Wide screens remember the pane (a permanent third pane, open by
+  // default); narrower ones open it on demand and forget.
+  const setDetailsOpen = useCallback((open: boolean) => {
+    setDetailsOpenState(open)
+    if (matchMedia(WIDE).matches) {
+      try {
+        localStorage.setItem(DETAILS_KEY, open ? 'open' : 'closed')
+      } catch {
+        /* storage blocked: the pane still works, it just won't remember */
+      }
+    }
+  }, [])
+  const registerDetails = useCallback((defaultOpen: boolean) => {
+    setRegistered((n) => n + 1)
+    setDetailsOpenState(matchMedia(WIDE).matches ? readDetailsPref(defaultOpen) : false)
+    return () => {
+      setRegistered((n) => n - 1)
+      setDetailsOpenState(false)
+    }
+  }, [])
 
   // A new page (or agent) shows the main pane on phones and closes the
   // details overlay.
@@ -69,10 +117,16 @@ export function Shell({ agents, details, strip, onSignOut, signingOut = false, t
     phonePane,
     showAgents: useCallback(() => setPhonePane('agents'), []),
     showMain: useCallback(() => setPhonePane('main'), []),
-    openPalette: useCallback(() => setPalette(true), []),
+    openPalette: useCallback((query?: string) => {
+      setPaletteQuery(query ?? '')
+      setPalette(true)
+    }, []),
     detailsOpen,
     setDetailsOpen,
+    registerDetails,
+    detailsTarget,
   }
+  const hasDetails = Boolean(details) || registered > 0
 
   return (
     <ShellContext.Provider value={value}>
@@ -95,14 +149,30 @@ export function Shell({ agents, details, strip, onSignOut, signingOut = false, t
             {children}
           </main>
 
-          {details && <DetailsSlot open={detailsOpen} onClose={() => setDetailsOpen(false)}>{details}</DetailsSlot>}
+          {hasDetails && (
+            <DetailsSlot open={detailsOpen} onClose={() => setDetailsOpen(false)}>
+              {details ?? <div ref={setDetailsTarget} className="flex min-h-0 flex-1 flex-col" />}
+            </DetailsSlot>
+          )}
         </div>
         <TabBar onMore={() => setMore(true)} />
         <MoreSheet open={more} onOpenChange={setMore} onSignOut={onSignOut} />
-        <CommandPalette open={palette} onOpenChange={setPalette} topics={topics} actions={actions} />
+        <CommandPalette open={palette} onOpenChange={setPalette} topics={topics} actions={actions} initialQuery={paletteQuery} />
       </div>
     </ShellContext.Provider>
   )
+}
+
+/**
+ * A page's details pane content (the topic's details, a memory, a call),
+ * rendered into the shell's third pane. Open by default on wide screens
+ * (remembered after you hide it); on demand below 68.75rem. Toggle it with
+ * useShell().setDetailsOpen.
+ */
+export function ShellDetails({ children, defaultOpen = true }: { children: ReactNode; defaultOpen?: boolean }) {
+  const { registerDetails, detailsTarget } = useShell()
+  useLayoutEffect(() => registerDetails(defaultOpen), [registerDetails, defaultOpen])
+  return detailsTarget ? createPortal(children, detailsTarget) : null
 }
 
 /** Three panes from 68.75rem: the details pane sits beside the main pane.
@@ -293,7 +363,7 @@ export function ShellPage({ title, description, actions, back, children, wide = 
   description?: ReactNode
   /** Right of the title: the page's one primary action. */
   actions?: ReactNode
-  /** Left of the title on phones (e.g. "‹ Agents"). */
+  /** Above the title on phones (e.g. "‹ Agents"). */
   back?: ReactNode
   /** Tables can use the whole pane width. */
   wide?: boolean
@@ -303,7 +373,7 @@ export function ShellPage({ title, description, actions, back, children, wide = 
     <div data-hb-scroll className="scroller min-h-0 flex-1 overflow-y-auto overscroll-contain">
       <div className={cn('mx-auto flex w-full flex-col gap-8 px-4 pt-6 pb-[max(3rem,env(safe-area-inset-bottom))] md:px-8 md:pt-8', wide ? 'max-w-6xl' : 'max-w-3xl')}>
         <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex min-w-0 items-start gap-2">
+          <div className="flex min-w-0 flex-col items-start gap-1">
             {back}
             <div className="flex min-w-0 flex-col gap-1.5">
               <h1 className="font-serif text-[30px] leading-[1.1] font-semibold tracking-[-0.015em] text-balance md:text-[34px]">{title}</h1>
@@ -340,7 +410,7 @@ export function AgentsHeader({ count, action }: { count?: number; action?: React
       <span className="flex-1" />
       <button
         type="button"
-        onClick={openPalette}
+        onClick={() => openPalette()}
         className="hidden h-7 items-center rounded-md px-2 text-[11.5px] text-mute shadow-[inset_0_0_0_var(--hair)_var(--line)] hover:text-ink md:inline-flex"
         aria-label="Open the command palette"
       >

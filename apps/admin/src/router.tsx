@@ -57,5 +57,9 @@ declare module '@tanstack/react-router' {
     crumb?: string | ((loaderData: unknown) => string | undefined)
     /** A list page shown before this one, when it isn't a parent route. */
     crumbParent?: { label: string; to: '/topics' | '/logs' }
+    /** 'page': the route renders its own panes (ShellPage, a chat, a split)
+     * and scrolls itself. Otherwise the layout gives it a padded, scrolling
+     * column (pages not yet rebuilt on the hb kit). */
+    shell?: 'page'
   }
 }
