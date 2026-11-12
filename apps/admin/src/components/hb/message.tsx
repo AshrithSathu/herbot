@@ -9,7 +9,7 @@ import { clock } from '../../format'
 import { FilePreview, RichMessage, formatBytes } from '@/components/rich-message'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
-import { splitErrorId } from './feedback'
+import { ErrorText } from './feedback'
 
 /** Fold past this many characters or lines (production's chat rules). */
 export const FOLD_CHARS = 1500
@@ -17,6 +17,30 @@ export const FOLD_LINES = 24
 
 export function isLong(body: string): boolean {
   return body.length > FOLD_CHARS || body.split('\n').length > FOLD_LINES
+}
+
+/** The start of a long message, as Markdown that still parses: cut at a line,
+ * then close a code fence the cut left open. Only this much is rendered (and
+ * highlighted) until "Show all", so a 20,000-character body costs nothing
+ * while folded. */
+export function foldedPreview(body: string): string {
+  const lines = body.split('\n').slice(0, 14)
+  let out = ''
+  for (const line of lines) {
+    if (out.length + line.length > 900) {
+      if (!out) out = line.slice(0, 900)
+      break
+    }
+    out += (out ? '\n' : '') + line
+  }
+  const fences = out.match(/^\s*(```|~~~)/gm)?.length ?? 0
+  return fences % 2 === 1 ? `${out}\n\`\`\`` : out
+}
+
+/** A message that is one fenced code block: its own header already has Copy. */
+function isOnlyCode(body: string): boolean {
+  const t = body.trim()
+  return /^(```|~~~)[^\n]*\n[\s\S]*\n\1$/.test(t) && (t.match(/^(```|~~~)/gm)?.length ?? 0) === 2
 }
 
 const BUBBLE = 'relative min-w-0 max-w-[min(42rem,88%)] rounded-[18px] px-3.5 py-2.5 text-[15px] leading-relaxed'
@@ -52,11 +76,18 @@ export function Message({ message: m, highlighted = false }: MessageProps) {
       className={cn(BUBBLE, you ? 'rounded-br-md bg-accent-soft text-ink' : 'rounded-bl-md bg-pane shadow-raised')}
     >
       {m.is_voice && <p className="mb-1 text-[12px] font-medium text-mute">Voice note · transcript</p>}
-      {m.body.trim() && (
-        <div className={cn('user-text', long && !open && 'max-h-72 [mask-image:linear-gradient(to_bottom,black_calc(100%-4rem),transparent)]')}>
-          <RichMessage body={m.body} />
-        </div>
-      )}
+      {m.body.trim() &&
+        (long && !open ? (
+          // Folded: a short preview, inert so nothing hidden by the fade can
+          // take focus; the full, interactive message mounts on "Show all".
+          <div inert className="user-text max-h-72 [mask-image:linear-gradient(to_bottom,black_calc(100%-4rem),transparent)]">
+            <RichMessage body={foldedPreview(m.body)} />
+          </div>
+        ) : (
+          <div className="user-text">
+            <RichMessage body={m.body} />
+          </div>
+        ))}
       {long && (
         <button
           type="button"
@@ -69,7 +100,7 @@ export function Message({ message: m, highlighted = false }: MessageProps) {
       )}
       {m.attachments.length > 0 && <Files files={m.attachments} />}
       <div className="mt-1 flex items-center justify-end gap-1">
-        {!you && m.body.trim() && <CopyText text={m.body} />}
+        {!you && m.body.trim() && !isOnlyCode(m.body) && <CopyText text={m.body} />}
         <time dateTime={m.sent_at} className="text-[11px] text-faint tabular-nums" suppressHydrationWarning>
           {clock(m.sent_at)}
         </time>
@@ -143,7 +174,6 @@ type FailedProps = {
 /** A message that didn't send: dashed, says why (with its E-id), and offers
  * Retry, Edit and Discard. */
 export function FailedMessage({ body, error, sentAt, retrying = false, onRetry, onEdit, onDiscard }: FailedProps) {
-  const { id, text } = splitErrorId(error)
   return (
     <>
       <article
@@ -160,10 +190,7 @@ export function FailedMessage({ body, error, sentAt, retrying = false, onRetry, 
       </article>
       <div role="alert" className="mt-1 flex max-w-[min(42rem,88%)] flex-col items-end gap-1">
         <p className="text-right text-[12.5px] text-mute">
-          {id && <span className="font-mono">{id} · </span>}
-          <UserText as="span" lines={2}>
-            {text}
-          </UserText>
+          <ErrorText error={error} lines={2} />
         </p>
         <div className="flex gap-1">
           <Action icon={RotateCcwIcon} onClick={onRetry} disabled={retrying}>

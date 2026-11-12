@@ -2,10 +2,9 @@
 // built for hostile content: 2,500-character words, 120-line code blocks,
 // 16-column tables, raw HTML, any script or direction, files that are gone
 // from disk or claim to be 100 GB.
-import { useState, type ReactNode } from 'react'
-import Markdown from 'react-markdown'
+import { useEffect, useState, type ReactNode } from 'react'
+import Markdown, { type Options } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
 import { Dialog } from 'radix-ui'
 import {
   DownloadIcon,
@@ -58,12 +57,42 @@ function languageOf(node: ReactNode): string | null {
   return null
 }
 
+type Plugin = NonNullable<Options['rehypePlugins']>[number]
+
+// Syntax highlighting (highlight.js grammars, the heaviest part of a message)
+// loads on demand, the first time a message with a code fence renders; until
+// then code shows unhighlighted, never missing.
+let highlight: Plugin | null = null
+let loadingHighlight: Promise<void> | null = null
+
+function useHighlight(needed: boolean): Plugin | null {
+  const [plugin, setPlugin] = useState<Plugin | null>(() => highlight)
+  useEffect(() => {
+    if (!needed || plugin) return
+    let live = true
+    loadingHighlight ??= import('rehype-highlight').then((m) => {
+      highlight = m.default
+    })
+    // A statement body: the effect returns only its cleanup.
+    void loadingHighlight.then(() => {
+      if (live) setPlugin(() => highlight)
+    })
+    return () => {
+      live = false
+    }
+  }, [needed, plugin])
+  return plugin
+}
+
+const FENCE = /^\s*(```|~~~)/m
+
 export function RichMessage({ body }: { body: string }) {
+  const highlighter = useHighlight(FENCE.test(body))
   return (
     <div dir="auto" className="chat-markdown min-w-0 wrap-anywhere">
       <Markdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        rehypePlugins={highlighter ? [highlighter] : []}
         // Raw HTML in a message is text, never markup.
         skipHtml
         components={{
