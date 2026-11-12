@@ -2,7 +2,6 @@
 // agents pane is for picking one; this page is for managing them: filter,
 // state and sort (all in the URL), a select column with a bulk bar (switch
 // on/off with Undo), a per-row switch, and New agent.
-import { useMedia } from '@/components/hb/use-media'
 import { useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
@@ -66,8 +65,22 @@ function stateChoices(all: Topic[]): Choice<StateFilter>[] {
 const time = (iso: string | null) => (iso ? new Date(iso).getTime() : 0)
 
 /** True from 75rem: wide enough for every column beside the agents pane. */
-function useRoomy() {
-  return useMedia('(min-width: 75rem)', true)
+/** Whether the table itself is wide enough for the "Active" column: its own
+ * width decides, not the window's (the agents and details panes take a
+ * varying share of it). */
+function useRoomy(): [(el: HTMLDivElement | null) => void, boolean] {
+  const [el, setEl] = useState<HTMLDivElement | null>(null)
+  const [roomy, setRoomy] = useState(true)
+  useEffect(() => {
+    if (!el) return
+    // 46rem fits name, purpose, messages, active, state and the switch.
+    const measure = () => setRoomy(el.clientWidth >= 46 * parseFloat(getComputedStyle(document.documentElement).fontSize))
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [el])
+  return [setEl, roomy]
 }
 
 function TopicsPage() {
@@ -108,7 +121,7 @@ function TopicsPage() {
 
   const selection = useSelection()
   const bulk = useBulkSwitch()
-  const roomy = useRoomy()
+  const [tableRef, roomy] = useRoomy()
   const shownIds = shown.map((t) => t.id)
   const allShownSelected = shown.length > 0 && shownIds.every(selection.has)
   const filtering = deferred.trim() !== ''
@@ -265,7 +278,7 @@ function TopicsPage() {
           Names and purposes are searched, ignoring case and accents.
         </InPlaceEmpty>
       ) : (
-        <div className="flex flex-col gap-2">
+        <div ref={tableRef} className="flex min-w-0 flex-col gap-2">
           <p className="text-[13px] text-mute tabular-nums" aria-live="polite">
             {shown.length === all.length ? `${exact(all.length)} topics` : `${exact(shown.length)} of ${exact(all.length)} topics`}
           </p>

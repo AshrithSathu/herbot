@@ -11,7 +11,7 @@ import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ChevronLeftIcon, ChevronRightIcon, HashIcon, MessageCircleIcon } from 'lucide-react'
 import type { ErrorSummary } from '../../../api'
 import { ago, clip, exact, when } from '../../../format'
-import { errorQuery, errorSearchQuery, topicsQuery } from '../../../queries'
+import { errorQuery, errorSearchQuery, errorsTotalQuery, topicsQuery } from '../../../queries'
 import { Button, SearchInput } from '@/components/hb/controls'
 import { CopyButton, InPlaceEmpty, InPlaceError, ListSkeleton } from '@/components/hb/feedback'
 import { LedgerTable, STRETCH, type Column } from '@/components/hb/rows'
@@ -149,7 +149,16 @@ function LogsPage() {
   ]
 
   const asked = errorIdIn(draft)
-  const count = `${exact(rows.length)}${query.hasNextPage ? '+' : ''}`
+  // A total only when it's known (herbot-core counts, capped at 10,000);
+  // otherwise say what's showing.
+  const total = useQuery(errorsTotalQuery(q)).data
+  const count = !query.hasNextPage
+    ? `${exact(rows.length)} ${rows.length === 1 ? 'error' : 'errors'}`
+    : total
+      ? total.capped
+        ? `more than ${exact(total.total)} errors`
+        : `${exact(total.total)} ${total.total === 1 ? 'error' : 'errors'}`
+      : `newest ${exact(rows.length)} shown`
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
@@ -169,8 +178,8 @@ function LogsPage() {
             <p className="text-[13px] text-mute tabular-nums" aria-live="polite">
               {query.isSuccess
                 ? q
-                  ? `${count} matching “${clip(q, 40)}”`
-                  : `Every failure Herbot recorded · newest first · ${count}`
+                  ? `Matching “${clip(q, 40)}” · ${count}`
+                  : `Every failure Herbot recorded, newest first · ${count}`
                 : 'Every failure Herbot recorded'}
             </p>
           </div>

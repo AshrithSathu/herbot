@@ -1,7 +1,7 @@
 // Overview (docs/design/DECISIONS.md, "Overview"): four serif figures, then
 // "Needs you" naming the first few items of each kind with one action each,
 // then the last error. Figures are the glance; Needs you is where you act.
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute, useNavigate, type LinkProps } from '@tanstack/react-router'
 import { PlusIcon } from 'lucide-react'
@@ -11,7 +11,7 @@ import { errorSearchQuery, keys, overviewQuery, tasksQuery, topicsQuery } from '
 import { Button } from '@/components/hb/controls'
 import { InPlaceEmpty, InPlaceError, ListSkeleton, notify } from '@/components/hb/feedback'
 import { QuietAction } from '@/components/hb/rows'
-import { BackToAgents, ShellPage, useShell } from '@/components/hb/shell'
+import { ShellPage, useShell } from '@/components/hb/shell'
 import { BigNumber, Dot, MetaLine, type Tone } from '@/components/hb/status'
 import { openNewAgent } from '@/components/new-agent'
 import { UserText } from '@/components/user-text'
@@ -41,6 +41,12 @@ function OverviewPage() {
   const overview = useQuery(overviewQuery)
   const topics = useQuery(topicsQuery)
   const tasks = useInfiniteQuery(tasksQuery)
+  // Load every page of tasks (at most a few), so "N tasks failed" is a count,
+  // not a guess.
+  const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = tasks
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError) void fetchNextPage()
+  }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage])
   const errors = useInfiniteQuery(errorSearchQuery(''))
   const o = overview.data
 
@@ -65,18 +71,17 @@ function OverviewPage() {
   return (
     <ShellPage
       title="Overview"
-      back={<BackToAgents />}
       description={
         o ? (
           <>
-            {o.bot ? (
+            {/* When Telegram is off the shell's strip already says so. */}
+            {o.bot && (
               <>
-                Telegram connected as <UserText>{`@${o.bot}`}</UserText>
+                Telegram connected as <UserText>{`@${o.bot}`}</UserText> ·{' '}
               </>
-            ) : (
-              'Telegram isn’t connected'
-            )}{' '}
-            · agents run on <span className="font-mono text-[0.92em]">{o.agent}</span>
+            )}
+            {o.bot ? 'agents' : 'Agents'} run on{' '}
+            <span className="font-mono text-[0.92em] whitespace-nowrap">{o.agent}</span>
           </>
         ) : undefined
       }
@@ -204,16 +209,17 @@ function Group<T>({ tone, title, items, count, more = false, all, itemKey, row }
   const total = count ?? items.length
   if (total === 0) return null
   const shown = expanded ? items : items.slice(0, NAMED)
-  const label = `${exact(total)}${more ? '+' : ''}`
+  // While more may exist, give no figure rather than a wrong one.
+  const label = more ? null : exact(total)
   return (
     <section className="flex flex-col">
       <div className="flex min-h-10 items-center gap-3">
         <Dot tone={tone} />
-        <h3 className="min-w-0 flex-1 text-[14px] font-medium">{title(label)}</h3>
+        <h3 className="min-w-0 flex-1 text-[14px] font-medium">{title(label ?? 'Some')}</h3>
         {total > NAMED &&
           (all ? (
             <Link {...all} className="relative shrink-0 text-[13px] font-medium text-accent-strong before:absolute before:-inset-x-2 before:-inset-y-3 hover:underline">
-              Show all {label}
+              {label ? `Show all ${label}` : 'Show all'}
             </Link>
           ) : (
             <button
@@ -222,7 +228,7 @@ function Group<T>({ tone, title, items, count, more = false, all, itemKey, row }
               aria-expanded={expanded}
               className="relative shrink-0 text-[13px] font-medium text-accent-strong before:absolute before:-inset-x-2 before:-inset-y-3 hover:underline"
             >
-              {expanded ? 'Show fewer' : `Show all ${label}`}
+              {expanded ? 'Show fewer' : label ? `Show all ${label}` : 'Show all'}
             </button>
           ))}
       </div>

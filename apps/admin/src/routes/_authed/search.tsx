@@ -9,12 +9,12 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowRightIcon, HashIcon, MessageCircleIcon } from 'lucide-react'
 import { searchMessages, type SearchHit, type Topic } from '../../api'
-import { clip, exact } from '../../format'
+import { clip, exact, when } from '../../format'
 import { topicsQuery } from '../../queries'
 import { Button, SearchInput } from '@/components/hb/controls'
 import { InPlaceEmpty, InPlaceError, ListSkeleton } from '@/components/hb/feedback'
 import { STRETCH, measureNonZero, useScrollParent } from '@/components/hb/rows'
-import { BackToAgents, ShellPage } from '@/components/hb/shell'
+import { ShellPage } from '@/components/hb/shell'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
 
@@ -72,7 +72,6 @@ function SearchPage() {
     }
     return [...byTopic.values()]
   }, [hits])
-  const more = query.hasNextPage ? '+' : ''
 
   return (
     <ShellPage
@@ -83,7 +82,6 @@ function SearchPage() {
           <span className="hidden pointer-fine:inline"> {mod} K searches from anywhere.</span>
         </>
       }
-      back={<BackToAgents />}
     >
       <div className="flex flex-col gap-1.5" role="search">
         <SearchInput
@@ -112,9 +110,11 @@ function SearchPage() {
       ) : (
         <div className={cn('flex flex-col gap-2 transition-opacity duration-150 ease-out', query.isPlaceholderData && 'opacity-60')}>
           <p className="px-1 text-[13px] text-mute tabular-nums" aria-live="polite">
-            {exact(hits.length)}
-            {more} {hits.length === 1 ? 'match' : 'matches'} in {exact(groups.length)}
-            {more} {groups.length === 1 ? 'topic' : 'topics'}
+            {/* Only a full count is a count: while older pages remain, say
+                what's showing instead of "60+ in 1+". */}
+            {query.hasNextPage ? 'Newest ' : ''}
+            {exact(hits.length)} {hits.length === 1 ? 'match' : 'matches'} in {exact(groups.length)} {groups.length === 1 ? 'topic' : 'topics'}
+            {query.hasNextPage ? '; older ones load as you scroll' : ''}
           </p>
           <Groups
             groups={groups}
@@ -210,6 +210,7 @@ function Groups({ groups, names, onEnd }: { groups: Group[]; names: Map<number, 
                         className={cn('block outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring focus-visible:after:ring-inset', STRETCH)}
                       >
                         <span className="sr-only">Open this message in {clip(label, 60)}: </span>
+                        <HitFacts hit={h} />
                         <Snippet text={h.snippet} />
                       </Link>
                     </li>
@@ -226,6 +227,21 @@ function Groups({ groups, names, onEnd }: { groups: Group[]; names: Map<number, 
         })}
       </ul>
     </div>
+  )
+}
+
+/** Who wrote it and when, when the API says (older herbot-core builds don't). */
+function HitFacts({ hit }: { hit: SearchHit }) {
+  if (!hit.sent_at && hit.from_bot == null) return null
+  return (
+    <span className="mb-0.5 flex items-baseline gap-1.5 text-[12.5px] text-faint tabular-nums">
+      {hit.from_bot != null && <span className="font-medium text-mute">{hit.from_bot ? 'Agent' : 'You'}</span>}
+      {hit.sent_at && (
+        <time dateTime={hit.sent_at} title={when(hit.sent_at)} suppressHydrationWarning>
+          {when(hit.sent_at)}
+        </time>
+      )}
+    </span>
   )
 }
 
