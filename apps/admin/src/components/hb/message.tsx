@@ -97,17 +97,27 @@ export function Message({ message: m, highlighted = false }: MessageProps) {
       className={cn(
         BUBBLE,
         you ? 'rounded-br-md bg-accent-soft text-ink' : 'rounded-bl-md bg-pane shadow-raised',
-        'transition-[box-shadow] duration-700 ease-out',
-        flash && 'shadow-[0_0_0_4px_color-mix(in_srgb,var(--accent-strong)_24%,transparent)]',
       )}
     >
+      {highlighted && (
+        // The search landing: a halo on its own layer, so only its opacity
+        // animates (fading out after the reading dwell; instant under
+        // reduced motion).
+        <span
+          aria-hidden
+          className={cn(
+            'pointer-events-none absolute inset-0 rounded-[inherit] shadow-[0_0_0_4px_color-mix(in_srgb,var(--accent-strong)_24%,transparent)] transition-opacity duration-200 ease-out',
+            flash ? 'opacity-100' : 'opacity-0',
+          )}
+        />
+      )}
       {m.is_voice && <p className="mb-1 text-[12px] font-medium text-mute">Voice note · transcript</p>}
       {m.body.trim() &&
         (long && !open ? (
           // Folded: a short preview, inert so nothing hidden by the fade can
           // take focus; the full, interactive message mounts on "Show all".
           <div inert className="user-text max-h-72 [mask-image:linear-gradient(to_bottom,black_calc(100%-4rem),transparent)]">
-            <RichMessage body={foldedPreview(m.body)} />
+            <RichMessage body={foldedPreview(m.body)} preview />
           </div>
         ) : (
           <div className="user-text">
@@ -186,6 +196,10 @@ type FailedProps = {
   body: string
   error: string
   sentAt: string
+  /** Files the send carried (shown as "+ N files" under its text). */
+  files?: number
+  /** Why Retry can't work right now (Telegram off); disables it and says so. */
+  retryBlocked?: string
   retrying?: boolean
   onRetry: () => void
   onEdit: () => void
@@ -194,7 +208,7 @@ type FailedProps = {
 
 /** A message that didn't send: dashed, says why (with its E-id), and offers
  * Retry, Edit and Discard. */
-export function FailedMessage({ body, error, sentAt, retrying = false, onRetry, onEdit, onDiscard }: FailedProps) {
+export function FailedMessage({ body, error, sentAt, files = 0, retryBlocked, retrying = false, onRetry, onEdit, onDiscard }: FailedProps) {
   return (
     <>
       <article
@@ -204,17 +218,23 @@ export function FailedMessage({ body, error, sentAt, retrying = false, onRetry, 
         <UserText as="p" lines="all">
           {body}
         </UserText>
+        {files > 0 && (
+          <p className="mt-0.5 text-[12.5px] text-mute tabular-nums">
+            + {files} {files === 1 ? 'file' : 'files'}
+          </p>
+        )}
         <p className="mt-1 flex items-center justify-end gap-1 text-[11px] text-destructive">
           <AlertCircleIcon className="size-3" aria-hidden />
           {retrying ? 'Sending…' : 'Not sent'}
         </p>
       </article>
-      <div role="alert" className="mt-1 flex max-w-[min(42rem,88%)] flex-col items-end gap-1">
+      {/* Polite, not an alert: a stored failure isn't re-announced on every load. */}
+      <div role="status" className="mt-1 flex max-w-[min(42rem,88%)] flex-col items-end gap-1">
         <p className="text-right text-[12.5px] text-mute">
           <ErrorText error={error} lines={2} />
         </p>
         <div className="flex gap-1">
-          <Action icon={RotateCcwIcon} onClick={onRetry} disabled={retrying}>
+          <Action icon={RotateCcwIcon} onClick={onRetry} disabled={retrying || Boolean(retryBlocked)}>
             Retry
           </Action>
           <Action icon={PencilIcon} onClick={onEdit} disabled={retrying}>
@@ -224,6 +244,7 @@ export function FailedMessage({ body, error, sentAt, retrying = false, onRetry, 
             Discard
           </Action>
         </div>
+        {retryBlocked && <p className="text-right text-[12px] text-mute">{retryBlocked}</p>}
       </div>
     </>
   )

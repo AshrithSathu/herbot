@@ -53,6 +53,9 @@ const AROUND = 40
 type WindowPage = { messages: MessageData[]; olderMore: boolean; newerMore: boolean }
 type Cursor = { around: number } | { before: number } | { after: number }
 
+/** Why sending (and retrying a failed send) can't work while the bot is down. */
+const TELEGRAM_OFF = 'Telegram is off: messages can’t be sent until the bot is running.'
+
 /** The messages around one message, paging older (previous pages) and newer
  * (next pages) from there. The route prefetches it for a search hit. */
 export function windowQuery(topicId: number, target: number) {
@@ -622,6 +625,8 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
                       body={f.text || `${f.fileNames.length} ${f.fileNames.length === 1 ? 'file' : 'files'}`}
                       error={f.error}
                       sentAt={f.at}
+                      files={f.text ? f.fileNames.length : 0}
+                      retryBlocked={telegramOff ? TELEGRAM_OFF : undefined}
                       retrying={f.retrying}
                       onRetry={() => void retry(f)}
                       onEdit={() => edit(f)}
@@ -680,7 +685,7 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
           // Auto sends no mode, so the topic's own applies: say which.
           defaultLabel={topic.mode === 'auto' ? undefined : topicModeLabel(topic.mode)}
           blocked={topic.enabled ? undefined : <SwitchedOff topic={topic} />}
-          disabledReason={telegramOff ? 'Telegram is off: messages can’t be sent until the bot is running.' : undefined}
+          disabledReason={telegramOff ? TELEGRAM_OFF : undefined}
           onSend={(o) => void send(o)}
         />
       </div>

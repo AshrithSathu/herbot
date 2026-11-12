@@ -7,13 +7,14 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ExternalLinkIcon } from 'lucide-react'
 import { saveMode, savePurpose, saveVoice, setEnabled, wipeTopic, type Topic, type TopicDetail } from '../../api'
-import { PURPOSE_MAX, ago, charCount, compact, exact, purposeProblem } from '../../format'
+import { PURPOSE_MAX, charCount, compact, exact, purposeProblem } from '../../format'
 import { keys } from '../../queries'
 import { Button, Field, Segmented, TextArea, type Choice } from '@/components/hb/controls'
 import { DangerAction, DangerZone, DetailRow, DetailSwitch, DetailsPane, DetailsSection } from '@/components/hb/details-pane'
 import { notify, notifyFailure } from '@/components/hb/feedback'
 import { TOPIC_MODES, topicModeLabel, type TopicMode } from '@/components/hb/modes'
 import { StatusDot, topicTone } from '@/components/hb/status'
+import { When } from '@/components/hb/when'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
 
@@ -187,7 +188,7 @@ function About({ detail }: { detail: TopicDetail }) {
   return (
     <DetailsSection title="Activity">
       <DetailRow label="Messages" value={<span className="tabular-nums" title={exact(t.messages)}>{compact(t.messages)}</span>} />
-      <DetailRow label="Last active" value={<span suppressHydrationWarning>{ago(t.last_activity)}</span>} />
+      <DetailRow label="Last active" value={t.last_activity ? <When iso={t.last_activity} /> : 'never'} />
       <DetailRow
         label="T3 thread"
         value={

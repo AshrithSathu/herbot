@@ -102,15 +102,28 @@ function useHighlight(needed: boolean): Plugin | null {
 
 const FENCE = /^\s*(```|~~~)/m
 
-export function RichMessage({ body }: { body: string }) {
+type MdNode = { type: string; value?: string; children?: MdNode[] }
+
+/** Raw HTML in a message is shown as the text it is (`<details>…`), never
+ * rendered and never silently dropped (dropping it glued "open" + "hidden"). */
+function htmlAsText() {
+  const walk = (node: MdNode) => {
+    if (node.type === 'html') node.type = 'text'
+    node.children?.forEach(walk)
+  }
+  return (tree: MdNode) => walk(tree)
+}
+
+/** `preview`: the folded, inert preview of a long message. Its code headers
+ * drop Copy there (a button nobody can press); the message offers a working
+ * "Copy code" outside the preview instead. */
+export function RichMessage({ body, preview = false }: { body: string; preview?: boolean }) {
   const highlighter = useHighlight(FENCE.test(body))
   return (
     <div dir="auto" className="chat-markdown min-w-0 wrap-anywhere">
       <Markdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, htmlAsText]}
         rehypePlugins={highlighter ? [highlighter] : []}
-        // Raw HTML in a message is text, never markup.
-        skipHtml
         components={{
           a: ({ children, href }) => (
             <a href={href} target="_blank" rel="noopener noreferrer" className="break-all">
@@ -128,7 +141,7 @@ export function RichMessage({ body }: { body: string }) {
               <div className="my-3 min-w-0 overflow-hidden rounded-lg border bg-muted/60" dir="ltr">
                 <div className="flex min-h-11 items-center justify-between gap-2 border-b pl-3 text-xs text-muted-foreground">
                   <span className="truncate font-mono">{language ?? 'code'}</span>
-                  <CopyButton value={textOf(children)} label="Copy code" />
+                  {!preview && <CopyButton value={textOf(children)} label="Copy code" />}
                 </div>
                 <pre tabIndex={0} className="scroller max-h-[28rem] overflow-auto p-3 text-[13px] leading-relaxed">
                   {children}
