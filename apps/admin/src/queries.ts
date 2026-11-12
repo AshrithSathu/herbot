@@ -2,13 +2,31 @@
 // `ensureQueryData` with these (so pages render on the server and links
 // prefetch on hover); components read the same keys with `useSuspenseQuery`,
 // so a page never fetches the same thing twice and mutations update in place.
-import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
-import { listMemories, getPreferences, listTasks, ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
+import { infiniteQueryOptions, mutationOptions, queryOptions } from '@tanstack/react-query'
+import { getMessagesAround, getTaskCounts, getErrorsTotal, listActivity, markRead, listMemories, getPreferences, listTasks, ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
+
+/** Polled queries retry a failed *background* refresh twice (1 s, then 2 s)
+ * before showing "Couldn't refresh": a network blip shouldn't flash an error
+ * over data that's still good. A query that has never loaded doesn't retry,
+ * so a first-load failure still shows at once (fail loud). */
+const loaded = new Set<string>()
+function polled<T>(key: readonly unknown[], fn: () => Promise<T>) {
+  const id = JSON.stringify(key)
+  return {
+    queryFn: async () => {
+      const value = await fn()
+      loaded.add(id)
+      return value
+    },
+    retry: (failures: number) => loaded.has(id) && failures < 2,
+  }
+}
 
 export const keys = {
   session: ['session'] as const,
   uiPrefs: ['ui-prefs'] as const,
   overview: ['overview'] as const,
+  activity: ['activity'] as const,
   /** Prefix of the list and every topic detail, so one invalidate hits all. */
   topics: ['topics'] as const,
   topicList: ['topics', 'list'] as const,
@@ -37,23 +55,26 @@ export const uiPrefsQuery = queryOptions({
 
 export const overviewQuery = queryOptions({
   queryKey: keys.overview,
-  queryFn: () => getOverview(),
+  ...polled(keys.overview, () => getOverview()),
   refetchInterval: 15_000,
 })
 
 export const topicsQuery = queryOptions({
   queryKey: keys.topicList,
-  queryFn: () => listTopics(),
+  ...polled(keys.topicList, () => listTopics()),
   refetchInterval: 15_000,
 })
 
-export const topicQuery = (id: number) =>
+/** `poll: false` while the topic isn't on screen (a phone showing the agents
+ * list): the query keeps its data but stops asking every 2 s. */
+export const topicQuery = (id: number, { poll = true }: { poll?: boolean } = {}) =>
   queryOptions({
     queryKey: keys.topic(id),
-    queryFn: () => getTopic({ data: id }),
+    ...polled(keys.topic(id), () => getTopic({ data: id })),
     // Small (no messages), so polling is cheap. A changed message count is
-    // what tells the chat log to fetch what's new.
-    refetchInterval: 2_000,
+    // what tells the chat log to fetch what's new. Never in a hidden tab.
+    refetchInterval: poll ? 2_000 : false,
+    refetchIntervalInBackground: false,
   })
 
 /** A topic's history, newest page first; each next page is older. Pages
@@ -85,10 +106,10 @@ export const errorQuery = (id: string) =>
   })
 
 export const memoriesQuery = queryOptions({
-  queryKey: ['memories'], queryFn: () => listMemories(), refetchInterval: 10_000,
+  queryKey: ['memories'], ...polled(['memories'], () => listMemories()), refetchInterval: 10_000,
 })
 export const preferencesQuery = queryOptions({
-  queryKey: ['preferences'], queryFn: () => getPreferences(), refetchInterval: 10_000,
+  queryKey: ['preferences'], ...polled(['preferences'], () => getPreferences()), refetchInterval: 10_000,
 })
 export const tasksQuery = infiniteQueryOptions({
   queryKey: ['tasks'],
@@ -96,4 +117,33 @@ export const tasksQuery = infiniteQueryOptions({
   queryFn: ({ pageParam }) => listTasks({ data: { before: pageParam } }),
   getNextPageParam: (last) => last.length === 50 ? last[last.length - 1].id : undefined,
   refetchInterval: 15_000,
+})
+
+export const activityQuery = queryOptions({
+  queryKey: keys.activity,
+  ...polled(keys.activity, () => listActivity()),
+  refetchInterval: 2_000,
+  refetchIntervalInBackground: false,
+})
+
+/** Refresh list and detail markers after a successful acknowledgement. */
+export const markReadMutation = (client: import('@tanstack/react-query').QueryClient) =>
+  mutationOptions({
+    mutationFn: (data: { id: number; through_message_id: number }) => markRead({ data }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.topics }),
+  })
+
+export const messagesAroundQuery = (id: number, around: number, limit = 30) =>
+  queryOptions({
+    queryKey: [...keys.messages(id), 'around', around, limit],
+    queryFn: () => getMessagesAround({ data: { id, around, limit } }),
+  })
+export const taskCountsQuery = queryOptions({
+  queryKey: ['tasks', 'counts'],
+  ...polled(['tasks', 'counts'], () => getTaskCounts()),
+  refetchInterval: 15_000,
+})
+export const errorsTotalQuery = (q: string) => queryOptions({
+  queryKey: [...keys.errors, 'total', q],
+  queryFn: () => getErrorsTotal({ data: { q } }),
 })

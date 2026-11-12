@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 import { HeadContent, Outlet, Scripts, createRootRouteWithContext } from '@tanstack/react-router'
 import { Toaster } from '@/components/ui/sonner'
@@ -29,15 +29,38 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   ),
 })
 
+/** When the system flips between light and dark, switch colours at once:
+ * transitions are off for two frames (styles.css, `.theme-switching`). */
+function useInstantThemeSwitch() {
+  useEffect(() => {
+    const scheme = matchMedia('(prefers-color-scheme: dark)')
+    let frame = 0
+    const onChange = () => {
+      const root = document.documentElement
+      root.classList.add('theme-switching')
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => root.classList.remove('theme-switching'))
+      })
+    }
+    scheme.addEventListener('change', onChange)
+    return () => {
+      scheme.removeEventListener('change', onChange)
+      cancelAnimationFrame(frame)
+    }
+  }, [])
+}
+
 function Document({ children }: { children: ReactNode }) {
+  useInstantThemeSwitch()
   return (
     <html lang="en">
       <head>
         <HeadContent />
-        {/* Browser chrome matches the page (--background in each theme). Written
+        {/* Browser chrome matches the canvas (--canvas in each theme). Written
             here, not in head(), because HeadContent keeps one meta per name. */}
-        <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f8fafc" />
-        <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0b0f14" />
+        <meta name="theme-color" media="(prefers-color-scheme: light)" content="#edf1f4" />
+        <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0b1015" />
       </head>
       <body>
         {children}

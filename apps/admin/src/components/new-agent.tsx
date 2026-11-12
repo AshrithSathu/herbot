@@ -1,113 +1,151 @@
-import { useReducer, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+// New agent: a modal form (bottom sheet on phones) that creates a forum topic
+// with a purpose (docs/design/DECISIONS.md, "Dialogs"). One dialog for the
+// whole panel: <NewAgentHost /> is mounted once in the layout, and anything
+// (the agents pane's +, ⌘K, the Overview and Topics pages) opens it with
+// openNewAgent().
+import { useRef, useState, useSyncExternalStore } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { createTopic } from '../api'
-import { keys } from '../queries'
-import { isSignedOut } from '../session'
-import { ErrorNote } from '../ui'
-import { Button } from './ui/button'
-import { Textarea } from './ui/textarea'
-type Creation =
-  | { status: 'closed' | 'editing' }
-  | { status: 'creating' }
-  | { status: 'failed'; error: string }
-  | { status: 'created'; id: number; error?: string }
-function transitionCreation(state: Creation, next: Creation): Creation {
-  const allowed: Record<Creation['status'], Creation['status'][]> = {
-    closed: ['editing'],
-    editing: ['closed', 'creating'],
-    creating: ['created', 'failed'],
-    failed: ['closed', 'creating', 'editing'],
-    created: ['created'],
-  }
-  return allowed[state.status].includes(next.status) ? next : state
+import { charCount, purposeProblem, PURPOSE_MAX } from '../format'
+import { keys, overviewQuery } from '../queries'
+import { Field, TextArea, TextInput } from '@/components/hb/controls'
+import { FormDialog } from '@/components/hb/dialogs'
+import { notify } from '@/components/hb/feedback'
+
+/** Telegram allows 128 characters in a topic name. */
+const NAME_MAX = 128
+
+let isOpen = false
+const listeners = new Set<() => void>()
+function setOpen(next: boolean) {
+  if (isOpen === next) return
+  isOpen = next
+  for (const l of listeners) l()
 }
-export function NewAgent() {
-  const [state, setState] = useReducer(transitionCreation, { status: 'closed' })
-  const open = state.status !== 'closed'
-  const busy = useRef(false)
-  const action = useRef<{ draft: string; key: string } | null>(null)
-  const [name, setName] = useState(''),
-    [purpose, setPurpose] = useState('')
-  const client = useQueryClient(),
-    navigate = useNavigate()
-  async function continueToTopic(id: number) {
-    try {
+
+/** Opens the panel's New agent dialog. */
+export function openNewAgent() {
+  setOpen(true)
+}
+
+function useOpen() {
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l)
+      return () => listeners.delete(l)
+    },
+    () => isOpen,
+    () => false,
+  )
+}
+
+/** Mount once, inside the shell. */
+export function NewAgentHost() {
+  const open = useOpen()
+  return <NewAgentDialog open={open} onOpenChange={setOpen} />
+}
+
+function NewAgentDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const [name, setName] = useState('')
+  const [purpose, setPurpose] = useState('')
+  // Validate on submit, then on every change once a field has shown an error.
+  const [tried, setTried] = useState(false)
+  // One idempotency key per draft: a retry after a network failure can't
+  // create the agent twice; editing the draft makes a new request.
+  const key = useRef<{ draft: string; key: string } | null>(null)
+  const client = useQueryClient()
+  const navigate = useNavigate()
+  // Creating a topic needs the running bot. Say so before the form is filled,
+  // not after it fails; the fields stay editable so the draft is ready.
+  const overview = useQuery({ ...overviewQuery, enabled: open })
+  const telegramOff = overview.data != null && !overview.data.bot
+
+  const create = useMutation({
+    mutationFn: () => {
+      const draft = `${name.trim()}\u0000${purpose.trim()}`
+      if (key.current?.draft !== draft) key.current = { draft, key: crypto.randomUUID() }
+      return createTopic({ data: { name: name.trim(), purpose: purpose.trim(), idempotencyKey: key.current.key } })
+    },
+    onSuccess: async ({ id }) => {
       await client.invalidateQueries({ queryKey: keys.topics })
+      onOpenChange(false)
+      setName('')
+      setPurpose('')
+      setTried(false)
+      key.current = null
+      notify('Agent created. Its topic is in the Herbot group.')
       await navigate({ to: '/topics/$id', params: { id } })
-    } catch (error) {
-      setState({ status: 'created', id, error: String(error) })
-    }
-  }
-  async function submit() {
-    if (busy.current || state.status === 'created') return
-    busy.current = true
-    setState({ status: 'creating' })
-    try {
-      const draft = JSON.stringify([name, purpose])
-      if (action.current?.draft !== draft) action.current = { draft, key: crypto.randomUUID() }
-      const { id } = await createTopic({ data: { name, purpose, idempotencyKey: action.current.key } })
-      setState({ status: 'created', id })
-      await continueToTopic(id)
-    } catch (error) {
-      if (isSignedOut(error)) {
-        client.clear()
-        await navigate({ to: '/login', ignoreBlocker: true })
-      }
-      setState({ status: 'failed', error: String(error) })
-    } finally {
-      busy.current = false
-    }
-  }
+    },
+  })
+
+  const nameProblem = !name.trim()
+    ? 'Give the agent a name, like “Trip planner”.'
+    : charCount(name.trim()) > NAME_MAX
+      ? `Keep the name under ${NAME_MAX} characters.`
+      : null
+  const nameError = tried ? (nameProblem ?? undefined) : undefined
+  const purposeError = tried ? (purposeProblem(purpose) ?? undefined) : undefined
+
   return (
-    <div>
-      <Button disabled={state.status === 'creating' || state.status === 'created'} onClick={() => setState({ status: open ? 'closed' : 'editing' })} aria-expanded={open}>
-        New agent
-      </Button>
-      {open && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            void submit()
-          }}
-          className="mt-4 flex max-w-xl flex-col gap-3 rounded-xl border bg-card p-5"
-        >
-          <label htmlFor="agent-name" className="text-sm font-medium">
-            Name
-          </label>
-          <input
-            id="agent-name"
-            disabled={state.status === 'creating' || state.status === 'created'}
-            required
-            maxLength={128}
+    <FormDialog
+      open={open}
+      onOpenChange={(o) => {
+        // A request in flight finishes before the dialog can close.
+        if (create.isPending) return
+        onOpenChange(o)
+        if (!o) {
+          create.reset()
+          setTried(false)
+        }
+      }}
+      title="New agent"
+      description="Creates a topic in the Herbot group. Its purpose is what the agent is for."
+      submitLabel="Create agent"
+      pendingLabel="Creating…"
+      pending={create.isPending}
+      canSubmit={!telegramOff}
+      error={create.error?.message ?? null}
+      onSubmit={() => {
+        setTried(true)
+        if (nameProblem || purposeProblem(purpose)) {
+          // Focus the first field with a problem.
+          const first = document.getElementById(nameProblem ? 'new-agent-name' : 'new-agent-purpose')
+          requestAnimationFrame(() => first?.focus())
+          return
+        }
+        create.mutate()
+      }}
+    >
+      {telegramOff && (
+        <p role="note" className="rounded-lg bg-warning-soft px-3 py-2.5 text-[13.5px] text-ink">
+          <span className="font-medium text-warning">Telegram isn’t connected,</span> so the topic can’t be made yet. You can write the
+          name and purpose now and create it once the bot is back.
+        </p>
+      )}
+      <Field id="new-agent-name" label="Name" error={nameError}>
+        {(p) => (
+          <TextInput
+            {...p}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="min-h-11 rounded-lg border px-3"
+            autoComplete="off"
+            spellCheck={false}
+            data-1p-ignore
+            maxLength={NAME_MAX * 2}
+            placeholder="Trip planner"
           />
-          <label htmlFor="agent-purpose" className="text-sm font-medium">
-            What should this agent do?
-          </label>
-          <Textarea
-            id="agent-purpose"
-            disabled={state.status === 'creating' || state.status === 'created'}
-            required
-            maxLength={12000}
-            value={purpose}
-            onChange={(e) => setPurpose(e.target.value)}
-            placeholder="Give it a purpose in at least three words."
-          />
-          <div className="flex gap-2">
-            <Button disabled={(state.status === 'creating' || state.status === 'created')} type="submit">
-              {state.status === 'creating' ? 'Creating…' : state.status === 'created' ? 'Created' : 'Create agent'}
-            </Button>
-            <Button variant="ghost" type="button" disabled={(state.status === 'creating' || state.status === 'created')} onClick={() => setState({ status: 'closed' })}>
-              Cancel
-            </Button>
-          </div>
-          {state.status === 'failed' && <ErrorNote title="Couldn’t create agent">{state.error}</ErrorNote>}
-          {state.status === 'created' && <p role="status">Agent created. {state.error}<Button type="button" variant="link" onClick={() => void continueToTopic(state.id)}>Open agent</Button></p>}
-        </form>
-      )}
-    </div>
+        )}
+      </Field>
+      <Field
+        id="new-agent-purpose"
+        label="Purpose"
+        error={purposeError}
+        hint="At least three words, like “Help me plan trips”."
+        counter={{ count: charCount(purpose), max: PURPOSE_MAX }}
+      >
+        {(p) => <TextArea {...p} value={purpose} onChange={(e) => setPurpose(e.target.value)} rows={4} />}
+      </Field>
+    </FormDialog>
   )
 }

@@ -4,7 +4,7 @@
 
 The bot lives in one private Telegram group with Topics turned on: your Herbot group, just you and the bot. **General** is the everyday chat. **Every other topic is its own agent**: the first time you write in a new topic, the bot asks openly what it should be. Your answer, typed at any length or sent as a **voice note**, becomes that topic's `AGENTS.md`, and the topic keeps its own long-running memory, like separate Grok chats. Voice notes work everywhere: they're transcribed to English and the bot shows what it heard. The bot answers only you, stays silent in DMs, and leaves any other group.
 
-> **Status:** Steps 1–7 are done. Step 8 (the admin panel) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** Steps 1–9, 11 and 12 are done; Step 13 (the panel redesign) is in review. See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/design/DECISIONS.md](docs/design/DECISIONS.md).
 
 ## How it works
 
@@ -104,6 +104,7 @@ make run               # run herbot-core with pretty logs on 127.0.0.1:8787
 make check             # fmt + clippy (warnings are errors) + tests
 make test-voice        # real OpenAI transcription of generated speech (fractions of a cent)
 make db-down           # stop Postgres (make db-reset also deletes data)
+make admin-stress      # admin panel on 127.0.0.1:3310 against worst-case data (separate database)
 make admin             # admin panel on 127.0.0.1:3300 (needs [Bun](https://bun.sh) and the admin settings above)
 ```
 
@@ -111,16 +112,18 @@ make admin             # admin panel on 127.0.0.1:3300 (needs [Bun](https://bun.
 
 `apps/admin` is a TanStack Start app on `127.0.0.1` only (on the VPS it goes behind Tailscale). You sign in with `HERBOT_ADMIN_PASSWORD`; the session is a signed, httpOnly cookie. The panel's server talks to herbot-core's `/admin/api` with `HERBOT_ADMIN_TOKEN`, which never reaches the browser.
 
-- **Overview**: topics answering, active T3 threads, messages, errors in the last 24 hours, the last error. Refreshes every 15 seconds.
-- **Topics**: each topic's purpose (saving rewrites its `AGENTS.md`, like `/setup`), an on/off switch, its `AGENTS.md`, its history, and the same clean slates as `/new` and `/forget`, behind a confirm dialog. The history is a fixed-height, virtualized chat log (only the messages on screen are in the page, however far back you go): it opens at the newest message, loads 30 older ones at a time as you scroll up (keeping your place), groups by day, cuts long messages to 12 lines with Show more, and picks up new messages live (following them if you're at the bottom, or showing "N new messages" if you scrolled up).
-- **Logs**: search failures by `E-1042`, kind or words, as you type, 50 at a time with "Load older errors". Each error shows its full message and context JSON.
-- **Chat** (each topic's Chat tab): talk to any agent from the web, like grok.com. Attach files (button, drag and drop, paste), pick a mode for the message (Auto, Fast, Think, Heavy, DeepSearch), and see it posted in Telegram as "🖥️ from the panel", a thinking indicator while the agent works, and the reply rendered with code highlighting, tables, images, players and file cards. **New agent** creates a forum topic with its purpose (the bot needs the "Manage topics" right). **Files** lists everything in the topic's folder; **Settings** has on/off, mode, voice, purpose and clean slates.
-- **Search**: full-text search across every topic, with highlighted snippets that jump to the message.
-- **Tasks**, **Memory**, **Personalize**: scheduled prompts (create with presets or cron), shared memories, and custom instructions with about-you.
-- **Connectors**: the MCP servers Codex has (names and commands only, never secrets) and Herbot's own tools.
-- **Companions**: four original animated characters (Luma, Flint, Pip, Orbit) to talk to by voice or text. Hold the mic, speak, and the companion answers out loud while its avatar talks; tap while it speaks to interrupt. Each has its own agent topic with memory, or runs in General (labelled) if the bot can't create topics.
+The panel is a three-pane messenger (decided by prototyping against worst-case data; see [docs/design/DECISIONS.md](docs/design/DECISIONS.md)): a slim icon rail for the pages, the agents pane (every topic, virtualized and filterable, with "New" for unread replies and a running rule while an agent works), the main pane, and, on topic pages, a details pane. Below 68.75 rem the details pane opens over the page; on phones it's one pane at a time with a bottom tab bar (Agents, Overview, Search, Tasks, More). ⌘K / Ctrl+K opens a palette for pages, agents, actions and message search. A strip at the top says when Telegram isn't connected.
 
-Data goes through TanStack Query: route loaders fill the cache on the server, so pages arrive rendered, hovering a link prefetches its page, the on/off switch updates optimistically and rolls back if herbot-core refuses, and a failed background refresh keeps the last data on screen with a warning. Every part is [shadcn/ui](https://ui.shadcn.com) on Tailwind v4: the Sidebar (lists every agent with its status, collapses to icons with ⌘B, becomes a sheet on phones, remembers its state in a cookie read on the server), Breadcrumb, Card, Table, Field, InputGroup, Item, Empty, Alert, AlertDialog, Switch, Badge, Kbd, Spinner, Skeleton and Sonner toasts. The palette is OKLCH: blue for actions, green, amber and red for status only, and light and dark modes that follow the system.
+- **Topic** (pick an agent): the conversation, with paging back through any length of history, a "New · N" line where unread replies start, jump-to-latest, failed sends with Retry / Edit / Discard, and a composer with the five per-message modes (or `/think`, `/heavy`, `/fast`, `/deepsearch`). The details pane holds the purpose (edit in place), answering on/off, standing mode, spoken replies and voice, language, private mode, AGENTS.md, the T3 thread, and the danger zone (clean slate, or forget behind a typed "forget"). **Files** lists the topic's files with filter, sort and a preview.
+- **Overview**: four figures, "Needs you" (unread replies, topics waiting for a purpose, failed tasks, recent errors, switched-off topics, each with one action), the last error.
+- **Topics**: every topic in one table with filter, state and sort, multi-select with a bulk bar (switch on/off with Undo), and New agent.
+- **Search**: every message, grouped by topic, matches highlighted; each opens the conversation at that message.
+- **Tasks**, **Memory**, **Personalize**: scheduled prompts (status filter, "Coming up", pause / run / delete, new task with presets or cron), shared memories (edit in place, forget with Undo), and custom instructions and about-you beside a live preview of the PERSONAL.md every agent reads.
+- **Companions**: the conversation in the main pane and the voice call (listening, transcribing, thinking, speaking) docked beside it.
+- **Connectors**: the MCP servers Codex has (names and commands only, never secrets) and Herbot's 13 tools with who may use each.
+- **Logs**: the error list beside the selected error (↑/↓ to walk), search by `E-1042` or words; `/logs/E-1042` links open that error.
+
+Data goes through TanStack Query: route loaders fill the cache on the server, hovering a link prefetches its page, switches update optimistically and roll back on failure, and unread markers and agent activity come from herbot-core. Components live in `apps/admin/src/components/hb/` (the kit); all user and agent text goes through `components/user-text.tsx`. The palette is OKLCH: one blue for actions, green, amber and red for status only, a serif for page titles and big numbers, and light and dark modes that follow the system. Check panel changes with `make admin-stress` at desktop, phone width and dark mode.
 
 In production, `make admin-build` and then `bun run --cwd apps/admin start` run `apps/admin/server.mjs` on Bun (Bun is the panel's runtime and package manager). It caches the content-hashed `/assets` for a year without revalidating, and serves them as brotli or gzip files written at build time (718 KB of JavaScript and CSS goes out as 196 KB). Pages and server-function data are compressed as they stream out.
 
@@ -138,3 +141,16 @@ CI (formatting, clippy, tests against Postgres) is **manual only**: `gh workflow
 ## Workflow
 
 Development happens in T3 Code with Codex: one roadmap step per branch (`step-N/<name>`), small logical commits, and each step lands only when its "Done when" checks pass. See [AGENTS.md](AGENTS.md).
+
+The messenger API also exposes `unread` (bot replies, capped at 99), `language` and `private_mode` in conversation list/detail summaries. `POST /admin/api/conversations/{id}/read` accepts `{through_message_id}` from that conversation and advances a shared, durable read marker. Migration 0023 starts existing history as read. `GET /admin/api/activity` batches active/queued conversations as `[{conversation_id, in_progress: true}]`; the per-topic activity route remains available. Typed server/query helpers are ready for the messenger redesign; this change does not alter panel UI.
+
+The stress topic inserts messages in timestamp order so its recent history keeps a mix of worst-case bodies.
+
+Panel API review additions: search hits include `sent_at` and `from_bot`.
+`GET /admin/api/tasks/counts` returns all four status totals in one grouped query;
+`GET /admin/api/errors/total?q=` returns `{total, capped}` (a lower bound at 10,000 when capped), using the list's literal filter independently of its cursor.
+`GET /admin/api/conversations/{id}/messages?around=<message-id>&limit=N` includes the target,
+up to `(N-1)/2` older and `N/2` newer messages (integer division), oldest first,
+with `has_more_before` and `has_more_after`. The limit stays clamped to 1–100;
+a missing or foreign-conversation target returns 404, and combining `around` with a cursor returns 400.
+Panel server failures record the returned explanation with path, status and an E-id.

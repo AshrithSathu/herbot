@@ -56,11 +56,13 @@ pub fn router(state: Arc<AdminState>) -> Router {
             get(get_preferences).put(save_preferences),
         )
         .route("/admin/api/tasks", get(task_list).post(task_create))
+        .route("/admin/api/tasks/counts", get(task_counts))
         .route("/admin/api/tasks/{id}/{action}", post(task_change))
         .route("/admin/api/overview", get(overview))
         .route("/admin/api/conversations", get(conversations))
         .route("/admin/api/conversations/{id}", get(conversation))
         .route("/admin/api/conversations/{id}/messages", get(messages))
+        .route("/admin/api/conversations/{id}/read", post(mark_read))
         .route("/admin/api/conversations/{id}/export", get(export))
         .route("/admin/api/conversations/{id}/feedback", get(feedback))
         .route("/admin/api/conversations/{id}/purpose", put(set_purpose))
@@ -71,6 +73,7 @@ pub fn router(state: Arc<AdminState>) -> Router {
             post(wipe_conversation),
         )
         .route("/admin/api/errors", get(errors))
+        .route("/admin/api/errors/total", get(error_total))
         .route("/admin/api/errors/{id}", get(error))
         .with_state(state)
 }
@@ -162,6 +165,11 @@ async fn overview(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> R
 struct ConversationSummary {
     id: i64,
     place: String,
+    /// Just the topic's own name ("General" for General, "Topic 7" when a
+    /// topic has no name), for lists and titles.
+    name: String,
+    /// The group's title, for context next to the name.
+    group: String,
     is_general: bool,
     purpose: Option<String>,
     setup_state: &'static str,
@@ -172,6 +180,9 @@ struct ConversationSummary {
     last_activity: Option<DateTime<Utc>>,
     thread_link: Option<String>,
     mode: String,
+    language: String,
+    private_mode: bool,
+    unread: i64,
 }
 
 impl ConversationSummary {
@@ -181,6 +192,12 @@ impl ConversationSummary {
         ConversationSummary {
             id: status.conversation_id,
             place: status.place(),
+            name: match (status.tg_topic_id, &status.topic_name) {
+                (None, _) => "General".into(),
+                (Some(_), Some(name)) if !name.trim().is_empty() => name.clone(),
+                (Some(id), _) => format!("Topic {id}"),
+            },
+            group: status.chat_title.clone(),
             is_general: status.tg_topic_id.is_none(),
             purpose: status.purpose.as_deref().map(|p| match purpose_chars {
                 Some(n) => shorten(p, n),
@@ -194,6 +211,9 @@ impl ConversationSummary {
             last_activity: status.last_message_at,
             thread_link: status.thread_link.clone(),
             mode: status.mode.as_str().into(),
+            language: status.language.clone(),
+            private_mode: status.private_mode,
+            unread: status.panel_unread,
         }
     }
 }
@@ -225,6 +245,67 @@ async fn conversations(State(state): State<Arc<AdminState>>, headers: HeaderMap)
             .map(|s| ConversationSummary::of(s, Some(LIST_PURPOSE_CHARS)))
             .collect::<Vec<_>>()),
         Err(e) => db_fail(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadBody {
+    through_message_id: i64,
+}
+
+async fn read_failure(pool: &PgPool, err: sqlx::Error) -> Reply {
+    match crate::errors::record(pool, "admin.read", &err.to_string(), json!({})).await {
+        Ok(error_id) => {
+            tracing::error!(%error_id, error = %err, "panel read marker failed");
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{error_id}: could not mark conversation read; check logs"),
+            )
+        }
+        Err(record_error) => {
+            tracing::error!(error = %record_error, "could not record panel read failure");
+            db_fail(err)
+        }
+    }
+}
+
+async fn mark_read(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<ReadBody>,
+) -> Reply {
+    guard!(headers, state);
+    // Validate ownership and existence in the UPDATE: arbitrary future IDs must
+    // never acknowledge replies the panel has not seen.
+    let marker = sqlx::query_scalar::<_, i64>(
+        "UPDATE conversations c
+         SET panel_read_through_message_id = greatest(c.panel_read_through_message_id, $2)
+         WHERE c.id = $1 AND EXISTS (
+             SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.id = $2)
+         RETURNING panel_read_through_message_id",
+    )
+    .bind(id)
+    .bind(body.through_message_id)
+    .fetch_optional(&state.pool)
+    .await;
+    match marker {
+        Ok(Some(marker)) => ok(json!({"through_message_id": marker})),
+        Ok(None) => match sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = $1)",
+        )
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await
+        {
+            Ok(true) => fail(
+                StatusCode::BAD_REQUEST,
+                "through_message_id must belong to this conversation",
+            ),
+            Ok(false) => fail(StatusCode::NOT_FOUND, "no such conversation"),
+            Err(e) => read_failure(&state.pool, e).await,
+        },
+        Err(e) => read_failure(&state.pool, e).await,
     }
 }
 
@@ -267,6 +348,8 @@ async fn conversation(
 
 #[derive(Debug, Deserialize)]
 struct MessagesQuery {
+    /// Includes the target, with older/newer neighbours within the limit.
+    around: Option<i64>,
     /// Older than this message id (to load earlier history).
     before: Option<i64>,
     /// Newer than this message id (to pick up what arrived since).
@@ -293,6 +376,15 @@ async fn messages(
         Ok(true) => {}
         Ok(false) => return fail(StatusCode::NOT_FOUND, "no such conversation"),
         Err(e) => return db_fail(e),
+    }
+    if let Some(target) = query.around {
+        if query.before.is_some() || query.after.is_some() {
+            return fail(
+                StatusCode::BAD_REQUEST,
+                "around cannot be combined with before or after",
+            );
+        }
+        return messages_around(&state.pool, id, target, limit).await;
     }
     let rows: Result<Vec<MessageRow>, _> = match query.after {
         Some(after) => {
@@ -329,6 +421,45 @@ async fn messages(
         rows.reverse(); // fetched newest first; pages read oldest first
     }
     ok(json!({ "messages": rows, "has_more": has_more }))
+}
+
+/// At most `limit` rows including the target: (limit-1)/2 older, limit/2 newer.
+/// Empty space at a history boundary is not filled from the other direction.
+async fn messages_around(pool: &PgPool, id: i64, target: i64, limit: i64) -> Reply {
+    let rows: Vec<MessageRow> = match sqlx::query_as(
+        "WITH target AS (SELECT * FROM messages WHERE conversation_id=$1 AND id=$2),
+         older AS (SELECT m.* FROM messages m WHERE m.conversation_id=$1 AND m.id<$2
+                   AND EXISTS(SELECT 1 FROM target) ORDER BY m.id DESC LIMIT $3),
+         newer AS (SELECT m.* FROM messages m WHERE m.conversation_id=$1 AND m.id>$2
+                   AND EXISTS(SELECT 1 FROM target) ORDER BY m.id ASC LIMIT $4)
+         SELECT id,sent_at,from_bot,is_voice,body,attachments FROM
+         (SELECT * FROM older UNION ALL SELECT * FROM target UNION ALL SELECT * FROM newer) message_window
+         ORDER BY id ASC",
+    ).bind(id).bind(target).bind((limit-1)/2).bind(limit/2).fetch_all(pool).await {
+        Ok(rows) => rows,
+        Err(e) => return db_fail(e),
+    };
+    let (Some(first), Some(last)) = (rows.first(), rows.last()) else {
+        return fail(
+            StatusCode::NOT_FOUND,
+            "no such message in this conversation",
+        );
+    };
+    let more: (bool, bool) = match sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id=$1 AND id<$2),
+                EXISTS(SELECT 1 FROM messages WHERE conversation_id=$1 AND id>$3)",
+    )
+    .bind(id)
+    .bind(first.id)
+    .bind(last.id)
+    .fetch_one(pool)
+    .await
+    {
+        Ok(more) => more,
+        Err(e) => return db_fail(e),
+    };
+    ok(json!({"messages":rows,"has_more":more.0 || more.1,
+              "has_more_before":more.0,"has_more_after":more.1}))
 }
 
 #[derive(Debug, Deserialize)]
@@ -568,6 +699,33 @@ async fn error_summaries(
     Ok(rows)
 }
 
+/// Bounded work even for a large log. The total covers the filter, not a page cursor.
+async fn error_total(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Query(query): Query<ErrorQuery>,
+) -> Reply {
+    guard!(headers, state);
+    let q = query.q.as_deref().map(str::trim).filter(|q| !q.is_empty());
+    let by_id = q.and_then(|q| q.parse::<ErrorId>().ok()).map(|id| id.0);
+    let count: i64 = match sqlx::query_scalar(
+        "SELECT count(*) FROM (SELECT 1 FROM errors
+         WHERE ($1::bigint IS NOT NULL AND id=$1)
+            OR ($1::bigint IS NULL AND ($2::text IS NULL
+                OR kind ILIKE '%' || $2 || '%' OR message ILIKE '%' || $2 || '%'))
+         LIMIT 10001) matches",
+    )
+    .bind(by_id)
+    .bind(q.map(like_literal))
+    .fetch_one(&state.pool)
+    .await
+    {
+        Ok(count) => count,
+        Err(e) => return db_fail(e),
+    };
+    ok(json!({"total":count.min(10000),"capped":count>10000}))
+}
+
 async fn errors(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,
@@ -744,6 +902,23 @@ async fn set_voice(
 struct TaskPage {
     before: Option<i64>,
 }
+async fn task_counts(State(state): State<Arc<AdminState>>, headers: HeaderMap) -> Reply {
+    guard!(headers, state);
+    let rows: Vec<(String, i64)> =
+        match sqlx::query_as("SELECT status,count(*) FROM tasks GROUP BY status")
+            .fetch_all(&state.pool)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => return db_fail(e),
+        };
+    let mut counts = json!({"active":0,"paused":0,"done":0,"cancelled":0});
+    for (status, count) in rows {
+        counts[status] = json!(count);
+    }
+    ok(counts)
+}
+
 async fn task_list(
     State(state): State<Arc<AdminState>>,
     headers: HeaderMap,

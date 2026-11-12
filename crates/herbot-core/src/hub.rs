@@ -134,6 +134,25 @@ pub async fn resolve_topic(
     })
 }
 
+/// Every tool herbot-mcp gives the agents, with who may use it. The panel's
+/// Connectors page shows this list; herbot-mcp's tests check it matches the
+/// tools the server actually registers.
+pub const TOOLS: &[(&str, &str)] = &[
+    ("list_topics", "every topic"),
+    ("search_messages", "every topic"),
+    ("read_topic", "every topic"),
+    ("ask_topic", "General only"),
+    ("post_to_topic", "General only"),
+    ("remember", "every topic"),
+    ("recall", "every topic"),
+    ("forget", "every topic"),
+    ("schedule_task", "every topic"),
+    ("list_tasks", "every topic"),
+    ("pause_task", "every topic"),
+    ("resume_task", "every topic"),
+    ("cancel_task", "every topic"),
+];
+
 /// Which conversation a read or search may look at.
 async fn allowed_target(
     pool: &PgPool,

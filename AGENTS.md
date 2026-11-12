@@ -67,6 +67,7 @@ Polling Telegram for updates is not a turn. It keeps polling after a network err
 
 - **Run tests only when Ashrith asks** (`make check`, `cargo test`, anything else). Don't run them after every change; say what is untested instead.
 - No end-to-end (browser) tests. They were removed on 2026-11-09.
+- **Panel changes are checked against worst-case data:** `make admin-stress` runs the panel on 127.0.0.1:3310 against a separate `herbot_stress` database (hostile names in every script, a 6,000-message topic, thousands of errors, memories and tasks; seed in `scripts/stress/seed.sql`). Check desktop, phone width and dark mode. All user and agent text goes through `components/user-text.tsx`.
 - New Rust code still ships with unit or integration tests.
 
 - `make test`: unit tests plus integration tests against real Postgres. Each `#[sqlx::test]` gets a fresh database.

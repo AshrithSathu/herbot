@@ -105,3 +105,18 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - [x] Bounded task history with cursor pagination in the API/panel; hub search uses full-text first and a deliberate literal substring fallback
 - [ ] Rate limits, retention job, health alerts to the admin
 - Done when: a week runs with no manual restarts.
+
+## Step 12: Admin panel rebuild
+- [x] Rebuilt every page (overview, topics, topic chat/files/settings, tasks, search, logs, memory, personalize, connectors, companions, sign-in) to the Emil design-engineering rules, stress-tested against a separate database of hostile data: 220 topics with empty, 128-character, Arabic, Chinese, emoji, HTML, Markdown and Zalgo names; a 6,000-message topic with 10,000-character walls, unbroken strings, huge code blocks, wide tables and broken attachments; 3,000 errors; 300 memories; 300 tasks; maximum-length preferences
+- [x] `UserText` renders all user and agent text safely (direction isolated, long words wrap, combining marks clipped, empty shown as "Untitled"); the API returns each topic's `name` and `group`
+- [x] Long lists are virtualized (sidebar agents, topics, chat history) with filters; the page uses one native scrollbar
+- [x] Every action has pending, error and retry states; destructive actions are separated and confirmed; touch targets are 44px on touch screens; checked on desktop, phone and dark mode
+- Done when: ⏳ Ashrith signs in and clicks through it himself.
+
+## Step 13: Three-pane messenger API prerequisites
+- [x] Migration 0023: shared forward-only panel read markers, existing history backfilled as read, indexed unread counts capped at 99
+- [x] Authenticated read acknowledgement and batched activity endpoints; existing per-conversation activity preserved
+- [x] Conversation list/detail expose language and private mode; typed panel server functions, activity polling and read mutation options (UI unchanged)
+- [x] Backend review: real panel failure reasons, search timestamps/senders, grouped task counts, capped filtered error totals, direct message windows (no UI changes)
+- [x] Stress-topic message IDs follow generated timestamp order, keeping worst-case bodies spread through recent history
+- Done when: requested Rust checks and panel typecheck pass locally; deployment and messenger UI integration are separate work.

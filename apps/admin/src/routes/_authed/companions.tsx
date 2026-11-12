@@ -1,136 +1,156 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useReducer, useRef, useState } from 'react'
-import {
-  ArrowLeftIcon,
-  MicIcon,
-  SendIcon,
-  SquareIcon,
-  Volume2Icon,
-} from 'lucide-react'
-import { companionReply, createTopic, listTopics, getMessages } from '../../api'
-import {
-  COMPANIONS,
-  CompanionAvatar,
-  type Companion,
-  type VoicePhase,
-} from '../../components/companion-avatar'
-import { RichMessage } from '../../components/rich-message'
-import { Button } from '../../components/ui/button'
+// Companions (docs/design/DECISIONS.md, "Companions": Call panel). The
+// companion's conversation stays in the main pane like any topic; the voice
+// call (avatar, what it's doing, the mic) docks in the details pane, which is
+// beside the chat from 68.75rem and opens over it below that. Narrow screens
+// also get a compact call bar in the header and a mic in the composer, so a
+// voice turn never needs the panel open. Companions are real topics
+// ("Companion · Luma"), so they also sit in the agents pane like any topic.
+//
+// Every state has its own words: opening, idle, getting the mic, listening
+// (with a timer), writing it down, thinking, speaking, failed (with retry),
+// and voice unavailable (no OPENAI_API_KEY: typing still works).
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
+import { MicIcon, MicOffIcon, PhoneIcon, SquareIcon, Volume2Icon, VolumeXIcon, XIcon } from 'lucide-react'
+import { companionReply, createTopic, getMessages, listTopics, type Message as MessageData } from '../../api'
+import { COMPANIONS, CompanionAvatar, type Companion, type VoicePhase } from '../../components/companion-avatar'
+import { Composer } from '@/components/hb/composer'
+import { Button, Segmented } from '@/components/hb/controls'
+import { Callout, ChatSkeleton, InPlaceEmpty, InPlaceError, splitErrorId } from '@/components/hb/feedback'
+import { FailedMessage, Message, MessageRow, Thinking } from '@/components/hb/message'
+import { BackToAgents, ShellDetails, useShell } from '@/components/hb/shell'
+import { cn } from '@/lib/utils'
+import { overviewQuery } from '../../queries'
+import { plainReason } from '@/lib/reasons'
+
+type Name = Companion['name']
+
 export const Route = createFileRoute('/_authed/companions')({
-  staticData: { crumb: 'Companions' },
-  component: Companions,
+  // ?c=Flint keeps the companion across reloads and Back.
+  validateSearch: (s: Record<string, unknown>): { c?: Name } =>
+    typeof s.c === 'string' && COMPANIONS.some((c) => c.name === s.c) ? { c: s.c } : {},
+  staticData: { crumb: 'Companions', shell: 'page' },
+  head: () => ({ meta: [{ title: 'Companions · Herbot admin' }] }),
+  component: CompanionsPage,
 })
-type Exchange = { role: 'you' | 'companion'; text: string }
-type Session = { id: number; fallback: boolean }
-type Connection =
-  | { status: 'opening' }
-  | { status: 'ready'; session: Session }
-  | { status: 'failed' }
-function transitionConnection(state: Connection, next: Connection): Connection {
-  if (next.status === 'opening' || state.status === 'opening') return next
-  return state
+
+function CompanionsPage() {
+  const { c } = Route.useSearch()
+  const companion = COMPANIONS.find((x) => x.name === c) ?? COMPANIONS[0]
+  // A new companion is a new call: every recorder, player and timer of the
+  // old one is torn down with it.
+  return <Call key={companion.name} companion={companion} />
 }
 
-const LABELS: Record<VoicePhase, string> = {
-  idle: 'Ready when you are',
-  connecting: 'Opening conversation…',
-  listening: 'Listening · tap to send',
-  transcribing: 'Transcribing…',
-  thinking: 'Thinking…',
-  speaking: 'Speaking · tap the mic to interrupt',
+/* ------------------------------------------------------------------ voice */
+
+/** The server can hear and speak only with OPENAI_API_KEY (panel_voice.rs). */
+function useVoiceStatus() {
+  return useQuery({
+    queryKey: ['voice-status'],
+    queryFn: async () => {
+      const r = await fetch('/api/voice/status')
+      if (!r.ok) throw new Error(`Voice status failed (${r.status})`)
+      return (await r.json()) as { transcribe: boolean; speak: boolean }
+    },
+    staleTime: 5 * 60_000,
+  })
 }
-async function voiceRequest(action: string, body: BodyInit): Promise<Response> {
+
+/** "Error: x" → "x": errors are read by a person, not logged. */
+function errorText(e: unknown): string {
+  return (e instanceof Error ? e.message : String(e)).replace(/^(Error:\s*)+/, '')
+}
+
+class VoiceOff extends Error {}
+
+async function voiceRequest(action: 'speak' | 'transcribe', body: BodyInit): Promise<Response> {
   const response = await fetch(`/api/voice/${action}`, {
     method: 'POST',
     body,
-    headers:
-      typeof body === 'string' ? { 'content-type': 'application/json' } : {},
+    headers: typeof body === 'string' ? { 'content-type': 'application/json' } : {},
   })
   if (!response.ok) {
-    const data = (await response.json()) as { error?: string }
-    throw new Error(data.error ?? 'Speech request failed')
+    const data = (await response.json().catch(() => ({}))) as { error?: string }
+    const message = data.error ?? `Speech request failed (${response.status})`
+    if (/OPENAI_API_KEY|is off/i.test(message)) throw new VoiceOff(message)
+    throw new Error(message)
   }
   return response
 }
-function Companions() {
-  const [chosen, choose] = useState<Companion | null>(null)
-  return (
-    <>
-      {chosen ? (
-        <VoiceConversation
-          key={chosen.name}
-          companion={chosen}
-          onBack={() => choose(null)}
-        />
-      ) : (
-        <>
-          <div className="max-w-xl space-y-3">
-            <p className="text-xs font-medium tracking-widest text-muted-foreground uppercase">
-              A different kind of conversation
-            </p>
-            <h1 className="text-3xl font-semibold tracking-tight">
-              Meet your companions
-            </h1>
-            <p className="text-pretty text-muted-foreground">
-              Four original characters, each with a voice and a way of seeing
-              things. Pick someone to talk to, or type what’s on your mind.
-            </p>
-          </div>
-          <div className="grid gap-5 sm:grid-cols-2">
-            {COMPANIONS.map((c) => (
-              <article
-                key={c.name}
-                className="flex flex-col rounded-2xl border bg-card p-6 text-card-foreground"
-              >
-                <div className="mx-auto h-48 w-56">
-                  <CompanionAvatar companion={c} />
-                </div>
-                <div className="mt-4 flex items-baseline justify-between gap-3">
-                  <h2 className="text-xl font-semibold">{c.name}</h2>
-                  <span className="text-xs text-muted-foreground">
-                    {c.voice} voice
-                  </span>
-                </div>
-                <p className="mt-2 flex-1 text-sm text-muted-foreground">
-                  {c.tagline}
-                </p>
-                <Button
-                  variant="secondary"
-                  className="mt-5 min-h-11 w-full"
-                  onClick={() => choose(c)}
-                >
-                  Talk with {c.name}
-                </Button>
-              </article>
-            ))}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            AI characters and AI-generated voices. Audio is sent to OpenAI for
-            transcription. Conversations share your Herbot memory and appear in
-            Telegram.
-          </p>
-        </>
-      )}
-    </>
-  )
+
+type Session = { id: number; fallback: boolean; reason?: string }
+
+// Topic name and purpose identify a companion's topic across devices; never
+// repurpose another topic. Opening is shared across StrictMode remounts and
+// quick revisits, so one companion never gets two topics.
+const opening = new Map<string, Promise<Session>>()
+const creationKeys = new Map<string, string>()
+/** Telegram is known to be off: no topic can be created, so asking would only
+ * record an error on every visit. */
+const TELEGRAM_OFF_REASON = 'Telegram is off'
+function openCompanion(c: Companion, botRunning: () => Promise<boolean>): Promise<Session> {
+  const existing = opening.get(c.name)
+  if (existing) return existing
+  const promise = (async (): Promise<Session> => {
+    const topics = await listTopics()
+    const name = `Companion · ${c.name}`
+    const found = topics.find((t) => t.name.trim() === name && t.purpose?.startsWith(c.purpose.slice(0, 80)))
+    if (found) {
+      if (!found.enabled || found.setup_state !== 'ready')
+        throw new Error(`${c.name}’s topic is switched off or not set up. Switch it back on under Topics.`)
+      return { id: found.id, fallback: false }
+    }
+    const general = () => topics.find((t) => t.is_general && t.enabled && t.setup_state === 'ready')
+    if (!(await botRunning())) {
+      const g = general()
+      if (!g) throw new Error(`${c.name} needs a topic, and Telegram is off, so Herbot can’t make one yet.`)
+      return { id: g.id, fallback: true, reason: TELEGRAM_OFF_REASON }
+    }
+    try {
+      if (!creationKeys.has(c.name)) creationKeys.set(c.name, crypto.randomUUID())
+      const topic = await createTopic({ data: { name, purpose: c.purpose, idempotencyKey: creationKeys.get(c.name)! } })
+      creationKeys.delete(c.name)
+      return { id: topic.id, fallback: false }
+    } catch (e) {
+      // No topic of its own (Telegram can't create one): talk through General,
+      // sending the character with each message.
+      const g = general()
+      if (!g) throw new Error(`Couldn’t create ${c.name}’s topic (${errorText(e)}), and General isn’t available either.`)
+      return { id: g.id, fallback: true, reason: errorText(e) }
+    }
+  })()
+  opening.set(c.name, promise)
+  void promise.finally(() => opening.delete(c.name)).catch(() => {})
+  return promise
 }
-function VoiceConversation({
-  companion: c,
-  onBack,
-}: {
-  companion: Companion
-  onBack: () => void
-}) {
-  const [phase, setPhase] = useState<VoicePhase>('connecting')
-  const [connection, setConnection] = useReducer(transitionConnection, { status: 'opening' })
+
+let localId = -1
+function local(fromBot: boolean, body: string, voice = false): MessageData {
+  return { id: localId--, sent_at: new Date().toISOString(), from_bot: fromBot, is_voice: voice, body, attachments: [] }
+}
+
+type Connection = { status: 'opening' } | { status: 'ready'; session: Session } | { status: 'failed'; error: string }
+type FailedTurn = { text: string; error: string; voice: boolean; at: string }
+
+/** One voice conversation with one companion: the connection, the turn's
+ * phase, the transcript, and every media resource it owns. */
+function useCall(c: Companion) {
+  const status = useVoiceStatus()
+  const [connection, setConnection] = useState<Connection>({ status: 'opening' })
   const [attempt, setAttempt] = useState(0)
-  const session = connection.status === 'ready' ? connection.session : null
-  const [messages, setMessages] = useState<Exchange[]>([])
-  const [draft, setDraft] = useState('')
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+  const [phase, setPhase] = useState<VoicePhase>('connecting')
+  const [messages, setMessages] = useState<MessageData[]>([])
+  const [failed, setFailed] = useState<FailedTurn | null>(null)
+  // Voice problems that aren't a failed message (mic blocked, nothing heard).
+  const [problem, setProblem] = useState('')
+  const [voiceKnownOff, setVoiceKnownOff] = useState(false)
   const [hasAudio, setHasAudio] = useState(false)
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null)
+  const [recordedAt, setRecordedAt] = useState<number | null>(null)
+  const [thinkingSince, setThinkingSince] = useState(0)
+  const [restore, setRestore] = useState<{ text: string; key: number } | undefined>()
   const media = useRef<{
     recorder?: MediaRecorder
     stream?: MediaStream
@@ -141,12 +161,16 @@ function VoiceConversation({
     url?: string
     timer?: ReturnType<typeof setTimeout>
   }>({})
+  const queryClient = useQueryClient()
   const active = useRef(true)
   const busy = useRef(false)
   const generation = useRef(0)
-  const sendAction = useRef<{ text: string; key: string } | null>(null)
-  const bottom = useRef<HTMLDivElement>(null)
-  function stopPlayback() {
+  const sendKey = useRef<{ text: string; key: string } | null>(null)
+
+  const session = connection.status === 'ready' ? connection.session : null
+  const voiceOff = voiceKnownOff || (status.data ? !status.data.transcribe || !status.data.speak : false)
+
+  const stopPlayback = useCallback(() => {
     const m = media.current
     if (m.audio) {
       m.audio.onplay = null
@@ -163,45 +187,50 @@ function VoiceConversation({
     m.analyser = undefined
     setAnalyser(null)
     setHasAudio(false)
-  }
+  }, [])
+
   function unlockAudio() {
     const context = media.current.context ?? new AudioContext()
     media.current.context = context
     void context.resume().catch(() => {})
     return context
   }
+
+  function fail(e: unknown) {
+    if (e instanceof VoiceOff) {
+      setVoiceKnownOff(true)
+      setProblem('')
+    } else setProblem(errorText(e))
+  }
+
+  // Open (or find) the companion's topic, then load its recent history.
   useEffect(() => {
     active.current = true
     let disposed = false
     setConnection({ status: 'opening' })
     setPhase('connecting')
-    setError('')
-    // Setup is shared across StrictMode remounts and rapid visits, preventing duplicate topics.
-    void openCompanion(c)
+    setProblem('')
+    void openCompanion(c, () =>
+      queryClient
+        .ensureQueryData(overviewQuery)
+        .then((o) => o.bot !== null)
+        // Unknown: try, and let a failure fall back as before.
+        .catch(() => true),
+    )
       .then(async (value) => {
         if (disposed) return
-        setNotice(value.fallback ? (value.reason ?? '') : '')
         if (!value.fallback) {
-          const history = await getMessages({
-            data: { id: value.id, limit: 30 },
-          })
+          const history = await getMessages({ data: { id: value.id, limit: 30 } })
           if (disposed) return
-          setMessages(
-            history.messages.map((m) => ({
-              role: m.from_bot ? 'companion' : 'you',
-              text: m.body,
-            })),
-          )
+          setMessages(history.messages)
         }
         setConnection({ status: 'ready', session: value })
         setPhase('idle')
       })
       .catch((e) => {
-        if (!disposed) {
-          setConnection({ status: 'failed' })
-          setError(String(e))
-          setPhase('idle')
-        }
+        if (disposed) return
+        setConnection({ status: 'failed', error: errorText(e) })
+        setPhase('idle')
       })
     return () => {
       disposed = true
@@ -209,8 +238,12 @@ function VoiceConversation({
       generation.current++
       const m = media.current
       clearTimeout(m.timer)
-      if (m.recorder) { m.recorder.onstop = null; m.recorder.onerror = null; m.recorder.ondataavailable = null }
-      if (m.recorder?.state === 'recording') m.recorder.stop()
+      if (m.recorder) {
+        m.recorder.onstop = null
+        m.recorder.onerror = null
+        m.recorder.ondataavailable = null
+        if (m.recorder.state === 'recording') m.recorder.stop()
+      }
       m.stream?.getTracks().forEach((t) => t.stop())
       if (m.audio) {
         m.audio.onplay = null
@@ -222,39 +255,39 @@ function VoiceConversation({
       void m.context?.close()
     }
   }, [c, attempt])
-  useEffect(() => {
-    bottom.current?.scrollIntoView({ block: 'nearest' })
-  }, [messages])
+
   async function send(text: string, transcribed = false) {
-    if (!text.trim() || !session || busy.current || (!transcribed && (phase === 'listening' || phase === 'connecting' || phase === 'transcribing'))) return
+    if (!text.trim() || !session || busy.current) return
+    if (!transcribed && (phase === 'listening' || phase === 'connecting' || phase === 'transcribing')) return
     busy.current = true
     const turn = ++generation.current
-    setError('')
+    setProblem('')
+    setFailed(null)
     stopPlayback()
-    setMessages((old) => [...old, { role: 'you', text }])
+    setMessages((old) => [...old, local(false, text, transcribed)])
     setPhase('thinking')
-    if (sendAction.current?.text !== text) sendAction.current = { text, key: crypto.randomUUID() }
+    setThinkingSince(Date.now())
+    // The same text keeps its idempotency key, so Retry never sends twice.
+    if (sendKey.current?.text !== text) sendKey.current = { text, key: crypto.randomUUID() }
     let replied = false
     try {
-      const context = unlockAudio()
+      const context = voiceOff ? null : unlockAudio()
       const reply = await companionReply({
         data: {
           id: session.id,
-          idempotencyKey: sendAction.current.key,
-          text: session.fallback
-            ? `[Companion voice conversation: ${c.name}. For this reply only: ${c.purpose}]\n\n${text}`
-            : text,
+          idempotencyKey: sendKey.current.key,
+          text: session.fallback ? `[Companion voice conversation: ${c.name}. For this reply only: ${c.purpose}]\n\n${text}` : text,
         },
       })
       if (!active.current || turn !== generation.current) return
       replied = true
-      sendAction.current = null
-      if (!transcribed) setDraft('')
-      setMessages((old) => [...old, { role: 'companion', text: reply }])
-      const response = await voiceRequest(
-        'speak',
-        JSON.stringify({ text: reply, voice: c.voice }),
-      )
+      sendKey.current = null
+      setMessages((old) => [...old, local(true, reply)])
+      if (!context) {
+        setPhase('idle')
+        return
+      }
+      const response = await voiceRequest('speak', JSON.stringify({ text: reply, voice: c.voice }))
       const blob = await response.blob()
       if (!active.current || turn !== generation.current) return
       const url = URL.createObjectURL(blob)
@@ -276,59 +309,58 @@ function VoiceConversation({
         if (active.current) setPhase('idle')
       }
       audio.onerror = () => {
-        setError('Audio playback failed. Try sending a new message.')
+        setProblem('The reply’s audio couldn’t play. Its text is in the conversation.')
         stopPlayback()
         setPhase('idle')
       }
-      if (context.state !== 'running')
-        throw new Error('Your browser paused audio. Tap Play reply to hear it.')
+      if (context.state !== 'running') throw new Error('Your browser paused the audio. Tap “Play reply” to hear it.')
       await audio.play()
       setPhase('speaking')
     } catch (e) {
-      if (active.current && turn === generation.current) {
-        setError(String(e))
-        if (!replied) setDraft(text)
+      if (!active.current || turn !== generation.current) return
+      if (replied) {
+        // The answer arrived; only its audio failed.
+        fail(e)
         if (!media.current.audio) stopPlayback()
-        setPhase('idle')
+      } else {
+        // No answer: take the message back out and show it as not sent.
+        setMessages((old) => old.slice(0, -1))
+        setFailed({ text, error: errorText(e), voice: transcribed, at: new Date().toISOString() })
       }
+      setPhase('idle')
     } finally {
       busy.current = false
     }
   }
+
   async function microphone() {
     if (phase === 'listening') {
       if (busy.current) return
       busy.current = true
       setPhase('transcribing')
-      if (media.current.recorder?.state === 'recording')
-        media.current.recorder.stop()
+      setRecordedAt(null)
+      if (media.current.recorder?.state === 'recording') media.current.recorder.stop()
       return
     }
-    if (busy.current || !session) return
+    if (busy.current || !session || voiceOff) return
     stopPlayback()
-    setError('')
+    setProblem('')
     setPhase('connecting')
     busy.current = true
     try {
       unlockAudio()
       if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder)
-        throw new Error(
-          'Microphone recording needs a supported browser on HTTPS or localhost. You can type below.',
-        )
+        throw new Error('This browser can’t record here (it needs HTTPS or localhost). You can type instead.')
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       if (!active.current) {
         stream.getTracks().forEach((t) => t.stop())
         return
       }
       media.current.stream = stream
-      const mime = [
-        'audio/webm;codecs=opus',
-        'audio/mp4',
-        'audio/ogg;codecs=opus',
-      ].find((t) => MediaRecorder.isTypeSupported(t))
+      const mime = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus'].find((t) => MediaRecorder.isTypeSupported(t))
       if (!mime) {
         stream.getTracks().forEach((t) => t.stop())
-        throw new Error('No supported recording format. You can type below.')
+        throw new Error('This browser has no recording format Herbot can read. You can type instead.')
       }
       const recorder = new MediaRecorder(stream, { mimeType: mime })
       media.current.recorder = recorder
@@ -337,21 +369,22 @@ function VoiceConversation({
       recorder.ondataavailable = (e) => {
         chunks.push(e.data)
         size += e.data.size
-        if (size > 20 * 1024 * 1024 && recorder.state === 'recording')
-          recorder.stop()
+        if (size > 20 * 1024 * 1024 && recorder.state === 'recording') recorder.stop()
       }
       recorder.onerror = () => {
         recorder.onstop = null
         clearTimeout(media.current.timer)
         stream.getTracks().forEach((t) => t.stop())
         busy.current = false
-        setError('Recording failed. Try again or type below.')
+        setRecordedAt(null)
+        setProblem('Recording stopped unexpectedly. Try again, or type instead.')
         setPhase('idle')
       }
       recorder.onstop = () => {
         busy.current = true
         clearTimeout(media.current.timer)
         stream.getTracks().forEach((t) => t.stop())
+        setRecordedAt(null)
         setPhase('transcribing')
         const form = new FormData()
         form.set('audio', new Blob(chunks, { type: mime }), 'recording')
@@ -360,230 +393,479 @@ function VoiceConversation({
           .then((data: { text: string }) => {
             busy.current = false
             if (!active.current) return
-            if (!data.text.trim())
-              throw new Error('No speech heard. Try again or type below.')
+            if (!data.text.trim()) throw new Error('I didn’t hear any words. Try again a little closer to the mic.')
             return send(data.text, true)
           })
           .catch((e) => {
             busy.current = false
             if (active.current) {
-              setError(String(e))
+              fail(e)
               setPhase('idle')
             }
           })
       }
       recorder.start(1000)
       setPhase('listening')
+      setRecordedAt(Date.now())
       busy.current = false
+      // Ten minutes at most per recording, to cap cost.
       media.current.timer = setTimeout(() => {
         if (recorder.state === 'recording') recorder.stop()
-      }, 600000)
+      }, 600_000)
     } catch (e) {
       busy.current = false
-      if (active.current) {
-        setError(String(e))
-        setPhase('idle')
-      }
+      if (!active.current) return
+      const text = errorText(e)
+      setProblem(/denied|NotAllowed|Permission/i.test(text) ? 'Microphone access is blocked. Allow it in the browser’s site settings, or type instead.' : text)
+      setPhase('idle')
     }
   }
-  const waiting = ['connecting', 'transcribing', 'thinking'].includes(phase)
+
+  /** Drop the recording without sending it. */
+  function cancelRecording() {
+    const m = media.current
+    clearTimeout(m.timer)
+    if (m.recorder) {
+      m.recorder.onstop = null
+      m.recorder.ondataavailable = null
+      if (m.recorder.state === 'recording') m.recorder.stop()
+    }
+    m.stream?.getTracks().forEach((t) => t.stop())
+    busy.current = false
+    setRecordedAt(null)
+    setPhase('idle')
+  }
+
+  return {
+    status,
+    connection,
+    session,
+    phase,
+    messages,
+    failed,
+    problem,
+    voiceOff,
+    hasAudio,
+    analyser,
+    recordedAt,
+    thinkingSince,
+    restore,
+    send: (text: string) => void send(text),
+    microphone: () => void microphone(),
+    cancelRecording,
+    stopSpeaking: () => {
+      stopPlayback()
+      setPhase('idle')
+    },
+    playReply: () => {
+      void (async () => {
+        try {
+          await media.current.context?.resume()
+          await media.current.audio?.play()
+        } catch (e) {
+          fail(e)
+        }
+      })()
+    },
+    retryOpen: () => setAttempt((n) => n + 1),
+    retryTurn: () => failed && void send(failed.text, failed.voice),
+    editTurn: () => {
+      if (!failed) return
+      setRestore({ text: failed.text, key: Date.now() })
+      setFailed(null)
+    },
+    discardTurn: () => setFailed(null),
+    dismissProblem: () => setProblem(''),
+  }
+}
+
+type CallState = ReturnType<typeof useCall>
+
+/** What the call is doing, in words (the panel, the call bar, the mic's label). */
+function statusText(call: CallState, c: Companion, telegramOff = false): string {
+  if (call.connection.status === 'failed') return 'Couldn’t open the conversation'
+  if (call.connection.status === 'opening') return 'Opening the conversation…'
+  if (telegramOff && call.phase === 'idle') return `${c.name} can talk once Telegram is back on`
+  if (call.voiceOff && call.phase === 'idle') return `Type a message to ${c.name}`
+  switch (call.phase) {
+    case 'connecting':
+      return 'Opening the microphone…'
+    case 'idle':
+      return 'Tap the microphone and talk'
+    case 'listening':
+      return 'Listening. Tap again to send'
+    case 'transcribing':
+      return 'Writing down what you said…'
+    case 'thinking':
+      return `${c.name} is thinking…`
+    case 'speaking':
+      return `${c.name} is speaking`
+  }
+}
+
+/** The call bar's few words (the full sentence is its accessible name). */
+function shortStatus(call: CallState, telegramOff = false): string {
+  if (call.connection.status === 'failed') return 'Not open'
+  if (call.connection.status === 'opening') return 'Opening…'
+  if (telegramOff && call.phase === 'idle') return 'Telegram off'
+  if (call.voiceOff) return 'Voice off'
+  switch (call.phase) {
+    case 'connecting':
+      return 'Mic…'
+    case 'idle':
+      return 'Voice'
+    case 'listening':
+      return 'Listening'
+    case 'transcribing':
+      return 'Writing it down'
+    case 'thinking':
+      return 'Thinking'
+    case 'speaking':
+      return 'Speaking'
+  }
+}
+
+/* ------------------------------------------------------------------- page */
+
+const OPTIONS = COMPANIONS.map((c) => ({ value: c.name, label: c.name, hint: `${c.tagline} Voice: ${c.voice}.` }))
+
+function Call({ companion: c }: { companion: Companion }) {
+  const call = useCall(c)
+  const navigate = useNavigate({ from: Route.fullPath })
+  const pick = (name: Name) => void navigate({ search: { c: name }, replace: true })
   return (
     <>
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" className="min-h-11" onClick={onBack}>
-          <ArrowLeftIcon />
-          Companions
-        </Button>
-        <h1 className="text-xl font-semibold">{c.name}</h1>
-      </div>
-      {session?.fallback && (
-        <div
-          role="status"
-          className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-sm"
-        >
-          <strong>Using General · shared history</strong>
-          <p className="mt-1">
-            {notice} {c.name}’s character is included with each message. Other
-            conversations in General share this memory.
-          </p>
-        </div>
-      )}
-      <section
-        aria-label={`Talk with ${c.name}`}
-        className="rounded-2xl border bg-card p-5 text-center sm:p-8"
-      >
-        <div className="mx-auto h-56 w-60">
-          <CompanionAvatar companion={c} phase={phase} analyser={analyser} />
-        </div>
-        <p
-          role="status"
-          aria-live="polite"
-          className="mb-5 min-h-6 text-sm text-muted-foreground"
-        >
-          {!session && phase === 'idle'
-            ? 'Conversation unavailable'
-            : phase === 'connecting' && session ? 'Opening microphone…' : LABELS[phase]}
-        </p>
-        <Button
-          disabled={waiting || !session}
-          aria-label={
-            phase === 'listening'
-              ? 'Stop recording and send'
-              : phase === 'speaking'
-                ? 'Interrupt and start listening'
-                : 'Start listening'
-          }
-          aria-pressed={phase === 'listening'}
-          onClick={() => void microphone()}
-          className="size-20 rounded-full"
-        >
-          {phase === 'listening' ? (
-            <SquareIcon className="size-7" />
-          ) : (
-            <MicIcon className="size-7" />
-          )}
-        </Button>
-        {hasAudio && phase === 'idle' && (
-          <Button
-            variant="secondary"
-            className="ml-3 min-h-11"
-            onClick={() => {
-              void (async () => {
-                try {
-                  await media.current.context?.resume()
-                  await media.current.audio?.play()
-                } catch (e) {
-                  setError(String(e))
-                }
-              })()
-            }}
-          >
-            <Volume2Icon />
-            Play reply
-          </Button>
-        )}
-        {phase === 'speaking' && (
-          <Button
-            variant="ghost"
-            className="ml-3 min-h-11"
-            onClick={() => {
-              stopPlayback()
-              setPhase('idle')
-            }}
-          >
-            <Volume2Icon />
-            Stop audio
-          </Button>
-        )}
-        <p className="mt-4 text-xs text-muted-foreground">
-          Tap to start, tap again to send · up to 10 minutes
-          <br />
-          AI-generated voice · audio transcribed by OpenAI
-        </p>
-      </section>
-      {error && (
-        <p
-          role="alert"
-          className="rounded-xl border border-destructive/40 p-4 text-sm text-destructive"
-        >
-          {error}
-          {connection.status === 'failed' && <Button variant="link" onClick={() => setAttempt((n) => n + 1)}>Retry connection</Button>}
-        </p>
-      )}
-      <section
-        aria-label="Conversation transcript"
-        className="max-h-96 min-h-24 space-y-5 overflow-y-auto rounded-xl border p-4"
-        aria-live="polite"
-        aria-relevant="additions"
-      >
-        {messages.length === 0 && (
-          <p className="text-sm text-muted-foreground">
-            Your conversation will appear here. Start with a thought, a
-            question, or just hello.
-          </p>
-        )}
-        {messages.map((m, i) => (
-          <article key={i} className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">
-              {m.role === 'you' ? 'You' : c.name}
-            </p>
-            <RichMessage body={m.text} />
-          </article>
-        ))}
-        <div ref={bottom} />
-      </section>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault()
-          void send(draft)
-        }}
-        className="space-y-2"
-      >
-        <label htmlFor="companion-text" className="text-sm font-medium">
-          Or type a message
-        </label>
-        <div className="flex gap-2">
-          <input
-            id="companion-text"
-            className="min-h-11 min-w-0 flex-1 rounded-lg border bg-background px-3 text-base focus-visible:outline-2 focus-visible:outline-ring"
-            value={draft}
-            maxLength={session?.fallback ? 2700 : 3500}
-            onChange={(e) => setDraft(e.target.value)}
-            disabled={waiting || phase === 'listening' || !session}
-          />
-          <Button
-            type="submit"
-            className="min-h-11"
-            disabled={
-              !draft.trim() || waiting || phase === 'listening' || !session
-            }
-          >
-            <SendIcon />
-            <span className="sr-only sm:not-sr-only">Send</span>
-          </Button>
-        </div>
-      </form>
+      <Conversation call={call} companion={c} onPick={pick} />
+      <ShellDetails defaultOpen>
+        <CallPanel call={call} companion={c} />
+      </ShellDetails>
     </>
   )
 }
-// Topic purpose and name identify companion ownership across devices; never repurpose another topic.
-const opening = new Map<string, Promise<Session & { reason?: string }>>()
-const creationKeys = new Map<string, string>()
-function openCompanion(c: Companion): Promise<Session & { reason?: string }> {
-  const existing = opening.get(c.name)
-  if (existing) return existing
-  const promise = (async () => {
-    const topics = await listTopics()
-    const name = `Companion · ${c.name}`
-    const found = topics.find(
-      (t) =>
-        t.place.split('›').pop()?.trim() === name &&
-        t.purpose?.startsWith(c.purpose.slice(0, 80)),
+
+/** Telegram off (the overview the shell already polls): companion turns go
+ * through a topic, so they can't be sent until the bot runs. */
+function useTelegramOff(): boolean {
+  const overview = useQuery(overviewQuery).data
+  return overview !== undefined && !overview.bot
+}
+const TELEGRAM_OFF = 'Telegram is off: messages can’t be sent until the bot is running.'
+/** The one way the panel says voice is unavailable. */
+const VOICE_OFF = 'Voice needs OpenAI on the server (OPENAI_API_KEY), so replies arrive as text.'
+
+function Conversation({ call, companion: c, onPick }: { call: CallState; companion: Companion; onPick: (n: Name) => void }) {
+  const { detailsOpen, setDetailsOpen } = useShell()
+  const end = useRef<HTMLDivElement>(null)
+
+  // Follow the newest line inside the conversation (never the page). Writes
+  // scrollTop only; nothing is returned from the effect.
+  useEffect(() => {
+    const el = end.current?.closest<HTMLElement>('[data-hb-scroll]')
+    if (el) el.scrollTop = el.scrollHeight
+  }, [call.messages.length, call.phase, call.failed])
+
+  const opening = call.connection.status === 'opening'
+  const openFailed = call.connection.status === 'failed'
+  const voiceTurn = call.phase === 'listening' || call.phase === 'transcribing' || (call.phase === 'connecting' && !opening)
+  const telegramOff = useTelegramOff()
+  const disabledReason = opening
+    ? 'Opening the conversation…'
+    : openFailed
+      ? 'The conversation isn’t open'
+      : telegramOff
+        ? TELEGRAM_OFF
+        : voiceTurn
+          ? 'Finish the voice turn first'
+          : undefined
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className="flex shrink-0 flex-col gap-3 border-b border-line px-4 pt-6 pb-3 md:px-8 md:pt-8">
+        {/* Phones: the call status gets its own row, so it never shrinks to "…". */}
+        <div className="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-2">
+          {/* Phones: "‹ Agents" sits above the title (as in ShellPage), so the
+              title starts at the content's edge. */}
+          <div className="contents max-md:block max-md:w-full">
+            <BackToAgents />
+          </div>
+          <h1 className="font-serif text-[30px] leading-[1.1] font-semibold tracking-[-0.015em] md:text-[34px]">Companions</h1>
+          <span className="min-w-2 flex-1 max-md:hidden" />
+          <div className="flex max-md:w-full wide:hidden">
+            <CallBar call={call} companion={c} open={detailsOpen} onToggle={() => setDetailsOpen(!detailsOpen)} />
+          </div>
+        </div>
+        <Segmented label="Companion" value={c.name} options={OPTIONS} onValueChange={onPick} />
+      </header>
+
+      {call.session?.fallback && (
+        <Callout tone="warning" className="mx-4 mt-3 shrink-0 md:mx-8" title="Talking through General, with shared history">
+          Herbot couldn’t give {c.name} a topic of its own
+          {(() => {
+            const known = plainReason(call.session.reason)
+            return known ? ` because ${known.because}` : ''
+          })()}
+          , so {c.name}’s character goes with each message and General’s other conversations share this history.
+        </Callout>
+      )}
+
+      <div data-hb-scroll className="scroller min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <div className="flex min-h-full max-w-3xl flex-col px-4 py-5 md:px-8">
+          {opening ? (
+            <ChatSkeleton />
+          ) : openFailed ? (
+            <InPlaceError title={`Couldn’t open the conversation with ${c.name}`} error={call.connection.status === 'failed' ? call.connection.error : ''} onRetry={call.retryOpen} />
+          ) : call.messages.length === 0 && !call.failed && call.phase !== 'thinking' ? (
+            <InPlaceEmpty title={`Say hello to ${c.name}`} className="my-auto px-0">
+              {telegramOff
+                ? `${c.name} can’t reply while Telegram is off. You can send once the bot is running.`
+                : call.voiceOff
+                  ? `Type below. ${VOICE_OFF}`
+                  : 'Talk out loud with the microphone, or type below. The conversation also shows in Telegram, like any topic.'}
+            </InPlaceEmpty>
+          ) : (
+            <ol aria-label={`Conversation with ${c.name}`} aria-live="polite" aria-relevant="additions" className="flex flex-col">
+              {call.messages.map((m, i) => (
+                <MessageRow key={m.id} side={m.from_bot ? 'agent' : 'you'} grouped={i > 0 && call.messages[i - 1].from_bot === m.from_bot}>
+                  <Message message={m} />
+                </MessageRow>
+              ))}
+              {call.failed && (
+                <MessageRow side="you">
+                  <FailedMessage
+                    body={call.failed.text}
+                    error={call.failed.error}
+                    sentAt={call.failed.at}
+                    retrying={call.phase === 'thinking'}
+                    onRetry={call.retryTurn}
+                    onEdit={call.editTurn}
+                    onDiscard={call.discardTurn}
+                  />
+                </MessageRow>
+              )}
+              {call.phase === 'thinking' && (
+                <MessageRow side="agent">
+                  <Thinking since={call.thinkingSince} label={`${c.name} is thinking`} />
+                </MessageRow>
+              )}
+            </ol>
+          )}
+          <div ref={end} />
+        </div>
+      </div>
+
+      <div className="shrink-0 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-8">
+        <div className="flex max-w-3xl flex-col gap-2">
+          {call.problem && <Problem text={call.problem} onDismiss={call.dismissProblem} />}
+          <Composer
+            placeholder={`Message ${c.name}`}
+            sending={call.phase === 'thinking'}
+            disabledReason={disabledReason}
+            restore={call.restore}
+            // Companions take text and voice only, and reply in their own way.
+            attachments={false}
+            modes={false}
+            voice={
+              // The panel holds the big mic beside the chat; narrow screens
+              // get one here so a voice turn needs no panel.
+              <span className="wide:hidden">
+                <MicButton call={call} companion={c} size="small" />
+              </span>
+            }
+            onSend={({ text }) => call.send(text)}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Below 68.75rem the call panel isn't beside the chat: this pill says what
+ * the call is doing and opens it. */
+function CallBar({ call, companion: c, open, onToggle }: { call: CallState; companion: Companion; open: boolean; onToggle: () => void }) {
+  const telegramOff = useTelegramOff()
+  const listening = call.phase === 'listening'
+  const tone = call.connection.status === 'failed' || call.failed ? 'bg-off' : listening ? 'bg-destructive' : call.phase === 'speaking' ? 'bg-accent-strong' : 'bg-faint'
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-label={`Call with ${c.name}: ${statusText(call, c, telegramOff)}. ${open ? 'Close' : 'Open'} the call panel`}
+      className="flex h-9 min-w-0 shrink items-center gap-2 rounded-full px-3 text-[13px] text-mute shadow-[inset_0_0_0_var(--hair)_var(--line)] transition-[color,background-color] duration-150 ease-out hover:bg-sunken hover:text-ink pointer-coarse:h-11 wide:hidden"
+    >
+      <span className={cn('size-2 shrink-0 rounded-full', tone)} aria-hidden />
+      <span className="max-w-[24ch] min-w-0 truncate">
+        {listening && call.recordedAt != null ? (
+          <>
+            Listening <Elapsed since={call.recordedAt} />
+          </>
+        ) : (
+          shortStatus(call, telegramOff)
+        )}
+      </span>
+      <PhoneIcon className="size-3.5 shrink-0" aria-hidden />
+    </button>
+  )
+}
+
+/** A voice problem that isn't a failed message: says what to do, dismissable. */
+function Problem({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  const { id, text: body } = splitErrorId(text)
+  return (
+    <div role="alert" className="flex items-start gap-2 rounded-xl bg-destructive-soft py-2 pr-1 pl-3 text-[13px] shadow-[inset_0_0_0_var(--hair)_color-mix(in_srgb,var(--off)_35%,transparent)]">
+      <p className="min-w-0 flex-1 py-1.5 text-ink [overflow-wrap:anywhere]">
+        {id && <span className="mr-1.5 font-mono text-[12px] text-mute">{id}</span>}
+        {body}
+      </p>
+      <Button variant="ghost" size="icon" aria-label="Dismiss" onClick={onDismiss}>
+        <XIcon aria-hidden />
+      </Button>
+    </div>
+  )
+}
+
+/** The mic: start listening, stop and send, or interrupt the companion. */
+function MicButton({ call, companion: c, size }: { call: CallState; companion: Companion; size: 'large' | 'small' }) {
+  const telegramOff = useTelegramOff()
+  const ready = call.connection.status === 'ready' && !telegramOff
+  const waiting = call.phase === 'connecting' || call.phase === 'transcribing' || call.phase === 'thinking'
+  const listening = call.phase === 'listening'
+  if (call.voiceOff) {
+    if (size === 'small') return null
+    return (
+      <span className="grid size-16 place-items-center rounded-full text-faint shadow-[inset_0_0_0_var(--hair)_var(--line)]" aria-hidden>
+        <MicOffIcon className="size-6" />
+      </span>
     )
-    if (found) {
-      if (!found.enabled || found.setup_state !== 'ready')
-        throw new Error(
-          'This companion topic is disabled or needs setup. Open Topics to restore it.',
-        )
-      return { id: found.id, fallback: false }
-    }
-    try {
-      if (!creationKeys.has(c.name)) creationKeys.set(c.name, crypto.randomUUID())
-      const topic = await createTopic({ data: { name, purpose: c.purpose, idempotencyKey: creationKeys.get(c.name)! } })
-      creationKeys.delete(c.name)
-      return { id: topic.id, fallback: false }
-    } catch (e) {
-      const general = topics.find(
-        (t) => t.is_general && t.enabled && t.setup_state === 'ready',
-      )
-      if (!general)
-        throw new Error(
-          `Could not create the companion topic and General is unavailable: ${String(e)}`,
-        )
-      return { id: general.id, fallback: true, reason: String(e) }
-    }
-  })()
-  opening.set(c.name, promise)
-  void promise.finally(() => opening.delete(c.name)).catch(() => {})
-  return promise
+  }
+  const label = listening ? 'Stop recording and send' : call.phase === 'speaking' ? `Interrupt ${c.name} and start listening` : 'Start listening'
+  return (
+    <button
+      type="button"
+      disabled={waiting || !ready}
+      onClick={call.microphone}
+      aria-pressed={listening}
+      aria-label={label}
+      className={cn(
+        'grid shrink-0 place-items-center rounded-full outline-none',
+        'transition-[background-color,color,scale] duration-150 ease-out active:scale-[0.96]',
+        'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-pane',
+        'disabled:cursor-not-allowed disabled:bg-sunken disabled:text-faint',
+        size === 'large' ? 'size-16' : 'size-9 pointer-coarse:size-11',
+        listening
+          ? 'bg-destructive text-white'
+          : size === 'large'
+            ? 'bg-accent-strong text-accent-ink hover:bg-[color-mix(in_oklch,var(--accent-strong)_88%,black)]'
+            : 'text-mute hover:bg-sunken hover:text-ink',
+      )}
+    >
+      {waiting && call.phase !== 'thinking' ? (
+        <span className={cn('rounded-full border-2 border-current border-r-transparent motion-safe:animate-spin', size === 'large' ? 'size-6' : 'size-4')} aria-hidden />
+      ) : listening ? (
+        <SquareIcon className={cn('fill-current', size === 'large' ? 'size-5' : 'size-3.5')} aria-hidden />
+      ) : (
+        <MicIcon className={size === 'large' ? 'size-6' : 'size-[18px]'} aria-hidden />
+      )}
+    </button>
+  )
+}
+
+/** The voice call, docked in the details pane. */
+function CallPanel({ call, companion: c }: { call: CallState; companion: Companion }) {
+  const { setDetailsOpen } = useShell()
+  const telegramOff = useTelegramOff()
+  const failed = call.connection.status === 'failed'
+  const listening = call.phase === 'listening'
+  return (
+    <section aria-label={`Call with ${c.name}`} className="flex min-h-0 flex-1 flex-col">
+      <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-line px-2 md:px-4">
+        <div className="flex min-w-0 flex-1 flex-col py-2 pl-2 md:pl-0">
+          <h2 className="text-[15px] font-semibold">Voice call</h2>
+          <p className="text-[12.5px] text-mute">
+            {c.name} · voice {c.voice}
+          </p>
+        </div>
+        <Button variant="ghost" size="icon" aria-label="Close the call panel" className="wide:hidden" onClick={() => setDetailsOpen(false)}>
+          <XIcon aria-hidden />
+        </Button>
+      </header>
+
+      <div data-hb-scroll className="scroller flex min-h-0 flex-1 flex-col items-center gap-5 overflow-y-auto overscroll-contain px-5 pt-8 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-center">
+        <div className="h-36 w-40">
+          <CompanionAvatar companion={c} phase={failed ? 'idle' : call.phase} analyser={call.analyser} decorative />
+        </div>
+        <div className="flex flex-col items-center gap-1.5">
+          <p className="font-serif text-[24px] leading-none font-semibold">{c.name}</p>
+          <p role="status" aria-live="polite" className="min-h-5 text-[14px] text-balance text-mute">
+            {statusText(call, c, telegramOff)}
+            {listening && call.recordedAt != null && (
+              <span className="ml-1.5 font-medium text-ink">
+                <Elapsed since={call.recordedAt} />
+              </span>
+            )}
+          </p>
+        </div>
+
+        {failed ? (
+          <div className="flex flex-col items-center gap-3">
+            <p className="max-w-[30ch] text-[13px] text-mute">The conversation didn’t open. The reason is beside the chat.</p>
+            <Button variant="primary" onClick={call.retryOpen}>
+              Try again
+            </Button>
+          </div>
+        ) : call.voiceOff ? (
+          <div className="flex max-w-[28ch] flex-col items-center gap-3">
+            <MicButton call={call} companion={c} size="large" />
+            <p className="text-[13px] text-mute">{VOICE_OFF}</p>
+          </div>
+        ) : (
+          <>
+            <MicButton call={call} companion={c} size="large" />
+            <div className="flex min-h-11 flex-wrap justify-center gap-2">
+              {listening && (
+                <Button variant="ghost" onClick={call.cancelRecording}>
+                  Cancel recording
+                </Button>
+              )}
+              {call.phase === 'speaking' && (
+                <Button variant="ghost" onClick={call.stopSpeaking}>
+                  <VolumeXIcon aria-hidden />
+                  Stop talking
+                </Button>
+              )}
+              {call.hasAudio && call.phase === 'idle' && (
+                <Button variant="secondary" onClick={call.playReply}>
+                  <Volume2Icon aria-hidden />
+                  Play reply
+                </Button>
+              )}
+            </div>
+            <p className="text-[12px] text-faint">Up to 10 minutes per recording</p>
+          </>
+        )}
+
+        <div className="mt-auto flex w-full flex-col items-center gap-2 border-t border-line pt-4 text-[12.5px] text-mute">
+          {call.session && !call.session.fallback && (
+            <Link to="/topics/$id" params={{ id: call.session.id }} className="font-medium text-accent-strong underline-offset-2 hover:underline">
+              Open {c.name}’s topic
+            </Link>
+          )}
+          <p className="max-w-[34ch] text-pretty">
+            An original AI character with an AI voice. Your audio goes to OpenAI to be written down.
+          </p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+/** "0:42" since recording started; tabular so the digits don't jiggle. */
+function Elapsed({ since }: { since: number }) {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 500)
+    return () => clearInterval(id)
+  }, [])
+  const s = Math.max(0, Math.floor((now - since) / 1000))
+  return <span className="tabular-nums">{`${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`}</span>
 }

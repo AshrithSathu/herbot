@@ -1,13 +1,43 @@
-import { useState, type ReactNode } from 'react'
-import Markdown from 'react-markdown'
+// Agent and user messages as Markdown, and files as compact cards. Both are
+// built for hostile content: 2,500-character words, 120-line code blocks,
+// 16-column tables, raw HTML, any script or direction, files that are gone
+// from disk or claim to be 100 GB.
+import { useEffect, useState, type ReactNode } from 'react'
+import Markdown, { type Options } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
 import { Dialog } from 'radix-ui'
-import { XIcon, DownloadIcon } from 'lucide-react'
+import {
+  DownloadIcon,
+  FileArchiveIcon,
+  FileAudioIcon,
+  FileCodeIcon,
+  FileIcon,
+  FileImageIcon,
+  FileTextIcon,
+  FileVideoIcon,
+  XIcon,
+} from 'lucide-react'
 import type { Attachment } from '../api'
-import { CopyButton } from '../ui'
-import { Button } from './ui/button'
-const fileUrl = (path: string) => `/api/files/${path.split('/').map(encodeURIComponent).join('/')}`
+import { CopyButton } from '@/components/hb/feedback'
+import { Button } from '@/components/hb/controls'
+import { cn } from '@/lib/utils'
+
+export const fileUrl = (path: string) => `/api/files/${path.split('/').map(encodeURIComponent).join('/')}`
+
+/** 1,536 → "1.5 KB"; 99,999,999,999 → "93.1 GB". Binary units, one decimal. */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`
+}
+
 function textOf(node: ReactNode): string {
   if (typeof node === 'string') return node
   if (Array.isArray(node)) return node.map(textOf).join('')
@@ -15,33 +45,113 @@ function textOf(node: ReactNode): string {
     return textOf((node.props as { children: ReactNode }).children)
   return ''
 }
-export function RichMessage({ body }: { body: string }) {
+
+/** True when a message is one fenced code block, so its code header's Copy
+ * is the only Copy it needs. Markdown closes a fence left open at the end of
+ * the message, so an unclosed fence counts too. */
+export function isOnlyCode(body: string): boolean {
+  const t = body.trim()
+  const open = /^(`{3,}|~{3,})[^\n]*\n/.exec(t)
+  if (!open) return false
+  const fence = open[1]
+  const rest = t.slice(open[0].length)
+  // Another fence opener of the same kind inside means more than one block.
+  const lines = rest.split('\n')
+  const close = lines.findIndex((l) => l.trim().startsWith(fence[0].repeat(3)))
+  if (close === -1) return true // never closed: one block to the end
+  return lines.slice(close + 1).join('\n').trim() === ''
+}
+
+/** The language a fenced block declared (`language-ts`), for its header. */
+function languageOf(node: ReactNode): string | null {
+  const child = Array.isArray(node) ? node[0] : node
+  if (child && typeof child === 'object' && 'props' in child) {
+    const className = (child.props as { className?: string }).className ?? ''
+    const match = /language-([\w+-]+)/.exec(className)
+    return match?.[1] ?? null
+  }
+  return null
+}
+
+type Plugin = NonNullable<Options['rehypePlugins']>[number]
+
+// Syntax highlighting (highlight.js grammars, the heaviest part of a message)
+// loads on demand, the first time a message with a code fence renders; until
+// then code shows unhighlighted, never missing.
+let highlight: Plugin | null = null
+let loadingHighlight: Promise<void> | null = null
+
+function useHighlight(needed: boolean): Plugin | null {
+  const [plugin, setPlugin] = useState<Plugin | null>(() => highlight)
+  useEffect(() => {
+    if (!needed || plugin) return
+    let live = true
+    loadingHighlight ??= import('rehype-highlight').then((m) => {
+      highlight = m.default
+    })
+    // A statement body: the effect returns only its cleanup.
+    void loadingHighlight.then(() => {
+      if (live) setPlugin(() => highlight)
+    })
+    return () => {
+      live = false
+    }
+  }, [needed, plugin])
+  return plugin
+}
+
+const FENCE = /^\s*(```|~~~)/m
+
+type MdNode = { type: string; value?: string; children?: MdNode[] }
+
+/** Raw HTML in a message is shown as the text it is (`<details>…`), never
+ * rendered and never silently dropped (dropping it glued "open" + "hidden"). */
+function htmlAsText() {
+  const walk = (node: MdNode) => {
+    if (node.type === 'html') node.type = 'text'
+    node.children?.forEach(walk)
+  }
+  return (tree: MdNode) => walk(tree)
+}
+
+/** `preview`: the folded, inert preview of a long message. Its code headers
+ * drop Copy there (a button nobody can press); the message offers a working
+ * "Copy code" outside the preview instead. */
+export function RichMessage({ body, preview = false }: { body: string; preview?: boolean }) {
+  const highlighter = useHighlight(FENCE.test(body))
   return (
-    <div className="chat-markdown min-w-0 wrap-anywhere">
+    <div dir="auto" className="chat-markdown min-w-0 wrap-anywhere">
       <Markdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
-        skipHtml
+        remarkPlugins={[remarkGfm, htmlAsText]}
+        rehypePlugins={highlighter ? [highlighter] : []}
         components={{
           a: ({ children, href }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer">
+            <a href={href} target="_blank" rel="noopener noreferrer" className="break-all">
               {children}
             </a>
           ),
-          img: ({ alt }) => <span>{alt ? `[Image: ${alt}]` : '[Image]'}</span>,
-          pre: ({ children }) => (
-            <div className="my-3 min-w-0 overflow-hidden rounded-xl border bg-muted/60">
-              <div className="flex justify-end border-b">
-                <CopyButton text={textOf(children)} label="Copy code" />
+          // Agents link images by path; they arrive as file cards instead.
+          img: ({ alt }) => <span className="text-muted-foreground">{alt ? `[Image: ${alt}]` : '[Image]'}</span>,
+          h1: ({ children }) => <p className="mt-3 mb-1 text-[1.15em] font-semibold">{children}</p>,
+          h2: ({ children }) => <p className="mt-3 mb-1 text-[1.08em] font-semibold">{children}</p>,
+          h3: ({ children }) => <p className="mt-3 mb-1 font-semibold">{children}</p>,
+          pre: ({ children }) => {
+            const language = languageOf(children)
+            return (
+              <div className="my-3 min-w-0 overflow-hidden rounded-lg border bg-muted/60" dir="ltr">
+                <div className="flex min-h-11 items-center justify-between gap-2 border-b pl-3 text-xs text-muted-foreground">
+                  <span className="truncate font-mono">{language ?? 'code'}</span>
+                  {!preview && <CopyButton value={textOf(children)} label="Copy code" />}
+                </div>
+                <pre tabIndex={0} className="scroller max-h-[28rem] overflow-auto p-3 text-[13px] leading-relaxed">
+                  {children}
+                </pre>
               </div>
-              <pre tabIndex={0} className="scroller overflow-x-auto p-4 text-[13px]">
-                {children}
-              </pre>
-            </div>
-          ),
+            )
+          },
           table: ({ children }) => (
-            <div className="scroller my-3 overflow-x-auto">
-              <table>{children}</table>
+            <div tabIndex={0} className="scroller my-3 max-w-full overflow-x-auto rounded-lg border" dir="auto">
+              <table className="w-max min-w-full border-collapse text-sm">{children}</table>
             </div>
           ),
         }}
@@ -51,52 +161,149 @@ export function RichMessage({ body }: { body: string }) {
     </div>
   )
 }
-export function FilePreview({ file }: { file: Attachment }) {
-  const [open, setOpen] = useState(false)
-  const url = fileUrl(file.path)
-  const image = file.mime?.startsWith('image/') && file.mime !== 'image/svg+xml'
+
+type Kind = 'image' | 'video' | 'audio' | 'text' | 'code' | 'archive' | 'other'
+
+function kindOf(file: Pick<Attachment, 'kind' | 'mime' | 'name'>): Kind {
+  const mime = file.mime ?? ''
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  if (file.kind === 'photo' || (mime.startsWith('image/') && mime !== 'image/svg+xml')) return 'image'
+  if (file.kind === 'video' || mime.startsWith('video/')) return 'video'
+  if (file.kind === 'voice' || file.kind === 'audio' || mime.startsWith('audio/')) return 'audio'
+  if (['zip', 'gz', 'tar', 'rar', '7z'].includes(ext)) return 'archive'
+  if (['json', 'ts', 'tsx', 'js', 'rs', 'py', 'sh', 'toml', 'yaml', 'yml', 'html', 'css'].includes(ext)) return 'code'
+  if (mime.startsWith('text/') || ['md', 'txt', 'csv', 'pdf', 'docx', 'doc'].includes(ext)) return 'text'
+  return 'other'
+}
+
+const ICON: Record<Kind, typeof FileIcon> = {
+  image: FileImageIcon,
+  video: FileVideoIcon,
+  audio: FileAudioIcon,
+  text: FileTextIcon,
+  code: FileCodeIcon,
+  archive: FileArchiveIcon,
+  other: FileIcon,
+}
+
+/** A thumbnail that falls back to the file's icon when the image is missing. */
+function Thumb({ file, kind }: { file: Attachment; kind: Kind }) {
+  const [failed, setFailed] = useState(false)
+  const Icon = ICON[kind]
+  if (kind === 'image' && !failed) {
+    return (
+      <img
+        src={fileUrl(file.path)}
+        alt=""
+        width={40}
+        height={40}
+        loading="lazy"
+        decoding="async"
+        onError={() => setFailed(true)}
+        className="size-10 shrink-0 rounded-md border bg-muted object-cover"
+      />
+    )
+  }
   return (
-    <div className="min-w-0 rounded-xl border bg-card p-2 text-card-foreground">
-      {image && (
-        <Dialog.Root open={open} onOpenChange={setOpen}>
-          <Dialog.Trigger asChild>
+    <span className="grid size-10 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
+      <Icon className="size-5" aria-hidden />
+    </span>
+  )
+}
+
+/** One file as a row: thumbnail or icon, name, size, and what you can do with
+ * it. Images and videos open in a viewer; everything downloads. */
+export function FilePreview({ file, detail, className }: { file: Attachment; detail?: ReactNode; className?: string }) {
+  const kind = kindOf(file)
+  const url = fileUrl(file.path)
+  const viewable = kind === 'image' || kind === 'video'
+  return (
+    <div
+      className={cn(
+        'flex min-h-14 min-w-0 items-center gap-3 rounded-lg border bg-card py-2 pr-1 pl-2 text-card-foreground',
+        className,
+      )}
+    >
+      <Thumb file={file} kind={kind} />
+      <div className="min-w-0 flex-1">
+        {viewable ? (
+          <Viewer file={file} kind={kind}>
             <button
               type="button"
-              className="block min-h-11 w-full rounded-lg focus-visible:outline-2 focus-visible:outline-ring"
-              aria-label={`Enlarge ${file.name}`}
+              className="block w-full min-w-0 cursor-pointer rounded text-left text-sm font-medium outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring/50"
             >
-              <img src={url} alt={file.name} loading="lazy" className="max-h-52 w-full rounded-lg object-contain" />
+              <span dir="auto" title={file.name} className="user-text block truncate">
+                {file.name || 'Unnamed file'}
+              </span>
             </button>
-          </Dialog.Trigger>
-          <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 z-50 bg-black/80" />
-            <Dialog.Content className="fixed inset-4 z-50 flex flex-col items-center justify-center gap-3 rounded-xl bg-background p-4">
-              <Dialog.Title className="max-w-full truncate text-sm">{file.name}</Dialog.Title>
-              <Dialog.Description className="sr-only">Image preview</Dialog.Description>
-              <img src={url} alt={file.name} className="min-h-0 max-w-full flex-1 object-contain" />
-              <Dialog.Close asChild>
-                <Button variant="secondary" className="min-h-11">
-                  <XIcon />
-                  Close
-                </Button>
-              </Dialog.Close>
-            </Dialog.Content>
-          </Dialog.Portal>
-        </Dialog.Root>
-      )}
-      {(file.kind === 'video' || file.mime?.startsWith('video/')) && (
-        <video controls preload="metadata" src={url} className="max-h-64 w-full rounded-lg">
-          <track kind="captions" />
-        </video>
-      )}
-      {(file.kind === 'voice' || file.kind === 'audio' || file.mime?.startsWith('audio/')) && (
-        <audio controls preload="metadata" src={url} className="w-full" />
-      )}
-      <a href={url} download className="flex min-h-11 items-center gap-2 rounded-md px-2 text-sm hover:bg-muted">
-        <DownloadIcon className="size-4 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">{file.name}</span>
-        <span className="shrink-0 text-xs text-muted-foreground">{Math.max(1, Math.ceil(file.size / 1024))} KB</span>
-      </a>
+          </Viewer>
+        ) : (
+          <span dir="auto" title={file.name} className="user-text block truncate text-sm font-medium">
+            {file.name || 'Unnamed file'}
+          </span>
+        )}
+        <span className="block truncate text-xs text-muted-foreground tabular-nums">
+          {formatBytes(file.size)}
+          {detail}
+        </span>
+        {kind === 'audio' && (
+          <audio controls preload="none" src={url} className="mt-1.5 h-9 w-full max-w-80">
+            <track kind="captions" />
+          </audio>
+        )}
+      </div>
+      <Button variant="ghost" size="icon" asChild className="size-11 shrink-0 text-muted-foreground">
+        <a href={url} download={file.name || true} aria-label={`Download ${file.name || 'file'}`}>
+          <DownloadIcon aria-hidden />
+        </a>
+      </Button>
     </div>
+  )
+}
+
+/** Full-size image or video, in a dialog; only loaded when opened. */
+function Viewer({ file, kind, children }: { file: Attachment; kind: Kind; children: ReactNode }) {
+  const [failed, setFailed] = useState(false)
+  const url = fileUrl(file.path)
+  return (
+    <Dialog.Root onOpenChange={(open) => open && setFailed(false)}>
+      <Dialog.Trigger asChild>{children}</Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/80 duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+        <Dialog.Content className="fixed inset-[max(1rem,env(safe-area-inset-top))_max(1rem,env(safe-area-inset-right))_max(1rem,env(safe-area-inset-bottom))_max(1rem,env(safe-area-inset-left))] z-50 flex flex-col gap-3 rounded-xl bg-background p-3 shadow-lg outline-none duration-150 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.98]">
+          <div className="flex min-w-0 items-center gap-2">
+            <Dialog.Title dir="auto" className="user-text min-w-0 flex-1 truncate pl-1 text-sm font-medium">
+              {file.name || 'Unnamed file'}
+            </Dialog.Title>
+            <Dialog.Description className="sr-only">
+              {kind === 'image' ? 'Image preview' : 'Video preview'}, {formatBytes(file.size)}
+            </Dialog.Description>
+            <Button variant="ghost" size="icon" asChild className="size-11">
+              <a href={url} download={file.name || true} aria-label="Download">
+                <DownloadIcon aria-hidden />
+              </a>
+            </Button>
+            <Dialog.Close asChild>
+              <Button variant="ghost" size="icon" className="size-11" aria-label="Close">
+                <XIcon aria-hidden />
+              </Button>
+            </Dialog.Close>
+          </div>
+          <div className="grid min-h-0 flex-1 place-items-center overflow-hidden rounded-lg bg-muted/50">
+            {failed ? (
+              <p className="max-w-[40ch] p-6 text-center text-sm text-muted-foreground">
+                This file couldn’t be loaded. It may have been moved or deleted from the topic’s folder.
+              </p>
+            ) : kind === 'image' ? (
+              <img src={url} alt={file.name} onError={() => setFailed(true)} className="max-h-full max-w-full object-contain" />
+            ) : (
+              <video controls autoPlay={false} playsInline preload="metadata" src={url} onError={() => setFailed(true)} className="max-h-full max-w-full">
+                <track kind="captions" />
+              </video>
+            )}
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }

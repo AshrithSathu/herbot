@@ -18,6 +18,8 @@ struct VoiceState {
     admin: Arc<AdminState>,
     transcriber: Option<voice::OpenAiTranscriber>,
     speaker: Arc<dyn speech::Speaker>,
+    /// Speech is configured (OPENAI_API_KEY); off, every speak call fails.
+    available: bool,
 }
 pub fn router(admin: Arc<AdminState>, config: Option<&OpenAiConfig>) -> Router {
     let state = Arc::new(VoiceState {
@@ -25,13 +27,24 @@ pub fn router(admin: Arc<AdminState>, config: Option<&OpenAiConfig>) -> Router {
         transcriber: config
             .map(|c| voice::OpenAiTranscriber::new(c.api_key.clone(), c.transcribe_model.clone())),
         speaker: speech::configured(config),
+        available: config.is_some(),
     });
     Router::new()
         .route("/admin/api/voice/transcribe", post(transcribe))
         .route("/admin/api/voice/speak", post(speak))
+        .route("/admin/api/voice/status", axum::routing::get(status))
         .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .with_state(state)
 }
+/// Whether the panel can hear and speak (needs OPENAI_API_KEY), so
+/// Companions can say so up front instead of after a failed request.
+async fn status(State(s): State<Arc<VoiceState>>, h: HeaderMap) -> Response {
+    if !admin::authorized(&h, &s.admin.token) {
+        return fail(StatusCode::UNAUTHORIZED, "bad admin token");
+    }
+    Json(json!({ "transcribe": s.transcriber.is_some(), "speak": s.available })).into_response()
+}
+
 fn fail(code: StatusCode, message: &str) -> Response {
     (code, Json(json!({"error":message}))).into_response()
 }

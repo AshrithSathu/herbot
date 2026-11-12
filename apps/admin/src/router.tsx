@@ -24,7 +24,10 @@ export function getRouter() {
   const router = createRouter({
     routeTree,
     context: { queryClient },
-    scrollRestoration: true,
+    // The topic page's conversation owns its scroll (pinned to the latest
+    // message, or a search hit): restoring another page's offsets onto its
+    // scroller sent topic 2 thousands of pixels up and undid search jumps.
+    scrollRestoration: ({ location }) => !location.pathname.startsWith('/topics/'),
     // Hovering a link runs its loader, which warms the query cache.
     defaultPreload: 'intent',
     // Let TanStack Query decide freshness, not the router's own cache.
@@ -57,5 +60,9 @@ declare module '@tanstack/react-router' {
     crumb?: string | ((loaderData: unknown) => string | undefined)
     /** A list page shown before this one, when it isn't a parent route. */
     crumbParent?: { label: string; to: '/topics' | '/logs' }
+    /** 'page': the route renders its own panes (ShellPage, a chat, a split)
+     * and scrolls itself. Otherwise the layout gives it a padded, scrolling
+     * column (pages not yet rebuilt on the hb kit). */
+    shell?: 'page'
   }
 }

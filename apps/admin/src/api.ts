@@ -29,6 +29,10 @@ export interface Overview {
 export interface Topic {
   id: number
   place: string
+  /** The topic's own name: "General", "Topic 7" when unnamed. Prefer it to `place`. */
+  name: string
+  /** The group's title. */
+  group: string
   is_general: boolean
   /** In the list, cut to 300 characters; whole in a topic's detail. */
   purpose: string | null
@@ -40,6 +44,10 @@ export interface Topic {
   last_activity: string | null
   mode: string
   thread_link: string | null
+  language: string
+  private_mode: boolean
+  /** Capped at 99. */
+  unread: number
 }
 
 export interface TopicDetail {
@@ -273,10 +281,12 @@ export interface SearchHit {
   conversation_id: number
   name: string
   snippet: string
+  sent_at: string
+  from_bot: boolean
 }
 export const getActivity = createServerFn({ method: 'GET' })
   .validator((id: number) => id)
-  .handler(async ({ data }) => (await serverSide())<{ in_progress: boolean }>(`/conversations/${data}/activity`))
+  .handler(async ({ data }) => (await serverSide())<Activity>(`/conversations/${data}/activity`))
 export const getFiles = createServerFn({ method: 'GET' })
   .validator((id: number) => id)
   .handler(async ({ data }) => (await serverSide())<Attachment[]>(`/conversations/${data}/files`))
@@ -312,7 +322,8 @@ export const getConnectors = createServerFn({ method: 'GET' }).handler(async () 
       command: string | null
       url: string | null
     }[]
-    tools: string[]
+    /** Herbot's own MCP tools and who may use them (hub::TOOLS). */
+    tools: { name: string; scope: string }[]
   }>('/connectors'),
 )
 export const sendMessage = createServerFn({ method: 'POST' })
@@ -357,3 +368,48 @@ export const companionReply = createServerFn({ method: 'POST' })
     if (!response.ok) throw new Error(result.error ?? 'Conversation failed')
     return result.reply
   })
+
+export interface Activity { in_progress: boolean }
+export interface ConversationActivity extends Activity { conversation_id: number }
+export interface ReadMarker { through_message_id: number }
+
+export const listActivity = createServerFn({ method: 'GET' }).handler(async () =>
+  (await serverSide())<ConversationActivity[]>('/activity'),
+)
+
+export const markRead = createServerFn({ method: 'POST' })
+  .validator((data: { id: number; through_message_id: number }) => {
+    if (!Number.isSafeInteger(data.id) || data.id < 1 ||
+        !Number.isSafeInteger(data.through_message_id) || data.through_message_id < 1) {
+      throw new Error('Invalid conversation or message ID')
+    }
+    return data
+  })
+  .handler(async ({ data }) =>
+    (await serverSide())<ReadMarker>(`/conversations/${data.id}/read`, {
+      method: 'POST', body: { through_message_id: data.through_message_id },
+    }),
+  )
+
+export interface MessageWindow extends MessagePage {
+  has_more_before: boolean
+  has_more_after: boolean
+}
+export const getMessagesAround = createServerFn({ method: 'GET' })
+  .validator((data: { id: number; around: number; limit?: number }) => data)
+  .handler(async ({ data }) => {
+    const params = new URLSearchParams({ around: String(data.around) })
+    if (data.limit != null) params.set('limit', String(data.limit))
+    return (await serverSide())<MessageWindow>(`/conversations/${data.id}/messages?${params}`)
+  })
+
+export type TaskCounts = Record<Task['status'], number>
+export const getTaskCounts = createServerFn({ method: 'GET' }).handler(async () =>
+  (await serverSide())<TaskCounts>('/tasks/counts'),
+)
+/** When capped, total is a lower bound of 10,000. Matches the error list's filter. */
+export const getErrorsTotal = createServerFn({ method: 'GET' })
+  .validator((data: { q: string }) => data)
+  .handler(async ({ data }) =>
+    (await serverSide())<{ total: number; capped: boolean }>(`/errors/total?${new URLSearchParams({ q: data.q })}`),
+  )

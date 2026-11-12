@@ -52,6 +52,8 @@ pub struct ConversationStatus {
     pub mode: crate::modes::Mode,
     /// The language it answers in (`/language`; English by default).
     pub language: String,
+    pub private_mode: bool,
+    pub panel_unread: i64,
 }
 
 impl ConversationStatus {
@@ -255,7 +257,7 @@ pub async fn conversation_status(
 }
 
 /// One row of `status_select!`; the count and last activity are kept on the
-/// conversation by triggers (migration 0008), so this never scans messages.
+/// conversation by triggers (migration 0008), so only the capped panel unread count visits message index entries.
 #[derive(sqlx::FromRow)]
 struct StatusRow {
     id: i64,
@@ -280,6 +282,8 @@ struct StatusRow {
     t3_project_registered: bool,
     mode: String,
     language: String,
+    private_mode: bool,
+    panel_unread: i64,
 }
 
 /// The status query with `$rest` (a WHERE / ORDER BY literal) appended, as
@@ -291,7 +295,11 @@ macro_rules! status_select {
             "SELECT v.id, c.tg_chat_id, c.title, c.kind, c.is_forum, v.tg_topic_id,
             v.name, v.enabled, v.voice_replies, v.voice, v.message_count, v.last_message_at, b.name AS bot_name,
             t.t3_thread_id, t.t3_link, v.purpose, v.setup_state, v.agents_md_path,
-            v.agents_md_updated_at, v.t3_project_registered, v.mode, v.language
+            v.agents_md_updated_at, v.t3_project_registered, v.mode, v.language, v.private_mode,
+            (SELECT count(*) FROM (SELECT m.id FROM messages m
+                WHERE m.conversation_id = v.id AND m.from_bot
+                  AND m.id > v.panel_read_through_message_id
+                ORDER BY m.id LIMIT 99) unread) AS panel_unread
      FROM conversations v
      JOIN chats c ON c.id = v.chat_id
      LEFT JOIN bots b ON b.id = v.bot_id
@@ -326,6 +334,8 @@ impl From<StatusRow> for ConversationStatus {
             thread_link: row.t3_link,
             mode: crate::modes::Mode::parse(&row.mode).unwrap_or(crate::modes::Mode::Auto),
             language: row.language,
+            private_mode: row.private_mode,
+            panel_unread: row.panel_unread,
         }
     }
 }
