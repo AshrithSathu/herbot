@@ -4,7 +4,7 @@
 // match"). The Shell owns the one hotkey; pages open it through
 // useShell().openPalette(query). It opens dozens of times a day, so it
 // doesn't animate.
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Dialog } from 'radix-ui'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -58,6 +58,16 @@ function plain(snippet: string): string {
 
 const MESSAGE_HITS = 6
 
+/** `value`, once it has stopped changing for `ms`. */
+function useDebounced<T>(value: T, ms: number): T {
+  const [settled, setSettled] = useState(value)
+  useEffect(() => {
+    const id = setTimeout(() => setSettled(value), ms)
+    return () => clearTimeout(id)
+  }, [value, ms])
+  return settled
+}
+
 export function CommandPalette({ open, onOpenChange, topics, actions = [], initialQuery = '' }: Props) {
   const navigate = useNavigate()
   const [q, setQ] = useState(initialQuery)
@@ -68,14 +78,17 @@ export function CommandPalette({ open, onOpenChange, topics, actions = [], initi
     if (open) setQ(initialQuery)
   }, [open, initialQuery])
 
-  // Messages once there's something to search: debounced by deferring, and
-  // only from two characters (one letter matches everything).
-  const typed = useDeferredValue(q.trim())
+  // Messages once there's something to search: 300 ms after typing stops, and
+  // only from two characters (one letter matches everything). Pages, agents
+  // and actions filter locally on every keystroke.
+  const typed = useDebounced(q.trim(), 300)
   const messages = useQuery({
     queryKey: ['palette-search', typed],
     queryFn: () => searchMessages({ data: { q: typed } }),
     enabled: open && typed.length >= 2,
     staleTime: 30_000,
+    // One quick retry, then say it failed (not seconds of backoff).
+    retry: 1,
   })
 
   const items = useMemo<Item[]>(() => {
@@ -118,7 +131,10 @@ export function CommandPalette({ open, onOpenChange, topics, actions = [], initi
   }
 
   const active = items[index]
-  const searching = typed.length >= 2 && messages.isFetching && !messages.data
+  const wantsMessages = q.trim().length >= 2
+  const settling = wantsMessages && q.trim() !== typed
+  const searching = wantsMessages && (settling || (messages.isFetching && !messages.data))
+  const failed = wantsMessages && !settling && messages.isError
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -159,7 +175,7 @@ export function CommandPalette({ open, onOpenChange, topics, actions = [], initi
             <kbd className="hidden rounded border border-line px-1.5 font-sans text-[11px] text-mute md:inline">Esc</kbd>
           </div>
           <ul id="hb-palette-list" ref={list} role="listbox" aria-label="Results" aria-busy={searching || undefined} className="scroller min-h-0 flex-1 overflow-y-auto p-1.5 md:max-h-[55vh]">
-            {items.length === 0 && !searching && <li className="px-3 py-6 text-center text-[13.5px] text-mute">Nothing matches that.</li>}
+            {items.length === 0 && !searching && !failed && <li className="px-3 py-6 text-center text-[13.5px] text-mute">Nothing matches that.</li>}
             {items.map((item, i) => {
               const Icon =
                 item.kind === 'agent'
@@ -201,6 +217,20 @@ export function CommandPalette({ open, onOpenChange, topics, actions = [], initi
             })}
             {searching && <li className="px-3 py-2 text-[12.5px] text-mute">Searching messages…</li>}
           </ul>
+          {/* A failed message search never reads as "nothing matches": it says
+              so, keeps the page and agent results above, and offers Retry. */}
+          {failed && (
+            <div role="alert" className="flex min-h-11 items-center justify-between gap-3 border-t border-line px-4 py-1.5 text-[13px] text-mute">
+              <span className="min-w-0">Couldn’t search messages.</span>
+              <button
+                type="button"
+                onClick={() => void messages.refetch()}
+                className="h-9 shrink-0 rounded-md px-2.5 font-medium text-ink hover:bg-sunken pointer-coarse:h-11"
+              >
+                Retry
+              </button>
+            </div>
+          )}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
