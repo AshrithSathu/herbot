@@ -75,3 +75,88 @@ Decided by prototyping (emil-prototype) against worst-case data (`make admin-str
 - The guard matches the risk: typing "forget" only for forgetting a topic (irreversible, rare). Clean slate and forgetting a memory use Sheet's guard: "Keep" is the primary button and the red action sits alone below a rule.
 - New agent opens as a modal form (bottom sheet on phones).
 - Left behind: Sheet as the container (wide travel, heavy for a one-line confirm); Inline hold-to-confirm (unfamiliar for keyboard and screen-reader users).
+
+## Stage 3: pages
+
+### Topic (chat home), decided from /proto/page-topic (Pane, Drawer, Header)
+- Base: **Pane**. Details are a permanent third pane from 68.75 rem (hide/show remembered), Drawer's overlay below that width, full screen on phones. You can watch a setting take effect in the conversation while you change it.
+- Kept: the "New · N" line where unread replies begin, marking read on reaching the bottom, a switched-off topic's composer saying so, failed sends with Retry / Edit / Discard.
+- Left behind: Drawer on wide screens (details hide the chat while open); Header (unfolded settings push the chat down to ~70 px on a phone).
+
+### Files, decided from /proto/page-files (In details, Browser, Gallery)
+- Base: **Browser**. A Chat | Files switch in the topic's main pane; files as a Ledger table (name, folder, kind, size) with filter, sort and folder chips, and a preview beside it on wide screens (image, video, audio, first 64 KB of text).
+- Mixed from Gallery: images and video get a small thumbnail in the name cell.
+- Left behind: In details (a 352 px column, no preview, files compete with settings); Gallery as the base (on real data it's almost all documents).
+
+### Kit fixes found by the page stage (do in Stage 4)
+- `AgentRow`: `onSelect(id, event)` so callers can stay in place (it always navigates today).
+- A topic standing-mode list (Auto, Fast, Think = expert, Heavy); the composer's per-message `MODES` includes DeepSearch, which can't be a standing mode.
+- Composer focus ring: neutral, not accent-tinted.
+- `UserText` forwards extra props (`id`, aria attributes), so dialog titles can be labelled by it.
+- Phone status strip: shorter copy at phone width.
+
+### Logs, decided from /proto/page-logs (Pages, Split, Inline)
+- Base: **Split**. The error list (E-id over kind, first line, when) beside the detail; the newest selected on wide screens; ↑/↓ walks and the detail follows; copy and older/newer in the detail. Below 68.75 rem it behaves like Pages (list, then a detail view with back).
+- The selected row uses the kit's subtle selected state, not a dark outline.
+- Left behind: Pages on wide screens (comparing errors means back and forth); Inline (expanded rows push the list far down; the most scrolling on phones).
+
+### Search, decided from /proto/page-search (By topic, Flat, Palette)
+- Base: **By topic**. Matches grouped under their topic (three shown, "Show N more", "Open"), highlighted, each opening the conversation at that message.
+- Mixed from Palette: ⌘K also searches messages (newest few) with "See every match" opening this page with the query.
+- Left behind: Flat (repetitive when hits share a topic); Palette as the only search (discoverability rests on a shortcut).
+
+### More kit fixes from the page stage
+- `LedgerTable`: a selected-row state, top-aligned cells option, and an expandable row; on phones, several below-the-line cells can share a line.
+- Export the scroll-parent hook and a general `CopyButton`; add a kit `SearchInput`.
+- `CommandPalette`: a message-search section and a per-page hotkey owner (one ⌘K).
+- API: search hits carry time and sender; the errors list stays clipped (the detail has the full message).
+
+### Overview, decided from /proto/page-overview (Figures, Inbox, Since)
+- Base: **Figures**. Four serif figures, "Needs you", the last error.
+- Mixed from Inbox: "Needs you" names the first few items with an action each (Open, Run again, Read it), then "Show all N" to the filtered view, instead of counts only.
+- Left behind: Inbox as the base (the longest page; repeats the agents pane's "New"); Since (nothing prioritised; urgent items sit among routine runs).
+
+### Topics, decided from /proto/page-topics (Ledger, Grouped, Manage)
+- Base: **Ledger**. One table with filter, state and sort segments, a select column, a bulk bar while anything is selected (switch on/off with Undo), per-row Switch on/off, New agent. "Active" drops below 75 rem; on phones the checkbox sits in the name cell.
+- Left behind: Grouped (no multi-select or sort; section-wide actions are blunt); Manage (the narrow pane caps density; a mode to learn).
+
+### Companions, decided from /proto/page-companions (Stage, Call panel, Voice mode)
+- Base: **Call panel**. The companion's conversation stays in the main pane; the voice call (avatar, state, mic, stop talking, timer) docks in the details pane, with a compact call bar below 68.75 rem. Every state has its own words: connecting, listening with a timer, transcribing, thinking, speaking, failed with retry, voice off.
+- Mixed from Voice mode: companions also appear in the agents pane like any topic (they are topics).
+- Left behind: Stage (typing and history second-class; an extra page); Voice mode as the base (the least prominent voice affordance).
+
+### Connectors, decided from /proto/page-connectors (List, Settings)
+- Base: **List**. Ledger tables for MCP servers and for Herbot's 13 tools with what each does and who may use it.
+- Left behind: Settings (duplicates Personalize and Memory; long on phones).
+
+### Sign-in, decided from /proto-signin (Card, Split)
+- Base: **Card**. Wordmark in the serif, one password field with show/hide and a Caps Lock warning, inline errors, the slowdown message after three wrong tries, "Forgot it? It's HERBOT_ADMIN_PASSWORD in Herbot's .env."
+- Left behind: Split (identity copy a single user doesn't need; an empty half-screen at 1,000–1,200 px).
+
+### More kit fixes from the page stage
+- Virtualizers (AgentList, LedgerTable, ThreadList): ignore zero-height measurements while a pane is hidden (phones), so lists don't jump when shown.
+- LedgerTable phone layout: a per-column opt-out of shrinking (checkbox column).
+- QuietAction forwards aria and className; FormDialog and ConfirmDialog restore focus to the opener even without a Radix trigger.
+- ShellPage on phones: "‹ Agents" goes above the title.
+- Composer: a voice slot (mic) and a way to put text back after a failed turn; inputs stay 16 px on touch at any width (pointer, not width, decides the 14 px desktop size).
+- Field: a warning line (Caps Lock) shown alongside an error.
+- Shell: details pane `defaultOpen` (permanent third pane on wide screens, remembered).
+
+### Tasks, decided from /proto/page-tasks (Filter, Timeline, By topic)
+- Base: **Filter**. One Thread list, newest first, with a status segment (a native picker on phones); each row: title, prompt preview, topic · schedule in words · next run · runs; Pause / Run now quiet actions and a separated Delete; New task in a FormDialog (topic picker over hostile names, presets, cron, timezone).
+- Mixed from Timeline: a "Coming up" line above the list with the next three runs.
+- Left behind: Timeline as the base (needs every task loaded for the order; one group can hold 200 rows); By topic (mostly one-task headers).
+
+### Memory, decided from /proto/page-memory (List, By source, Reader)
+- Base: **List**. One filterable Thread list, edit in place (⌘/Ctrl+Enter saves, Escape cancels), Show all for clamped text, Forget with the Keep-first dialog and an Undo toast. Over the 200 limit the add box is replaced by the limit notice.
+- Left behind: By source (166 sources for 299 memories: tiny groups); Reader (one more step to act; borrows the topic-details pane).
+
+### Personalize, decided from /proto/page-personalize (Stacked, Preview, Focused)
+- Base: **Preview**. The two texts beside a live PERSONAL.md preview, exactly as herbot-core writes it ("what every agent reads"); an Edit / What agents see switch below 80 rem; a save bar with Unsaved / Saving / Saved, ⌘/Ctrl+S, counters in code points, and the leave guard.
+- Left behind: Stacked (no view of what agents actually read); Focused (the other text a tab away; two saves feel like one).
+
+### More kit fixes from the page stage
+- ThreadList re-measures its scroll offset when content above it changes (several lists in one scroller).
+- DetailsPane title and back label as props; ConfirmDialog's keep label as a prop ("Keep editing").
+- A failure toast in `notify` (for a failed Undo); after a confirmed delete, focus moves to the next row.
+- TopicPicker: Escape closes the list, not the dialog. Meta lines: no dangling "·" at a wrap.
