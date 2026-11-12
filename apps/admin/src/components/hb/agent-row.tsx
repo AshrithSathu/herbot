@@ -31,6 +31,9 @@ type AgentRowProps = {
   /** Called on click, before navigating. Call `event.preventDefault()` to
    * stay where you are (a picker, a management mode). */
   onSelect?: (id: number, event: MouseEvent<HTMLAnchorElement>) => void
+  /** Roving focus: only one row is in the Tab order (AgentList sets it). */
+  tabIndex?: number
+  onFocus?: () => void
 }
 
 /** The row's accessible name: just the facts, never the whole purpose. */
@@ -39,7 +42,7 @@ function rowLabel(topic: Topic, label: string, working: boolean, unread: boolean
   return `${name}, ${label}${working ? ', working' : ''}${unread ? ', new messages' : ''}`
 }
 
-export function AgentRow({ topic: t, active = false, unread = false, working = false, onSelect }: AgentRowProps) {
+export function AgentRow({ topic: t, active = false, unread = false, working = false, onSelect, tabIndex, onFocus }: AgentRowProps) {
   const status = topicTone(t)
   const needsYou = status.tone !== 'ok'
   return (
@@ -47,6 +50,9 @@ export function AgentRow({ topic: t, active = false, unread = false, working = f
       to="/topics/$id"
       params={{ id: t.id }}
       onClick={(e) => onSelect?.(t.id, e)}
+      tabIndex={tabIndex}
+      onFocus={onFocus}
+      data-agent-id={t.id}
       aria-label={rowLabel(t, status.label, working, unread)}
       aria-current={active ? 'page' : undefined}
       className={cn(

@@ -149,9 +149,11 @@ export function Shell({ agents, details, strip, onSignOut, signingOut = false, t
   return (
     <ShellContext.Provider value={value}>
       <div className="flex h-dvh flex-col bg-canvas text-ink antialiased">
+        {/* Keyboard only: on focus it takes its own line above the status
+            strip (never on top of it), with room inside its ring. */}
         <a
           href="#content"
-          className="sr-only rounded-md bg-pane px-3 py-2 shadow-raised focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-[60]"
+          className="sr-only rounded-md bg-pane text-[14px] font-medium text-ink shadow-raised focus:not-sr-only focus:m-2 focus:self-start focus:px-4 focus:py-2.5"
         >
           Skip to content
         </a>

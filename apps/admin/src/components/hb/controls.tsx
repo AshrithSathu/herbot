@@ -2,7 +2,7 @@
 // segmented choices with the chosen option's description underneath (a menu
 // on phones), light buttons, labels above fields, destructive actions as
 // quiet red text that always confirm elsewhere.
-import { useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { Slot, Tabs as TabsPrimitive } from 'radix-ui'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { ChevronDownIcon, LoaderIcon, SearchIcon, XIcon } from 'lucide-react'
@@ -322,7 +322,9 @@ export function SearchInput({ label, value, onValueChange, className, id, onKeyD
             input.current?.focus()
           }}
           aria-label="Clear"
-          className="absolute top-1/2 right-1 grid size-9 -translate-y-1/2 place-items-center rounded-md text-faint hover:text-ink pointer-coarse:size-11"
+          // 36px to look at; the ::before reaches 40px (44 on touch). It sits
+          // over the field's own padding, so it never covers the text.
+          className="absolute top-1/2 right-1 grid size-9 -translate-y-1/2 place-items-center rounded-md text-faint before:absolute before:-inset-0.5 hover:text-ink pointer-coarse:size-11"
         >
           <XIcon className="size-4" aria-hidden />
         </button>
@@ -399,5 +401,46 @@ export function DisclosureButton({ open, className, children, ...rest }: Compone
     >
       {children}
     </button>
+  )
+}
+
+/**
+ * A checkbox: a visible 16px box with a 40px hit area (44px on touch).
+ * `indeterminate` shows the native mixed state (a dash) and reports
+ * `aria-checked="mixed"`, for a select-all with only some rows picked.
+ *
+ *   <Checkbox label="Select all topics" checked={all} indeterminate={some && !all} onCheckedChange={toggleAll} />
+ */
+export function Checkbox({ label, checked, indeterminate = false, onCheckedChange, disabled, className }: {
+  label: string
+  checked: boolean
+  indeterminate?: boolean
+  onCheckedChange: (checked: boolean) => void
+  disabled?: boolean
+  className?: string
+}) {
+  const box = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (box.current) box.current.indeterminate = indeterminate
+  }, [indeterminate])
+  return (
+    <label
+      className={cn(
+        'relative z-[1] -m-3 grid size-10 shrink-0 cursor-pointer place-items-center pointer-coarse:-m-3.5 pointer-coarse:size-11',
+        disabled && 'cursor-default',
+        className,
+      )}
+    >
+      <input
+        ref={box}
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onCheckedChange(e.target.checked)}
+        aria-label={label}
+        aria-checked={indeterminate ? 'mixed' : checked}
+        className="size-4 cursor-pointer accent-[var(--accent-strong)] disabled:cursor-default"
+      />
+    </label>
   )
 }
