@@ -458,3 +458,13 @@ mod tests {
         assert!(shown.contains("<redacted>"));
     }
 }
+
+/// Preferred form of address, shared by generated instructions and message headers.
+/// Telegram identity and authorization always continue to use the sender ID.
+pub fn admin_name() -> String {
+    std::env::var("HERBOT_ADMIN_NAME")
+        .ok()
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty() && !name.chars().any(char::is_control))
+        .unwrap_or_else(|| "the admin".to_owned())
+}

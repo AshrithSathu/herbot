@@ -120,3 +120,9 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - [x] Backend review: real panel failure reasons, search timestamps/senders, grouped task counts, capped filtered error totals, direct message windows (no UI changes)
 - [x] Stress-topic message IDs follow generated timestamp order, keeping worst-case bodies spread through recent history
 - Done when: requested Rust checks and panel typecheck pass locally; deployment and messenger UI integration are separate work.
+
+### Configurable admin identity
+
+- Added `HERBOT_ADMIN_NAME` for generated topic instructions and agent message headers; startup refreshes existing topic instructions.
+- Remaining: legacy admin panel, MCP labels, and other runtime prompts still contain personal names.
+- Verification pending: non-default name, restart refresh, and unchanged Telegram authorization.
