@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { PlusIcon } from 'lucide-react'
 import { setEnabled, type Topic } from '../../../api'
-import { ago, compact, exact } from '../../../format'
+import { compact, exact } from '../../../format'
 import { keys, topicsQuery } from '../../../queries'
 import { fold } from '@/components/hb/agent-list'
 import { Button, SearchInput, Segmented, type Choice } from '@/components/hb/controls'
@@ -17,6 +17,7 @@ import { BackToAgents, ShellPage } from '@/components/hb/shell'
 import { StatusDot, topicTone } from '@/components/hb/status'
 import { openNewAgent } from '@/components/new-agent'
 import { UserText } from '@/components/user-text'
+import { When } from '@/components/hb/when'
 
 const STATES = ['all', 'ready', 'setup', 'off'] as const
 type StateFilter = (typeof STATES)[number]
@@ -149,10 +150,12 @@ function TopicsPage() {
       width: 'minmax(7rem,1.2fr)',
       phone: 'title',
       cell: (t) => (
-        <span className="flex min-w-0 items-center gap-3">
+        // Baseline row (the checkbox centres itself), so the cell's baseline is
+        // the name's and the folded row's status word sits on it.
+        <span className="flex min-w-0 items-baseline gap-3">
           {/* Shown exactly when the table folds (its @container under 40rem), so
               selection exists at every width. */}
-          <span className="@min-[40rem]:hidden">
+          <span className="self-center @min-[40rem]:hidden">
             <Check label={`Select ${t.name || 'Untitled'}`} checked={selection.has(t.id)} onChange={() => selection.toggle(t.id)} />
           </span>
           <Link to="/topics/$id" params={{ id: t.id }} className={`block min-w-0 font-medium outline-none focus-visible:underline ${STRETCH}`}>
@@ -166,8 +169,10 @@ function TopicsPage() {
       header: 'Purpose',
       width: 'minmax(0,2fr)',
       phone: 'below',
+      // Folded rows: the purpose hangs under the name, past the checkbox
+      // (24px box + 12px gap; 28px on touch).
       cell: (t) => (
-        <UserText className="text-mute" fallback="No purpose yet">
+        <UserText className="text-mute @max-[40rem]:pl-9 pointer-coarse:@max-[40rem]:pl-10" fallback="No purpose yet">
           {t.purpose}
         </UserText>
       ),
@@ -189,9 +194,7 @@ function TopicsPage() {
             width: '6.5rem',
             phone: 'hide' as const,
             cell: (t: Topic) => (
-              <span className="text-mute" suppressHydrationWarning>
-                {ago(t.last_activity)}
-              </span>
+              t.last_activity ? <When iso={t.last_activity} format="list" className="text-mute" /> : <span className="text-faint">never</span>
             ),
           },
         ]

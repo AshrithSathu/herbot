@@ -17,10 +17,11 @@ import { companionReply, createTopic, getMessages, listTopics, type Message as M
 import { COMPANIONS, CompanionAvatar, type Companion, type VoicePhase } from '../../components/companion-avatar'
 import { Composer } from '@/components/hb/composer'
 import { Button, Segmented } from '@/components/hb/controls'
-import { ChatSkeleton, InPlaceEmpty, InPlaceError, splitErrorId } from '@/components/hb/feedback'
+import { Callout, ChatSkeleton, InPlaceEmpty, InPlaceError, splitErrorId } from '@/components/hb/feedback'
 import { FailedMessage, Message, MessageRow, Thinking } from '@/components/hb/message'
 import { BackToAgents, ShellDetails, useShell } from '@/components/hb/shell'
 import { cn } from '@/lib/utils'
+import { overviewQuery } from '../../queries'
 import { plainReason } from '@/lib/reasons'
 
 type Name = Companion['name']
@@ -465,9 +466,10 @@ function useCall(c: Companion) {
 type CallState = ReturnType<typeof useCall>
 
 /** What the call is doing, in words (the panel, the call bar, the mic's label). */
-function statusText(call: CallState, c: Companion): string {
+function statusText(call: CallState, c: Companion, telegramOff = false): string {
   if (call.connection.status === 'failed') return 'Couldn’t open the conversation'
   if (call.connection.status === 'opening') return 'Opening the conversation…'
+  if (telegramOff && call.phase === 'idle') return `${c.name} can talk once Telegram is back on`
   if (call.voiceOff && call.phase === 'idle') return `Type a message to ${c.name}`
   switch (call.phase) {
     case 'connecting':
@@ -486,9 +488,10 @@ function statusText(call: CallState, c: Companion): string {
 }
 
 /** The call bar's few words (the full sentence is its accessible name). */
-function shortStatus(call: CallState): string {
+function shortStatus(call: CallState, telegramOff = false): string {
   if (call.connection.status === 'failed') return 'Not open'
   if (call.connection.status === 'opening') return 'Opening…'
+  if (telegramOff && call.phase === 'idle') return 'Telegram off'
   if (call.voiceOff) return 'Voice off'
   switch (call.phase) {
     case 'connecting':
@@ -524,6 +527,16 @@ function Call({ companion: c }: { companion: Companion }) {
   )
 }
 
+/** Telegram off (the overview the shell already polls): companion turns go
+ * through a topic, so they can't be sent until the bot runs. */
+function useTelegramOff(): boolean {
+  const overview = useQuery(overviewQuery).data
+  return overview !== undefined && !overview.bot
+}
+const TELEGRAM_OFF = 'Telegram is off: messages can’t be sent until the bot is running.'
+/** The one way the panel says voice is unavailable. */
+const VOICE_OFF = 'Voice needs OpenAI on the server (OPENAI_API_KEY), so replies arrive as text.'
+
 function Conversation({ call, companion: c, onPick }: { call: CallState; companion: Companion; onPick: (n: Name) => void }) {
   const { detailsOpen, setDetailsOpen } = useShell()
   const end = useRef<HTMLDivElement>(null)
@@ -538,51 +551,60 @@ function Conversation({ call, companion: c, onPick }: { call: CallState; compani
   const opening = call.connection.status === 'opening'
   const openFailed = call.connection.status === 'failed'
   const voiceTurn = call.phase === 'listening' || call.phase === 'transcribing' || (call.phase === 'connecting' && !opening)
+  const telegramOff = useTelegramOff()
   const disabledReason = opening
     ? 'Opening the conversation…'
     : openFailed
       ? 'The conversation isn’t open'
-      : voiceTurn
-        ? 'Finish the voice turn first'
-        : undefined
+      : telegramOff
+        ? TELEGRAM_OFF
+        : voiceTurn
+          ? 'Finish the voice turn first'
+          : undefined
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex shrink-0 flex-col gap-3 border-b border-line px-4 pt-6 pb-3 md:px-8 md:pt-8">
-        <div className="flex min-h-11 items-center gap-2">
-          <BackToAgents />
+        {/* Phones: the call status gets its own row, so it never shrinks to "…". */}
+        <div className="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-2">
+          {/* Phones: "‹ Agents" sits above the title (as in ShellPage), so the
+              title starts at the content's edge. */}
+          <div className="contents max-md:block max-md:w-full">
+            <BackToAgents />
+          </div>
           <h1 className="font-serif text-[30px] leading-[1.1] font-semibold tracking-[-0.015em] md:text-[34px]">Companions</h1>
-          <span className="min-w-2 flex-1" />
-          <CallBar call={call} companion={c} open={detailsOpen} onToggle={() => setDetailsOpen(!detailsOpen)} />
+          <span className="min-w-2 flex-1 max-md:hidden" />
+          <div className="flex max-md:w-full wide:hidden">
+            <CallBar call={call} companion={c} open={detailsOpen} onToggle={() => setDetailsOpen(!detailsOpen)} />
+          </div>
         </div>
         <Segmented label="Companion" value={c.name} options={OPTIONS} onValueChange={onPick} />
       </header>
 
       {call.session?.fallback && (
-        <div role="status" className="shrink-0 border-b border-line bg-warning-soft px-4 py-2.5 text-[13px] md:px-8">
-          <p className="font-medium text-ink">Talking through General, with shared history</p>
-          <p className="text-mute">
-            Herbot couldn’t give {c.name} a topic of its own
-            {(() => {
-              const known = plainReason(call.session.reason)
-              return known ? ` because ${known.because}` : ''
-            })()}
-            , so {c.name}’s character goes with each message and General’s other conversations share this history.
-          </p>
-        </div>
+        <Callout tone="warning" className="mx-4 mt-3 shrink-0 md:mx-8" title="Talking through General, with shared history">
+          Herbot couldn’t give {c.name} a topic of its own
+          {(() => {
+            const known = plainReason(call.session.reason)
+            return known ? ` because ${known.because}` : ''
+          })()}
+          , so {c.name}’s character goes with each message and General’s other conversations share this history.
+        </Callout>
       )}
 
       <div data-hb-scroll className="scroller min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="mx-auto flex min-h-full max-w-3xl flex-col px-3 py-5 md:px-6">
+        <div className="flex min-h-full max-w-3xl flex-col px-4 py-5 md:px-8">
           {opening ? (
             <ChatSkeleton />
           ) : openFailed ? (
             <InPlaceError title={`Couldn’t open the conversation with ${c.name}`} error={call.connection.status === 'failed' ? call.connection.error : ''} onRetry={call.retryOpen} />
           ) : call.messages.length === 0 && !call.failed && call.phase !== 'thinking' ? (
-            <InPlaceEmpty title={`Say hello to ${c.name}`} className="my-auto">
-              {call.voiceOff
-                ? 'Type below. Voice needs OpenAI on the server, so this is a typed conversation for now. It shows here and in Telegram, like any topic.'
-                : 'Talk out loud with the microphone, or type below. The conversation shows here and in Telegram, like any topic.'}
+            <InPlaceEmpty title={`Say hello to ${c.name}`} className="my-auto px-0">
+              {telegramOff
+                ? `${c.name} can’t reply while Telegram is off. Messages go through once the bot is running.`
+                : call.voiceOff
+                  ? `Type below. ${VOICE_OFF}`
+                  : 'Talk out loud with the microphone, or type below. The conversation also shows in Telegram, like any topic.'}
             </InPlaceEmpty>
           ) : (
             <ol aria-label={`Conversation with ${c.name}`} aria-live="polite" aria-relevant="additions" className="flex flex-col">
@@ -615,8 +637,8 @@ function Conversation({ call, companion: c, onPick }: { call: CallState; compani
         </div>
       </div>
 
-      <div className="shrink-0 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6">
-        <div className="mx-auto flex max-w-3xl flex-col gap-2">
+      <div className="shrink-0 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-8">
+        <div className="flex max-w-3xl flex-col gap-2">
           {call.problem && <Problem text={call.problem} onDismiss={call.dismissProblem} />}
           <Composer
             placeholder={`Message ${c.name}`}
@@ -644,6 +666,7 @@ function Conversation({ call, companion: c, onPick }: { call: CallState; compani
 /** Below 68.75rem the call panel isn't beside the chat: this pill says what
  * the call is doing and opens it. */
 function CallBar({ call, companion: c, open, onToggle }: { call: CallState; companion: Companion; open: boolean; onToggle: () => void }) {
+  const telegramOff = useTelegramOff()
   const listening = call.phase === 'listening'
   const tone = call.connection.status === 'failed' || call.failed ? 'bg-off' : listening ? 'bg-destructive' : call.phase === 'speaking' ? 'bg-accent-strong' : 'bg-faint'
   return (
@@ -651,7 +674,7 @@ function CallBar({ call, companion: c, open, onToggle }: { call: CallState; comp
       type="button"
       onClick={onToggle}
       aria-expanded={open}
-      aria-label={`Call with ${c.name}: ${statusText(call, c)}. ${open ? 'Close' : 'Open'} the call panel`}
+      aria-label={`Call with ${c.name}: ${statusText(call, c, telegramOff)}. ${open ? 'Close' : 'Open'} the call panel`}
       className="flex h-9 min-w-0 shrink items-center gap-2 rounded-full px-3 text-[13px] text-mute shadow-[inset_0_0_0_var(--hair)_var(--line)] transition-[color,background-color] duration-150 ease-out hover:bg-sunken hover:text-ink pointer-coarse:h-11 wide:hidden"
     >
       <span className={cn('size-2 shrink-0 rounded-full', tone)} aria-hidden />
@@ -661,7 +684,7 @@ function CallBar({ call, companion: c, open, onToggle }: { call: CallState; comp
             Listening <Elapsed since={call.recordedAt} />
           </>
         ) : (
-          shortStatus(call)
+          shortStatus(call, telegramOff)
         )}
       </span>
       <PhoneIcon className="size-3.5 shrink-0" aria-hidden />
@@ -687,7 +710,8 @@ function Problem({ text, onDismiss }: { text: string; onDismiss: () => void }) {
 
 /** The mic: start listening, stop and send, or interrupt the companion. */
 function MicButton({ call, companion: c, size }: { call: CallState; companion: Companion; size: 'large' | 'small' }) {
-  const ready = call.connection.status === 'ready'
+  const telegramOff = useTelegramOff()
+  const ready = call.connection.status === 'ready' && !telegramOff
   const waiting = call.phase === 'connecting' || call.phase === 'transcribing' || call.phase === 'thinking'
   const listening = call.phase === 'listening'
   if (call.voiceOff) {
@@ -733,6 +757,7 @@ function MicButton({ call, companion: c, size }: { call: CallState; companion: C
 /** The voice call, docked in the details pane. */
 function CallPanel({ call, companion: c }: { call: CallState; companion: Companion }) {
   const { setDetailsOpen } = useShell()
+  const telegramOff = useTelegramOff()
   const failed = call.connection.status === 'failed'
   const listening = call.phase === 'listening'
   return (
@@ -756,7 +781,7 @@ function CallPanel({ call, companion: c }: { call: CallState; companion: Compani
         <div className="flex flex-col items-center gap-1.5">
           <p className="font-serif text-[24px] leading-none font-semibold">{c.name}</p>
           <p role="status" aria-live="polite" className="min-h-5 text-[14px] text-balance text-mute">
-            {statusText(call, c)}
+            {statusText(call, c, telegramOff)}
             {listening && call.recordedAt != null && (
               <span className="ml-1.5 font-medium text-ink">
                 <Elapsed since={call.recordedAt} />
@@ -775,9 +800,7 @@ function CallPanel({ call, companion: c }: { call: CallState; companion: Compani
         ) : call.voiceOff ? (
           <div className="flex max-w-[28ch] flex-col items-center gap-3">
             <MicButton call={call} companion={c} size="large" />
-            <p className="text-[13px] text-mute">
-              Voice needs <code className="font-mono text-[12px]">OPENAI_API_KEY</code> on the server. Type in the conversation; replies arrive as text.
-            </p>
+            <p className="text-[13px] text-mute">{VOICE_OFF}</p>
           </div>
         ) : (
           <>

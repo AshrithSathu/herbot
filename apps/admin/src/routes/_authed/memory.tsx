@@ -13,7 +13,7 @@ import { charCount, exact, when } from '../../format'
 import { memoriesQuery, topicsQuery } from '../../queries'
 import { Button, DisclosureButton, Field, SearchInput, TextArea } from '@/components/hb/controls'
 import { ConfirmDialog } from '@/components/hb/dialogs'
-import { InPlaceEmpty, InPlaceError, ListSkeleton, notify, notifyFailure } from '@/components/hb/feedback'
+import { Callout, InPlaceEmpty, InPlaceError, ListSkeleton, notify, notifyFailure } from '@/components/hb/feedback'
 import { QuietAction, ThreadList } from '@/components/hb/rows'
 import { BackToAgents, ShellPage } from '@/components/hb/shell'
 import { MetaLine } from '@/components/hb/status'
@@ -229,14 +229,9 @@ function AddMemory({ count }: { count: number }) {
   if (count >= MEMORY_LIMIT) {
     const need = count - MEMORY_LIMIT + 1
     return (
-      <div role="note" className="flex flex-col gap-1 rounded-lg bg-warning-soft px-3 py-2.5 text-[13.5px]">
-        <span className="font-medium text-warning">
-          {exact(count)} memories, {count > MEMORY_LIMIT ? 'over' : 'at'} the limit of {exact(MEMORY_LIMIT)}
-        </span>
-        <span className="text-ink">
-          Forget at least {exact(need)} {need === 1 ? 'memory' : 'memories'} before adding another. Agents still read all of them.
-        </span>
-      </div>
+      <Callout tone="warning" title={`${exact(count)} memories, ${count > MEMORY_LIMIT ? 'over' : 'at'} the limit of ${exact(MEMORY_LIMIT)}`}>
+        Forget at least {exact(need)} {need === 1 ? 'memory' : 'memories'} before adding another. Agents still read all of them.
+      </Callout>
     )
   }
   const submit = (e?: FormEvent) => {
@@ -308,10 +303,13 @@ function MemoryEditor({ memory, text, onText, onDone }: { memory: Memory; text: 
             {...p}
             value={text}
             autoFocus
-            // Editing continues where the text ends, not before it.
+            // Editing continues where the text ends, not before it, with the
+            // end (and the cursor) scrolled into view.
             onFocus={(e) => {
-              const end = e.currentTarget.value.length
-              e.currentTarget.setSelectionRange(end, end)
+              const el = e.currentTarget
+              const end = el.value.length
+              el.setSelectionRange(end, end)
+              el.scrollTop = el.scrollHeight
             }}
             disabled={save.isPending}
             onChange={(e) => {

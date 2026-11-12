@@ -137,7 +137,10 @@ function TasksPage() {
       description="Reminders and recurring prompts. Each one runs in its topic, and the agent answers there."
       actions={q.tasks.length > 0 ? newTask : undefined}
     >
-      {q.isPending ? (
+      {/* Every page of tasks loads before anything renders (they're few, and
+          "Coming up" needs all of them): one render, no rows swapping in or
+          pushing the list down. A failed page releases it with what loaded. */}
+      {q.isPending || (!complete && !q.isFetchNextPageError) ? (
         <ListSkeleton rows={6} />
       ) : q.isError && q.tasks.length === 0 ? (
         <InPlaceError title="Couldn’t load tasks" error={q.error} onRetry={() => q.refetch()} retrying={q.isRefetching} />
@@ -148,7 +151,7 @@ function TasksPage() {
         </InPlaceEmpty>
       ) : (
         <div className="flex flex-col gap-6">
-          {(filter === 'all' || filter === 'active') && <ComingUp tasks={q.tasks} complete={complete} byId={byId} now={now} />}
+          {(filter === 'all' || filter === 'active') && <ComingUp tasks={q.tasks} byId={byId} now={now} />}
           <div className="flex flex-col gap-4">
             <Segmented label="Show" value={filter} options={options} onValueChange={setFilter} />
             {shown.length === 0 && !q.hasNextPage ? (
@@ -184,7 +187,7 @@ function TasksPage() {
 
 /** What runs next. Held until every task has loaded, so its rows never
  * swap after they appear; past-due runs are their own group, with why. */
-function ComingUp({ tasks, complete, byId, now }: { tasks: Task[]; complete: boolean; byId: Map<number, Topic>; now: number | null }) {
+function ComingUp({ tasks, byId, now }: { tasks: Task[]; byId: Map<number, Topic>; now: number | null }) {
   const overview = useQuery(overviewQuery)
   const { overdue, next } = useMemo(() => {
     const active = tasks
@@ -196,26 +199,15 @@ function ComingUp({ tasks, complete, byId, now }: { tasks: Task[]; complete: boo
       next: active.filter((t) => new Date(t.next_run_at!).getTime() > at).slice(0, 3),
     }
   }, [tasks, now])
-  if (complete && overdue.length === 0 && next.length === 0) return null
+  if (overdue.length === 0 && next.length === 0) return null
   // The scheduler only runs while the bot is connected (herbot-core main.rs).
   const botOff = overview.data != null && !overview.data.bot
   return (
-    <section aria-labelledby="coming-up" aria-busy={!complete} className="flex flex-col gap-1.5">
+    <section aria-labelledby="coming-up" className="flex flex-col gap-1.5">
       <h2 id="coming-up" className="text-[12px] font-semibold tracking-[0.06em] text-mute uppercase">
         Coming up
       </h2>
-      {!complete ? (
-        // Same height as three rows, so nothing jumps when the runs arrive.
-        <ol aria-label="Checking every task" className="flex flex-col border-y border-line">
-          {[0, 1, 2].map((i) => (
-            <li key={i} className="flex h-[37px] items-center gap-3 border-b border-line last:border-b-0">
-              <span className="h-3 w-[10ch] animate-pulse rounded bg-sunken motion-reduce:animate-none" />
-              <span className="h-3 flex-1 animate-pulse rounded bg-sunken motion-reduce:animate-none" />
-            </li>
-          ))}
-        </ol>
-      ) : (
-        <>
+      <>
           {overdue.length > 0 && (
             <div className="flex flex-col gap-1">
               <p className="text-[13px] text-warning">
@@ -236,8 +228,7 @@ function ComingUp({ tasks, complete, byId, now }: { tasks: Task[]; complete: boo
               <RunList tasks={next} byId={byId} now={now} />
             </div>
           )}
-        </>
-      )}
+      </>
     </section>
   )
 }
