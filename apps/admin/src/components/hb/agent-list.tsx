@@ -6,7 +6,7 @@ import type { Topic } from '../../api'
 import { cn } from '@/lib/utils'
 import { AGENT_ROW_CSS, AgentRow } from './agent-row'
 import { Button, SearchInput } from './controls'
-import { ErrorText, ListSkeleton } from './feedback'
+import { ErrorText, ListSkeleton, StaleNote } from './feedback'
 import { measureNonZero } from './rows'
 
 /** Case- and accent-insensitive: "cafe" finds "Café". */
@@ -17,8 +17,13 @@ export function fold(text: string): string {
 type AgentListProps = {
   topics: Topic[] | undefined
   pending?: boolean
+  /** A failed load or refresh. With agents already loaded, the list stays
+   * and a quiet "Couldn't refresh" note shows; the full error is only for
+   * when there's nothing to show. */
   error?: Error | null
   onRetry?: () => void
+  /** A retry is running (the note says so). */
+  retrying?: boolean
   activeId?: number
   isUnread?: (topic: Topic) => boolean
   isWorking?: (topic: Topic) => boolean
@@ -29,7 +34,7 @@ type AgentListProps = {
   className?: string
 }
 
-export function AgentList({ topics, pending = false, error, onRetry, activeId, isUnread, isWorking, onSelect, header, className }: AgentListProps) {
+export function AgentList({ topics, pending = false, error, onRetry, retrying = false, activeId, isUnread, isWorking, onSelect, header, className }: AgentListProps) {
   const all = topics ?? []
   const [q, setQ] = useState('')
   const deferred = useDeferredValue(q)
@@ -63,9 +68,14 @@ export function AgentList({ topics, pending = false, error, onRetry, activeId, i
         />
       </div>
 
+      {error && topics && (
+        <StaleNote onRetry={onRetry} retrying={retrying} className="px-4 pb-2">
+          Couldn’t refresh the agents
+        </StaleNote>
+      )}
       {pending ? (
         <ListSkeleton rows={9} className="px-3" />
-      ) : error ? (
+      ) : error && !topics ? (
         <div className="flex flex-col items-start gap-2 px-4 py-3 text-[13px]">
           {/* A sentence for people; the server's own words as a quiet detail. */}
           <p className="font-medium text-ink">Couldn’t load the agents.</p>

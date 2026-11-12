@@ -310,7 +310,11 @@ function Rail({ onSignOut, signingOut }: { onSignOut: () => void; signingOut: bo
       }}
       className="group/rail hidden w-[60px] shrink-0 flex-col items-center gap-1 py-1 md:flex"
     >
-      <Link to="/" aria-label="Herbot overview" className="mb-3 grid size-10 place-items-center rounded-xl bg-ink font-serif text-[19px] font-semibold text-pane">
+      <Link
+        to="/"
+        aria-label="Herbot overview"
+        className="mb-3 grid size-10 place-items-center rounded-xl bg-ink font-serif text-[19px] font-semibold text-pane outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-canvas pointer-coarse:size-11"
+      >
         H
       </Link>
       {PAGES.map((p, i) => (
@@ -378,16 +382,18 @@ function TabBar({ onMore }: { onMore: () => void }) {
           {p.label}
         </Link>
       ))}
-      <TabButton label="More" icon={MoreHorizontalIcon} active={phonePane === 'main' && inMore} onClick={onMore} />
+      <TabButton label="More" icon={MoreHorizontalIcon} active={phonePane === 'main' && inMore} onClick={onMore} opensSheet />
     </nav>
   )
 }
 
-function TabButton({ label, icon: Icon, active, onClick }: { label: string; icon: LucideIcon; active: boolean; onClick: () => void }) {
+function TabButton({ label, icon: Icon, active, onClick, opensSheet = false }: { label: string; icon: LucideIcon; active: boolean; onClick: () => void; opensSheet?: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-haspopup={opensSheet ? 'dialog' : undefined}
+      data-hb-more={opensSheet || undefined}
       aria-current={active ? 'page' : undefined}
       className={cn('flex min-h-[52px] flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium', active ? 'text-accent-strong' : 'text-mute')}
     >
@@ -400,19 +406,45 @@ function TabButton({ label, icon: Icon, active, onClick }: { label: string; icon
 /** Phones: every page not in the tab bar, and Sign out. */
 function MoreSheet({ open, onOpenChange, onSignOut }: { open: boolean; onOpenChange: (o: boolean) => void; onSignOut: () => void }) {
   const rest = PAGES.filter((p) => !PHONE_TABS.includes(p.to))
+  const list = useRef<HTMLUListElement>(null)
+  // Picking a page moves on; closing without one (Escape, the overlay)
+  // returns focus to the More tab that opened the sheet.
+  const navigated = useRef(false)
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root
+      open={open}
+      onOpenChange={(o) => {
+        if (o) navigated.current = false
+        onOpenChange(o)
+      }}
+    >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-[oklch(0_0_0/0.4)] ease-[cubic-bezier(0.32,0.72,0,1)] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:duration-250 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:duration-180" />
         <Dialog.Content
           aria-describedby={undefined}
+          // Focus lands on the first page, never on Sign out (which acts on
+          // Enter or Space with no confirmation).
+          onOpenAutoFocus={(e) => {
+            e.preventDefault()
+            list.current?.querySelector<HTMLElement>('a')?.focus()
+          }}
+          onCloseAutoFocus={(e) => {
+            e.preventDefault()
+            if (!navigated.current) document.querySelector<HTMLElement>('[data-hb-more]')?.focus()
+          }}
           className="fixed inset-x-0 bottom-0 z-50 flex flex-col rounded-t-2xl bg-pane pb-[max(12px,env(safe-area-inset-bottom))] text-ink outline-none ease-[cubic-bezier(0.32,0.72,0,1)] data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom data-[state=open]:duration-250 data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom data-[state=closed]:duration-180"
         >
           <Dialog.Title className="px-5 pt-5 pb-1 text-[13px] font-semibold text-mute">More</Dialog.Title>
-          <ul className="flex flex-col px-2">
+          <ul ref={list} className="flex flex-col px-2">
             {rest.map((p) => (
               <li key={p.to}>
-                <Link to={p.to} onClick={() => onOpenChange(false)} className="flex min-h-12 items-center gap-3 rounded-xl px-3 text-[15px] hover:bg-sunken">
+                <Link
+                  to={p.to}
+                  onClick={() => {
+                    navigated.current = true
+                    onOpenChange(false)
+                  }}
+                  className="flex min-h-12 items-center gap-3 rounded-xl px-3 text-[15px] hover:bg-sunken">
                   <p.icon className="size-5 text-mute" aria-hidden />
                   {p.label}
                 </Link>

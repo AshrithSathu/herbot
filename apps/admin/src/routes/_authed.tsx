@@ -76,6 +76,7 @@ function AgentsPane() {
       // Plain words for known reasons ("database error" isn't one).
       error={topics.isError ? new Error(plainReason(topics.error.message)?.sentence ?? 'Try again in a moment.') : null}
       onRetry={() => void topics.refetch()}
+      retrying={topics.isFetching && topics.isError}
       activeId={activeId}
       isUnread={(t: Topic) => t.unread > 0}
       isWorking={(t: Topic) => working.has(t.id)}

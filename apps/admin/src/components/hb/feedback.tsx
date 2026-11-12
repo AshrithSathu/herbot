@@ -3,7 +3,7 @@
 // top of the shell carries system-wide state only; toasts only confirm a
 // finished action, with Undo when possible. Failures never arrive as toasts.
 import { useState, type ReactNode } from 'react'
-import { CheckIcon, CopyIcon, RotateCcwIcon } from 'lucide-react'
+import { CheckIcon, CircleAlertIcon, CopyIcon, InfoIcon, RotateCcwIcon, TriangleAlertIcon } from 'lucide-react'
 import { toast } from 'sonner'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
@@ -126,7 +126,8 @@ export function CopyButton({ value, label = 'Copy', children, className }: { val
         }
       }}
       className={cn(
-        'inline-flex h-9 items-center gap-1.5 rounded-md px-2 text-[12.5px] text-mute transition-[background-color,color] duration-150 ease-out hover:bg-sunken hover:text-ink pointer-coarse:h-11',
+        // 36px to look at, 40px to hit on desktop (an invisible ::before), 44px on touch.
+        "relative inline-flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-md px-2 text-[12.5px] text-mute transition-[background-color,color] duration-150 ease-out before:absolute before:-inset-0.5 before:content-[''] hover:bg-sunken hover:text-ink pointer-coarse:h-11 pointer-coarse:min-w-11 pointer-coarse:before:inset-0",
         className,
       )}
       aria-label={label}
@@ -138,6 +139,68 @@ export function CopyButton({ value, label = 'Copy', children, className }: { val
         {state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : ''}
       </span>
     </button>
+  )
+}
+
+/** A background refresh failed but the last good data is still on screen:
+ * keep it, and say so quietly with a way to try again. Use it wherever a
+ * polled or refocused query already has data (`isError && data`); the full
+ * in-place error is only for when there is nothing to show. */
+export function StaleNote({ onRetry, retrying = false, children = 'Couldn’t refresh', className }: {
+  onRetry?: () => void
+  retrying?: boolean
+  children?: ReactNode
+  className?: string
+}) {
+  return (
+    <p role="status" className={cn('flex min-h-8 items-center gap-2 text-[12.5px] text-mute', className)}>
+      <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-warn" />
+      <span className="min-w-0 truncate">{children}</span>
+      {onRetry && (
+        <>
+          <span aria-hidden>·</span>
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={retrying}
+            className="relative rounded-sm font-medium text-accent-strong outline-none before:absolute before:-inset-x-2 before:-inset-y-3 before:content-[''] hover:underline hover:underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-pane disabled:text-faint pointer-coarse:before:-inset-y-3.5"
+          >
+            {retrying ? 'Retrying…' : 'Retry'}
+          </button>
+        </>
+      )}
+    </p>
+  )
+}
+
+type CalloutTone = 'info' | 'warning' | 'danger'
+const CALLOUT: Record<CalloutTone, { box: string; icon: typeof InfoIcon; iconColor: string }> = {
+  info: { box: 'border-line bg-sunken text-ink', icon: InfoIcon, iconColor: 'text-mute' },
+  warning: { box: 'border-warn/30 bg-warning-soft text-ink', icon: TriangleAlertIcon, iconColor: 'text-warning' },
+  danger: { box: 'border-off/30 bg-destructive-soft text-ink', icon: CircleAlertIcon, iconColor: 'text-destructive' },
+}
+
+/** The one style for a page-level notice (a limit reached, a service off,
+ * a fallback in use): a rounded inset box with an icon, a short title and
+ * one line of why, and at most one action. System-wide state belongs in the
+ * shell's StatusStrip instead. */
+export function Callout({ tone = 'info', title, children, action, className }: {
+  tone?: CalloutTone
+  title?: ReactNode
+  children?: ReactNode
+  action?: ReactNode
+  className?: string
+}) {
+  const { box, icon: Icon, iconColor } = CALLOUT[tone]
+  return (
+    <div role={tone === 'info' ? 'note' : 'status'} className={cn('flex items-start gap-3 rounded-xl border px-4 py-3 text-[13.5px]', box, className)}>
+      <Icon aria-hidden className={cn('mt-0.5 size-4 shrink-0', iconColor)} />
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        {title && <p className="font-medium">{title}</p>}
+        {children && <div className="text-mute">{children}</div>}
+      </div>
+      {action && <div className="shrink-0 self-center">{action}</div>}
+    </div>
   )
 }
 

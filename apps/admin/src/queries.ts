@@ -5,6 +5,23 @@
 import { infiniteQueryOptions, mutationOptions, queryOptions } from '@tanstack/react-query'
 import { getMessagesAround, getTaskCounts, getErrorsTotal, listActivity, markRead, listMemories, getPreferences, listTasks, ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
 
+/** Polled queries retry a failed *background* refresh twice (1 s, then 2 s)
+ * before showing "Couldn't refresh": a network blip shouldn't flash an error
+ * over data that's still good. A query that has never loaded doesn't retry,
+ * so a first-load failure still shows at once (fail loud). */
+const loaded = new Set<string>()
+function polled<T>(key: readonly unknown[], fn: () => Promise<T>) {
+  const id = JSON.stringify(key)
+  return {
+    queryFn: async () => {
+      const value = await fn()
+      loaded.add(id)
+      return value
+    },
+    retry: (failures: number) => loaded.has(id) && failures < 2,
+  }
+}
+
 export const keys = {
   session: ['session'] as const,
   uiPrefs: ['ui-prefs'] as const,
@@ -38,13 +55,13 @@ export const uiPrefsQuery = queryOptions({
 
 export const overviewQuery = queryOptions({
   queryKey: keys.overview,
-  queryFn: () => getOverview(),
+  ...polled(keys.overview, () => getOverview()),
   refetchInterval: 15_000,
 })
 
 export const topicsQuery = queryOptions({
   queryKey: keys.topicList,
-  queryFn: () => listTopics(),
+  ...polled(keys.topicList, () => listTopics()),
   refetchInterval: 15_000,
 })
 
@@ -53,7 +70,7 @@ export const topicsQuery = queryOptions({
 export const topicQuery = (id: number, { poll = true }: { poll?: boolean } = {}) =>
   queryOptions({
     queryKey: keys.topic(id),
-    queryFn: () => getTopic({ data: id }),
+    ...polled(keys.topic(id), () => getTopic({ data: id })),
     // Small (no messages), so polling is cheap. A changed message count is
     // what tells the chat log to fetch what's new. Never in a hidden tab.
     refetchInterval: poll ? 2_000 : false,
@@ -89,10 +106,10 @@ export const errorQuery = (id: string) =>
   })
 
 export const memoriesQuery = queryOptions({
-  queryKey: ['memories'], queryFn: () => listMemories(), refetchInterval: 10_000,
+  queryKey: ['memories'], ...polled(['memories'], () => listMemories()), refetchInterval: 10_000,
 })
 export const preferencesQuery = queryOptions({
-  queryKey: ['preferences'], queryFn: () => getPreferences(), refetchInterval: 10_000,
+  queryKey: ['preferences'], ...polled(['preferences'], () => getPreferences()), refetchInterval: 10_000,
 })
 export const tasksQuery = infiniteQueryOptions({
   queryKey: ['tasks'],
@@ -104,7 +121,7 @@ export const tasksQuery = infiniteQueryOptions({
 
 export const activityQuery = queryOptions({
   queryKey: keys.activity,
-  queryFn: () => listActivity(),
+  ...polled(keys.activity, () => listActivity()),
   refetchInterval: 2_000,
   refetchIntervalInBackground: false,
 })
@@ -123,7 +140,7 @@ export const messagesAroundQuery = (id: number, around: number, limit = 30) =>
   })
 export const taskCountsQuery = queryOptions({
   queryKey: ['tasks', 'counts'],
-  queryFn: () => getTaskCounts(),
+  ...polled(['tasks', 'counts'], () => getTaskCounts()),
   refetchInterval: 15_000,
 })
 export const errorsTotalQuery = (q: string) => queryOptions({
