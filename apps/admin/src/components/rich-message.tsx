@@ -19,8 +19,8 @@ import {
   XIcon,
 } from 'lucide-react'
 import type { Attachment } from '../api'
-import { CopyButton } from '../ui'
-import { Button } from './ui/button'
+import { CopyButton } from '@/components/hb/feedback'
+import { Button } from '@/components/hb/controls'
 import { cn } from '@/lib/utils'
 
 export const fileUrl = (path: string) => `/api/files/${path.split('/').map(encodeURIComponent).join('/')}`
@@ -83,7 +83,7 @@ export function RichMessage({ body }: { body: string }) {
               <div className="my-3 min-w-0 overflow-hidden rounded-lg border bg-muted/60" dir="ltr">
                 <div className="flex min-h-11 items-center justify-between gap-2 border-b pl-3 text-xs text-muted-foreground">
                   <span className="truncate font-mono">{language ?? 'code'}</span>
-                  <CopyButton text={textOf(children)} label="Copy" />
+                  <CopyButton value={textOf(children)} label="Copy code" />
                 </div>
                 <pre tabIndex={0} className="scroller max-h-[28rem] overflow-auto p-3 text-[13px] leading-relaxed">
                   {children}
