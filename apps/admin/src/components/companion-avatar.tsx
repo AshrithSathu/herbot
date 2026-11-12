@@ -60,10 +60,14 @@ export function CompanionAvatar({
   companion: c,
   phase = 'idle',
   analyser,
+  decorative = false,
 }: {
   companion: Companion
   phase?: VoicePhase
+  /** The reply's audio, so the mouth moves with it while speaking. */
   analyser?: AnalyserNode | null
+  /** Hide it from screen readers when a status line already says the phase. */
+  decorative?: boolean
 }) {
   const mouth = useRef<SVGEllipseElement>(null)
   useEffect(() => {
@@ -95,8 +99,9 @@ export function CompanionAvatar({
   return (
     <svg
       viewBox="0 0 240 220"
-      role="img"
-      aria-label={`${c.name}, ${PHASE_WORDS[phase]}`}
+      role={decorative ? undefined : 'img'}
+      aria-hidden={decorative || undefined}
+      aria-label={decorative ? undefined : `${c.name}, ${PHASE_WORDS[phase]}`}
       className={`companion-avatar is-${phase}`}
       style={{ '--companion-hue': c.hue } as CSSProperties}
     >

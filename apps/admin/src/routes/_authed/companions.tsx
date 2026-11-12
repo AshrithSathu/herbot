@@ -1,61 +1,67 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useReducer, useRef, useState } from 'react'
-import { ArrowLeftIcon, MicIcon, MicOffIcon, SendIcon, SquareIcon, Volume2Icon, VolumeXIcon } from 'lucide-react'
-import { companionReply, createTopic, listTopics, getMessages } from '../../api'
+// Companions (docs/design/DECISIONS.md, "Companions": Call panel). The
+// companion's conversation stays in the main pane like any topic; the voice
+// call (avatar, what it's doing, the mic) docks in the details pane, which is
+// beside the chat from 68.75rem and opens over it below that. Narrow screens
+// also get a compact call bar in the header and a mic in the composer, so a
+// voice turn never needs the panel open. Companions are real topics
+// ("Companion · Luma"), so they also sit in the agents pane like any topic.
+//
+// Every state has its own words: opening, idle, getting the mic, listening
+// (with a timer), writing it down, thinking, speaking, failed (with retry),
+// and voice unavailable (no OPENAI_API_KEY: typing still works).
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
+import { MicIcon, MicOffIcon, PhoneIcon, SquareIcon, Volume2Icon, VolumeXIcon, XIcon } from 'lucide-react'
+import { companionReply, createTopic, getMessages, listTopics, type Message as MessageData } from '../../api'
 import { COMPANIONS, CompanionAvatar, type Companion, type VoicePhase } from '../../components/companion-avatar'
-import { RichMessage } from '../../components/rich-message'
-import { PageHeader } from '../../ui'
-import { Button } from '../../components/ui/button'
-import { Spinner } from '../../components/ui/spinner'
+import { Composer } from '@/components/hb/composer'
+import { Button, Segmented } from '@/components/hb/controls'
+import { ChatSkeleton, InPlaceEmpty, InPlaceError, splitErrorId } from '@/components/hb/feedback'
+import { FailedMessage, Message, MessageRow, Thinking } from '@/components/hb/message'
+import { BackToAgents, ShellDetails, useShell } from '@/components/hb/shell'
 import { cn } from '@/lib/utils'
 
+type Name = Companion['name']
+
 export const Route = createFileRoute('/_authed/companions')({
-  staticData: { crumb: 'Companions' },
+  // ?c=Flint keeps the companion across reloads and Back.
+  validateSearch: (s: Record<string, unknown>): { c?: Name } =>
+    typeof s.c === 'string' && COMPANIONS.some((c) => c.name === s.c) ? { c: s.c } : {},
+  staticData: { crumb: 'Companions', shell: 'page' },
   head: () => ({ meta: [{ title: 'Companions · Herbot admin' }] }),
-  component: Companions,
+  component: CompanionsPage,
 })
 
-type Exchange = { role: 'you' | 'companion'; text: string }
-type Session = { id: number; fallback: boolean }
-type Connection = { status: 'opening' } | { status: 'ready'; session: Session } | { status: 'failed' }
-function transitionConnection(state: Connection, next: Connection): Connection {
-  if (next.status === 'opening' || state.status === 'opening') return next
-  return state
+function CompanionsPage() {
+  const { c } = Route.useSearch()
+  const companion = COMPANIONS.find((x) => x.name === c) ?? COMPANIONS[0]
+  // A new companion is a new call: every recorder, player and timer of the
+  // old one is torn down with it.
+  return <Call key={companion.name} companion={companion} />
 }
 
-/** What the conversation is doing, in words, for the status line. */
-const LABELS: Record<VoicePhase, string> = {
-  idle: 'Tap the microphone and talk',
-  connecting: 'Opening the conversation…',
-  listening: 'Listening. Tap again to send',
-  transcribing: 'Writing down what you said…',
-  thinking: 'Thinking…',
-  speaking: 'Speaking. Tap the microphone to interrupt',
+/* ------------------------------------------------------------------ voice */
+
+/** The server can hear and speak only with OPENAI_API_KEY (panel_voice.rs). */
+function useVoiceStatus() {
+  return useQuery({
+    queryKey: ['voice-status'],
+    queryFn: async () => {
+      const r = await fetch('/api/voice/status')
+      if (!r.ok) throw new Error(`Voice status failed (${r.status})`)
+      return (await r.json()) as { transcribe: boolean; speak: boolean }
+    },
+    staleTime: 5 * 60_000,
+  })
 }
 
-/** "Error: x" → "x": errors are shown to a person, not logged. */
+/** "Error: x" → "x": errors are read by a person, not logged. */
 function errorText(e: unknown): string {
-  const text = e instanceof Error ? e.message : String(e)
-  return text.replace(/^(Error:\s*)+/, '')
+  return (e instanceof Error ? e.message : String(e)).replace(/^(Error:\s*)+/, '')
 }
 
-/** The server has no OpenAI key, so it can't hear or speak (panel_voice.rs). */
 class VoiceOff extends Error {}
-const VOICE_OFF_KEY = 'herbot.voice-off'
-function rememberVoiceOff() {
-  try {
-    sessionStorage.setItem(VOICE_OFF_KEY, '1')
-  } catch {
-    /* storage can be blocked; the page still works */
-  }
-}
-function voiceKnownOff(): boolean {
-  try {
-    return sessionStorage.getItem(VOICE_OFF_KEY) === '1'
-  } catch {
-    return false
-  }
-}
 
 async function voiceRequest(action: 'speak' | 'transcribe', body: BodyInit): Promise<Response> {
   const response = await fetch(`/api/voice/${action}`, {
@@ -66,62 +72,74 @@ async function voiceRequest(action: 'speak' | 'transcribe', body: BodyInit): Pro
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { error?: string }
     const message = data.error ?? `Speech request failed (${response.status})`
-    if (/OPENAI_API_KEY|is off/i.test(message)) {
-      rememberVoiceOff()
-      throw new VoiceOff(message)
-    }
+    if (/OPENAI_API_KEY|is off/i.test(message)) throw new VoiceOff(message)
     throw new Error(message)
   }
   return response
 }
 
-function Companions() {
-  const [chosen, choose] = useState<Companion | null>(null)
-  if (chosen) return <VoiceConversation key={chosen.name} companion={chosen} onBack={() => choose(null)} />
-  return (
-    <>
-      <PageHeader
-        title="Companions"
-        description="Four original characters to talk with out loud or by typing. Each has its own voice and topic, and shares your Herbot memory."
-      />
-      <ul className="grid gap-4 sm:grid-cols-2">
-        {COMPANIONS.map((c) => (
-          <li key={c.name} className="flex flex-col rounded-xl border bg-card p-5">
-            <div className="mx-auto h-36 w-40" aria-hidden>
-              <CompanionAvatar companion={c} />
-            </div>
-            <div className="mt-3 flex items-baseline justify-between gap-3">
-              <h2 className="text-lg font-semibold tracking-tight">{c.name}</h2>
-              <span className="text-xs text-muted-foreground">voice: {c.voice}</span>
-            </div>
-            <p className="mt-1 flex-1 text-sm text-muted-foreground">{c.tagline}</p>
-            <Button variant="secondary" className="mt-4 h-11 w-full" onClick={() => choose(c)}>
-              Talk with {c.name}
-            </Button>
-          </li>
-        ))}
-      </ul>
-      <p className="max-w-[65ch] text-xs text-muted-foreground">
-        AI characters with AI-generated voices. Your audio goes to OpenAI to be transcribed. Conversations appear in
-        Telegram like any topic.
-      </p>
-    </>
-  )
+type Session = { id: number; fallback: boolean; reason?: string }
+
+// Topic name and purpose identify a companion's topic across devices; never
+// repurpose another topic. Opening is shared across StrictMode remounts and
+// quick revisits, so one companion never gets two topics.
+const opening = new Map<string, Promise<Session>>()
+const creationKeys = new Map<string, string>()
+function openCompanion(c: Companion): Promise<Session> {
+  const existing = opening.get(c.name)
+  if (existing) return existing
+  const promise = (async (): Promise<Session> => {
+    const topics = await listTopics()
+    const name = `Companion · ${c.name}`
+    const found = topics.find((t) => t.name.trim() === name && t.purpose?.startsWith(c.purpose.slice(0, 80)))
+    if (found) {
+      if (!found.enabled || found.setup_state !== 'ready')
+        throw new Error(`${c.name}’s topic is switched off or not set up. Switch it back on under Topics.`)
+      return { id: found.id, fallback: false }
+    }
+    try {
+      if (!creationKeys.has(c.name)) creationKeys.set(c.name, crypto.randomUUID())
+      const topic = await createTopic({ data: { name, purpose: c.purpose, idempotencyKey: creationKeys.get(c.name)! } })
+      creationKeys.delete(c.name)
+      return { id: topic.id, fallback: false }
+    } catch (e) {
+      // No topic of its own (Telegram can't create one): talk through General,
+      // sending the character with each message.
+      const general = topics.find((t) => t.is_general && t.enabled && t.setup_state === 'ready')
+      if (!general) throw new Error(`Couldn’t create ${c.name}’s topic (${errorText(e)}), and General isn’t available either.`)
+      return { id: general.id, fallback: true, reason: errorText(e) }
+    }
+  })()
+  opening.set(c.name, promise)
+  void promise.finally(() => opening.delete(c.name)).catch(() => {})
+  return promise
 }
 
-function VoiceConversation({ companion: c, onBack }: { companion: Companion; onBack: () => void }) {
-  const [phase, setPhase] = useState<VoicePhase>('connecting')
-  const [connection, setConnection] = useReducer(transitionConnection, { status: 'opening' })
+let localId = -1
+function local(fromBot: boolean, body: string, voice = false): MessageData {
+  return { id: localId--, sent_at: new Date().toISOString(), from_bot: fromBot, is_voice: voice, body, attachments: [] }
+}
+
+type Connection = { status: 'opening' } | { status: 'ready'; session: Session } | { status: 'failed'; error: string }
+type FailedTurn = { text: string; error: string; voice: boolean; at: string }
+
+/** One voice conversation with one companion: the connection, the turn's
+ * phase, the transcript, and every media resource it owns. */
+function useCall(c: Companion) {
+  const status = useVoiceStatus()
+  const [connection, setConnection] = useState<Connection>({ status: 'opening' })
   const [attempt, setAttempt] = useState(0)
-  const session = connection.status === 'ready' ? connection.session : null
-  const [messages, setMessages] = useState<Exchange[]>([])
-  const [draft, setDraft] = useState('')
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
-  const [voiceOff, setVoiceOff] = useState(false)
+  const [phase, setPhase] = useState<VoicePhase>('connecting')
+  const [messages, setMessages] = useState<MessageData[]>([])
+  const [failed, setFailed] = useState<FailedTurn | null>(null)
+  // Voice problems that aren't a failed message (mic blocked, nothing heard).
+  const [problem, setProblem] = useState('')
+  const [voiceKnownOff, setVoiceKnownOff] = useState(false)
   const [hasAudio, setHasAudio] = useState(false)
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null)
   const [recordedAt, setRecordedAt] = useState<number | null>(null)
+  const [thinkingSince, setThinkingSince] = useState(0)
+  const [restore, setRestore] = useState<{ text: string; key: number } | undefined>()
   const media = useRef<{
     recorder?: MediaRecorder
     stream?: MediaStream
@@ -135,35 +153,12 @@ function VoiceConversation({ companion: c, onBack }: { companion: Companion; onB
   const active = useRef(true)
   const busy = useRef(false)
   const generation = useRef(0)
-  const sendAction = useRef<{ text: string; key: string } | null>(null)
-  const transcript = useRef<HTMLOListElement>(null)
-  const composer = useRef<HTMLTextAreaElement>(null)
+  const sendKey = useRef<{ text: string; key: string } | null>(null)
 
-  // Ask the server up front; fall back to what an earlier try this session learned.
-  useEffect(() => {
-    setVoiceOff(voiceKnownOff())
-    let live = true
-    fetch('/api/voice/status')
-      .then((r) => (r.ok ? (r.json() as Promise<{ transcribe: boolean; speak: boolean }>) : null))
-      .then((s) => {
-        if (live && s) setVoiceOff(!s.transcribe || !s.speak)
-      })
-      .catch(() => {
-        /* unknown: the first speech request will tell */
-      })
-    return () => {
-      live = false
-    }
-  }, [])
+  const session = connection.status === 'ready' ? connection.session : null
+  const voiceOff = voiceKnownOff || (status.data ? !status.data.transcribe || !status.data.speak : false)
 
-  function fail(e: unknown) {
-    if (e instanceof VoiceOff) {
-      setVoiceOff(true)
-      setError('')
-    } else setError(errorText(e))
-  }
-
-  function stopPlayback() {
+  const stopPlayback = useCallback(() => {
     const m = media.current
     if (m.audio) {
       m.audio.onplay = null
@@ -180,7 +175,8 @@ function VoiceConversation({ companion: c, onBack }: { companion: Companion; onB
     m.analyser = undefined
     setAnalyser(null)
     setHasAudio(false)
-  }
+  }, [])
+
   function unlockAudio() {
     const context = media.current.context ?? new AudioContext()
     media.current.context = context
@@ -188,31 +184,35 @@ function VoiceConversation({ companion: c, onBack }: { companion: Companion; onB
     return context
   }
 
+  function fail(e: unknown) {
+    if (e instanceof VoiceOff) {
+      setVoiceKnownOff(true)
+      setProblem('')
+    } else setProblem(errorText(e))
+  }
+
+  // Open (or find) the companion's topic, then load its recent history.
   useEffect(() => {
     active.current = true
     let disposed = false
     setConnection({ status: 'opening' })
     setPhase('connecting')
-    setError('')
-    // Setup is shared across StrictMode remounts and rapid visits, preventing duplicate topics.
+    setProblem('')
     void openCompanion(c)
       .then(async (value) => {
         if (disposed) return
-        setNotice(value.fallback ? errorText(value.reason ?? '') : '')
         if (!value.fallback) {
           const history = await getMessages({ data: { id: value.id, limit: 30 } })
           if (disposed) return
-          setMessages(history.messages.map((m) => ({ role: m.from_bot ? 'companion' : 'you', text: m.body })))
+          setMessages(history.messages)
         }
         setConnection({ status: 'ready', session: value })
         setPhase('idle')
       })
       .catch((e) => {
-        if (!disposed) {
-          setConnection({ status: 'failed' })
-          setError(errorText(e))
-          setPhase('idle')
-        }
+        if (disposed) return
+        setConnection({ status: 'failed', error: errorText(e) })
+        setPhase('idle')
       })
     return () => {
       disposed = true
@@ -224,8 +224,8 @@ function VoiceConversation({ companion: c, onBack }: { companion: Companion; onB
         m.recorder.onstop = null
         m.recorder.onerror = null
         m.recorder.ondataavailable = null
+        if (m.recorder.state === 'recording') m.recorder.stop()
       }
-      if (m.recorder?.state === 'recording') m.recorder.stop()
       m.stream?.getTracks().forEach((t) => t.stop())
       if (m.audio) {
         m.audio.onplay = null
@@ -238,37 +238,33 @@ function VoiceConversation({ companion: c, onBack }: { companion: Companion; onB
     }
   }, [c, attempt])
 
-  // Follow the newest line, inside the transcript only (never the page).
-  useEffect(() => {
-    const list = transcript.current
-    if (list) list.scrollTop = list.scrollHeight
-  }, [messages, phase])
-
   async function send(text: string, transcribed = false) {
-    if (!text.trim() || !session || busy.current || (!transcribed && (phase === 'listening' || phase === 'connecting' || phase === 'transcribing')))
-      return
+    if (!text.trim() || !session || busy.current) return
+    if (!transcribed && (phase === 'listening' || phase === 'connecting' || phase === 'transcribing')) return
     busy.current = true
     const turn = ++generation.current
-    setError('')
+    setProblem('')
+    setFailed(null)
     stopPlayback()
-    setMessages((old) => [...old, { role: 'you', text }])
+    setMessages((old) => [...old, local(false, text, transcribed)])
     setPhase('thinking')
-    if (sendAction.current?.text !== text) sendAction.current = { text, key: crypto.randomUUID() }
+    setThinkingSince(Date.now())
+    // The same text keeps its idempotency key, so Retry never sends twice.
+    if (sendKey.current?.text !== text) sendKey.current = { text, key: crypto.randomUUID() }
     let replied = false
     try {
       const context = voiceOff ? null : unlockAudio()
       const reply = await companionReply({
         data: {
           id: session.id,
-          idempotencyKey: sendAction.current.key,
+          idempotencyKey: sendKey.current.key,
           text: session.fallback ? `[Companion voice conversation: ${c.name}. For this reply only: ${c.purpose}]\n\n${text}` : text,
         },
       })
       if (!active.current || turn !== generation.current) return
       replied = true
-      sendAction.current = null
-      if (!transcribed) setDraft('')
-      setMessages((old) => [...old, { role: 'companion', text: reply }])
+      sendKey.current = null
+      setMessages((old) => [...old, local(true, reply)])
       if (!context) {
         setPhase('idle')
         return
@@ -295,24 +291,25 @@ function VoiceConversation({ companion: c, onBack }: { companion: Companion; onB
         if (active.current) setPhase('idle')
       }
       audio.onerror = () => {
-        setError('The reply’s audio couldn’t play. The text is above.')
+        setProblem('The reply’s audio couldn’t play. Its text is in the conversation.')
         stopPlayback()
         setPhase('idle')
       }
-      if (context.state !== 'running') throw new Error('Your browser paused audio. Tap “Play reply” to hear it.')
+      if (context.state !== 'running') throw new Error('Your browser paused the audio. Tap “Play reply” to hear it.')
       await audio.play()
       setPhase('speaking')
     } catch (e) {
-      if (active.current && turn === generation.current) {
+      if (!active.current || turn !== generation.current) return
+      if (replied) {
+        // The answer arrived; only its audio failed.
         fail(e)
-        if (!replied) {
-          // The message didn't get an answer: take it back out and put it in the box.
-          setMessages((old) => old.slice(0, -1))
-          setDraft(text)
-        }
         if (!media.current.audio) stopPlayback()
-        setPhase('idle')
+      } else {
+        // No answer: take the message back out and show it as not sent.
+        setMessages((old) => old.slice(0, -1))
+        setFailed({ text, error: errorText(e), voice: transcribed, at: new Date().toISOString() })
       }
+      setPhase('idle')
     } finally {
       busy.current = false
     }
@@ -329,7 +326,7 @@ function VoiceConversation({ companion: c, onBack }: { companion: Companion; onB
     }
     if (busy.current || !session || voiceOff) return
     stopPlayback()
-    setError('')
+    setProblem('')
     setPhase('connecting')
     busy.current = true
     try {
@@ -362,7 +359,7 @@ function VoiceConversation({ companion: c, onBack }: { companion: Companion; onB
         stream.getTracks().forEach((t) => t.stop())
         busy.current = false
         setRecordedAt(null)
-        setError('Recording stopped unexpectedly. Try again, or type instead.')
+        setProblem('Recording stopped unexpectedly. Try again, or type instead.')
         setPhase('idle')
       }
       recorder.onstop = () => {
@@ -393,217 +390,431 @@ function VoiceConversation({ companion: c, onBack }: { companion: Companion; onB
       setPhase('listening')
       setRecordedAt(Date.now())
       busy.current = false
+      // Ten minutes at most per recording, to cap cost.
       media.current.timer = setTimeout(() => {
         if (recorder.state === 'recording') recorder.stop()
       }, 600_000)
     } catch (e) {
       busy.current = false
-      if (active.current) {
-        const text = errorText(e)
-        // The browser said no to the microphone.
-        setError(/denied|NotAllowed|Permission/i.test(text) ? 'Microphone access is blocked. Allow it in the browser’s site settings, or type instead.' : text)
-        setPhase('idle')
-      }
+      if (!active.current) return
+      const text = errorText(e)
+      setProblem(/denied|NotAllowed|Permission/i.test(text) ? 'Microphone access is blocked. Allow it in the browser’s site settings, or type instead.' : text)
+      setPhase('idle')
     }
   }
 
-  const waiting = phase === 'connecting' || phase === 'transcribing' || phase === 'thinking'
-  const failedToOpen = connection.status === 'failed'
-  const status = failedToOpen
-    ? 'Couldn’t open the conversation'
-    : voiceOff && phase === 'idle'
-      ? `Type a message to ${c.name}`
-      : phase === 'connecting' && session
-        ? 'Opening the microphone…'
-        : LABELS[phase]
+  /** Drop the recording without sending it. */
+  function cancelRecording() {
+    const m = media.current
+    clearTimeout(m.timer)
+    if (m.recorder) {
+      m.recorder.onstop = null
+      m.recorder.ondataavailable = null
+      if (m.recorder.state === 'recording') m.recorder.stop()
+    }
+    m.stream?.getTracks().forEach((t) => t.stop())
+    busy.current = false
+    setRecordedAt(null)
+    setPhase('idle')
+  }
 
+  return {
+    status,
+    connection,
+    session,
+    phase,
+    messages,
+    failed,
+    problem,
+    voiceOff,
+    hasAudio,
+    analyser,
+    recordedAt,
+    thinkingSince,
+    restore,
+    send: (text: string) => void send(text),
+    microphone: () => void microphone(),
+    cancelRecording,
+    stopSpeaking: () => {
+      stopPlayback()
+      setPhase('idle')
+    },
+    playReply: () => {
+      void (async () => {
+        try {
+          await media.current.context?.resume()
+          await media.current.audio?.play()
+        } catch (e) {
+          fail(e)
+        }
+      })()
+    },
+    retryOpen: () => setAttempt((n) => n + 1),
+    retryTurn: () => failed && void send(failed.text, failed.voice),
+    editTurn: () => {
+      if (!failed) return
+      setRestore({ text: failed.text, key: Date.now() })
+      setFailed(null)
+    },
+    discardTurn: () => setFailed(null),
+    dismissProblem: () => setProblem(''),
+    /** The composer refused something it can't send (files). */
+    refuse: (why: string, text: string) => {
+      setProblem(why)
+      if (text) setRestore({ text, key: Date.now() })
+    },
+  }
+}
+
+type CallState = ReturnType<typeof useCall>
+
+/** What the call is doing, in words (the panel, the call bar, the mic's label). */
+function statusText(call: CallState, c: Companion): string {
+  if (call.connection.status === 'failed') return 'Couldn’t open the conversation'
+  if (call.connection.status === 'opening') return 'Opening the conversation…'
+  if (call.voiceOff && call.phase === 'idle') return `Type a message to ${c.name}`
+  switch (call.phase) {
+    case 'connecting':
+      return 'Opening the microphone…'
+    case 'idle':
+      return 'Tap the microphone and talk'
+    case 'listening':
+      return 'Listening. Tap again to send'
+    case 'transcribing':
+      return 'Writing down what you said…'
+    case 'thinking':
+      return `${c.name} is thinking…`
+    case 'speaking':
+      return `${c.name} is speaking`
+  }
+}
+
+/** The call bar's few words (the full sentence is its accessible name). */
+function shortStatus(call: CallState): string {
+  if (call.connection.status === 'failed') return 'Not open'
+  if (call.connection.status === 'opening') return 'Opening…'
+  if (call.voiceOff) return 'Voice off'
+  switch (call.phase) {
+    case 'connecting':
+      return 'Mic…'
+    case 'idle':
+      return 'Voice'
+    case 'listening':
+      return 'Listening'
+    case 'transcribing':
+      return 'Writing it down'
+    case 'thinking':
+      return 'Thinking'
+    case 'speaking':
+      return 'Speaking'
+  }
+}
+
+/* ------------------------------------------------------------------- page */
+
+const OPTIONS = COMPANIONS.map((c) => ({ value: c.name, label: c.name, hint: `${c.tagline} Voice: ${c.voice}.` }))
+
+function Call({ companion: c }: { companion: Companion }) {
+  const call = useCall(c)
+  const navigate = useNavigate({ from: Route.fullPath })
+  const pick = (name: Name) => void navigate({ search: { c: name }, replace: true })
   return (
     <>
-      <div className="flex flex-col gap-3">
-        <Button variant="ghost" className="-ml-3 self-start" onClick={onBack}>
-          <ArrowLeftIcon aria-hidden />
-          All companions
-        </Button>
-        <h1 className="text-2xl leading-tight font-semibold tracking-tight">{c.name}</h1>
-      </div>
+      <Conversation call={call} companion={c} onPick={pick} />
+      <ShellDetails defaultOpen>
+        <CallPanel call={call} companion={c} />
+      </ShellDetails>
+    </>
+  )
+}
 
-      {session?.fallback && (
-        <div role="status" className="rounded-xl border border-warning/40 bg-warning-soft p-4 text-sm">
-          <p className="font-medium">Talking through General, with shared history</p>
-          <p className="mt-1 text-muted-foreground wrap-anywhere">
-            Herbot couldn’t make {c.name} a topic of its own{notice ? ` (${notice})` : ''}. {c.name}’s character is sent with
-            each message, and General’s other conversations share this history.
+function Conversation({ call, companion: c, onPick }: { call: CallState; companion: Companion; onPick: (n: Name) => void }) {
+  const { detailsOpen, setDetailsOpen } = useShell()
+  const end = useRef<HTMLDivElement>(null)
+
+  // Follow the newest line inside the conversation (never the page). Writes
+  // scrollTop only; nothing is returned from the effect.
+  useEffect(() => {
+    const el = end.current?.closest<HTMLElement>('[data-hb-scroll]')
+    if (el) el.scrollTop = el.scrollHeight
+  }, [call.messages.length, call.phase, call.failed])
+
+  const opening = call.connection.status === 'opening'
+  const openFailed = call.connection.status === 'failed'
+  const voiceTurn = call.phase === 'listening' || call.phase === 'transcribing' || (call.phase === 'connecting' && !opening)
+  const disabledReason = opening
+    ? 'Opening the conversation…'
+    : openFailed
+      ? 'The conversation isn’t open'
+      : voiceTurn
+        ? 'Finish the voice turn first'
+        : undefined
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className="flex shrink-0 flex-col gap-3 border-b border-line px-3 pt-2 pb-3 md:px-6 md:pt-4">
+        <div className="flex min-h-11 items-center gap-2">
+          <BackToAgents />
+          <h1 className="font-serif text-[22px] leading-none font-semibold md:text-[26px]">Companions</h1>
+          <span className="min-w-2 flex-1" />
+          <CallBar call={call} companion={c} open={detailsOpen} onToggle={() => setDetailsOpen(!detailsOpen)} />
+        </div>
+        <Segmented label="Companion" value={c.name} options={OPTIONS} onValueChange={onPick} />
+      </header>
+
+      {call.session?.fallback && (
+        <div role="status" className="shrink-0 border-b border-line bg-warning-soft px-4 py-2.5 text-[13px] md:px-6">
+          <p className="font-medium text-ink">Talking through General, with shared history</p>
+          <p className="text-mute">
+            Herbot couldn’t give {c.name} a topic of its own{call.session.reason ? ` (${splitErrorId(call.session.reason).text})` : ''}, so{' '}
+            {c.name}’s character goes with each message and General’s other conversations share this history.
           </p>
         </div>
       )}
 
-      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
-        {/* The stage: who you're talking to, what they're doing, and the one control. */}
-        <section aria-label={`${c.name}, voice`} className="flex flex-col items-center rounded-xl border bg-card p-6 text-center">
-          <div className="h-44 w-48">
-            <CompanionAvatar companion={c} phase={phase} analyser={analyser} />
-          </div>
-          <p role="status" aria-live="polite" className="mt-2 min-h-10 text-sm text-balance text-muted-foreground">
-            {status}
-            {recordedAt != null && phase === 'listening' && <Elapsed since={recordedAt} />}
-          </p>
-
-          {voiceOff ? (
-            <div className="mt-3 flex flex-col items-center gap-2 text-sm text-muted-foreground">
-              <span className="grid size-16 place-items-center rounded-full border border-dashed">
-                <MicOffIcon className="size-6" aria-hidden />
-              </span>
-              <p className="max-w-[26ch]">
-                Herbot needs <code className="font-mono text-xs">OPENAI_API_KEY</code> to hear and speak. Replies still arrive as text.
-              </p>
-            </div>
+      <div data-hb-scroll className="scroller min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <div className="mx-auto flex min-h-full max-w-3xl flex-col px-3 py-5 md:px-6">
+          {opening ? (
+            <ChatSkeleton />
+          ) : openFailed ? (
+            <InPlaceError title={`Couldn’t open the conversation with ${c.name}`} error={call.connection.status === 'failed' ? call.connection.error : ''} onRetry={call.retryOpen} />
+          ) : call.messages.length === 0 && !call.failed && call.phase !== 'thinking' ? (
+            <InPlaceEmpty title={`Say hello to ${c.name}`} className="my-auto">
+              Talk out loud with the microphone, or type below. The conversation shows here and in Telegram, like any topic.
+            </InPlaceEmpty>
           ) : (
-            <button
-              type="button"
-              disabled={waiting || !session}
-              aria-label={phase === 'listening' ? 'Stop recording and send' : phase === 'speaking' ? 'Interrupt and start listening' : 'Start listening'}
-              aria-pressed={phase === 'listening'}
-              onClick={() => void microphone()}
-              className={cn(
-                'mt-3 grid size-18 place-items-center rounded-full text-primary-foreground shadow-sm outline-none',
-                'transition-[background-color,scale] duration-150 ease-out active:scale-[0.96]',
-                'focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-offset-2 focus-visible:ring-offset-card',
-                'disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none',
-                phase === 'listening' ? 'bg-destructive' : 'bg-primary hover:bg-[color-mix(in_oklch,var(--primary)_86%,black)]',
-              )}
-            >
-              {waiting ? (
-                <Spinner className="size-6" />
-              ) : phase === 'listening' ? (
-                <SquareIcon className="size-6 fill-current" aria-hidden />
-              ) : (
-                <MicIcon className="size-7" aria-hidden />
-              )}
-            </button>
-          )}
-
-          <div className="mt-4 flex min-h-11 flex-wrap justify-center gap-2">
-            {hasAudio && phase === 'idle' && (
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  void (async () => {
-                    try {
-                      await media.current.context?.resume()
-                      await media.current.audio?.play()
-                    } catch (e) {
-                      fail(e)
-                    }
-                  })()
-                }}
-              >
-                <Volume2Icon aria-hidden />
-                Play reply
-              </Button>
-            )}
-            {phase === 'speaking' && (
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  stopPlayback()
-                  setPhase('idle')
-                }}
-              >
-                <VolumeXIcon aria-hidden />
-                Stop audio
-              </Button>
-            )}
-          </div>
-          {!voiceOff && <p className="mt-2 text-xs text-muted-foreground">Up to 10 minutes per recording</p>}
-        </section>
-
-        <div className="flex min-w-0 flex-col gap-3">
-          {error && (
-            <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-destructive/30 bg-destructive-soft px-4 py-3 text-sm">
-              <p className="min-w-0 flex-1 text-destructive wrap-anywhere">{error}</p>
-              {failedToOpen ? (
-                <Button size="sm" variant="outline" onClick={() => setAttempt((n) => n + 1)}>
-                  Try again
-                </Button>
-              ) : (
-                <Button size="sm" variant="ghost" onClick={() => setError('')}>
-                  Dismiss
-                </Button>
-              )}
-            </div>
-          )}
-
-          <section aria-label="Conversation" className="flex min-w-0 flex-col rounded-xl border bg-card">
-            <ol
-              ref={transcript}
-              aria-live="polite"
-              aria-relevant="additions"
-              className="scroller flex max-h-[min(28rem,55dvh)] min-h-40 flex-col gap-4 overflow-y-auto overscroll-contain p-4 sm:p-5"
-            >
-              {messages.length === 0 && !waiting && (
-                <li className="m-auto max-w-[36ch] text-center text-sm text-muted-foreground">
-                  {failedToOpen ? 'Nothing here yet.' : `Say hello, or ask ${c.name} anything. Your conversation shows here.`}
-                </li>
-              )}
-              {messages.map((m, i) => (
-                <li key={i} className={cn('flex max-w-[85%] min-w-0 flex-col gap-1', m.role === 'you' ? 'self-end items-end' : 'self-start')}>
-                  <span className="text-xs text-muted-foreground">{m.role === 'you' ? 'You' : c.name}</span>
-                  <div className={cn('min-w-0 rounded-xl px-3.5 py-2.5 text-sm', m.role === 'you' ? 'bg-accent text-accent-foreground' : 'bg-muted')}>
-                    <RichMessage body={m.text} />
-                  </div>
-                </li>
+            <ol aria-label={`Conversation with ${c.name}`} aria-live="polite" aria-relevant="additions" className="flex flex-col">
+              {call.messages.map((m, i) => (
+                <MessageRow key={m.id} side={m.from_bot ? 'agent' : 'you'} grouped={i > 0 && call.messages[i - 1].from_bot === m.from_bot}>
+                  <Message message={m} />
+                </MessageRow>
               ))}
-              {phase === 'thinking' && (
-                <li className="flex items-center gap-2 self-start text-sm text-muted-foreground">
-                  <Spinner className="size-3.5" />
-                  {c.name} is thinking…
-                </li>
+              {call.failed && (
+                <MessageRow side="you">
+                  <FailedMessage
+                    body={call.failed.text}
+                    error={call.failed.error}
+                    sentAt={call.failed.at}
+                    retrying={call.phase === 'thinking'}
+                    onRetry={call.retryTurn}
+                    onEdit={call.editTurn}
+                    onDiscard={call.discardTurn}
+                  />
+                </MessageRow>
+              )}
+              {call.phase === 'thinking' && (
+                <MessageRow side="agent">
+                  <Thinking since={call.thinkingSince} label={`${c.name} is thinking`} />
+                </MessageRow>
               )}
             </ol>
-
-            <form
-              className="flex items-end gap-2 border-t p-3"
-              onSubmit={(e) => {
-                e.preventDefault()
-                void send(draft)
-              }}
-            >
-              <label htmlFor="companion-text" className="sr-only">
-                Message {c.name}
-              </label>
-              <textarea
-                ref={composer}
-                id="companion-text"
-                dir="auto"
-                rows={1}
-                placeholder={`Message ${c.name}`}
-                className="field-sizing-content max-h-36 min-h-11 min-w-0 flex-1 resize-none rounded-lg border border-input bg-background px-3 py-2.5 text-base leading-snug outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-60 md:text-sm"
-                value={draft}
-                maxLength={session?.fallback ? 2700 : 3500}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault()
-                    void send(draft)
-                  }
-                }}
-                disabled={waiting || phase === 'listening' || !session}
-              />
-              <Button
-                type="submit"
-                size="icon"
-                className="size-11 shrink-0"
-                aria-label="Send"
-                disabled={!draft.trim() || waiting || phase === 'listening' || !session}
-              >
-                <SendIcon aria-hidden />
-              </Button>
-            </form>
-          </section>
-          <p className="text-xs text-muted-foreground">Enter sends · Shift+Enter for a new line</p>
+          )}
+          <div ref={end} />
         </div>
       </div>
-    </>
+
+      <div className="shrink-0 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-6">
+        <div className="mx-auto flex max-w-3xl flex-col gap-2">
+          {call.problem && <Problem text={call.problem} onDismiss={call.dismissProblem} />}
+          <Composer
+            placeholder={`Message ${c.name}`}
+            sending={call.phase === 'thinking'}
+            disabledReason={disabledReason}
+            restore={call.restore}
+            voice={
+              // The panel holds the big mic beside the chat; narrow screens
+              // get one here so a voice turn needs no panel.
+              <span className="wide:hidden">
+                <MicButton call={call} companion={c} size="small" />
+              </span>
+            }
+            onSend={({ text, files }) => {
+              if (files.length > 0) call.refuse(`${c.name} takes text and voice only; files aren’t sent to companions.`, text)
+              else call.send(text)
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Below 68.75rem the call panel isn't beside the chat: this pill says what
+ * the call is doing and opens it. */
+function CallBar({ call, companion: c, open, onToggle }: { call: CallState; companion: Companion; open: boolean; onToggle: () => void }) {
+  const listening = call.phase === 'listening'
+  const tone = call.connection.status === 'failed' || call.failed ? 'bg-off' : listening ? 'bg-destructive' : call.phase === 'speaking' ? 'bg-accent-strong' : 'bg-faint'
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-label={`Call with ${c.name}: ${statusText(call, c)}. ${open ? 'Close' : 'Open'} the call panel`}
+      className="flex h-9 min-w-0 shrink items-center gap-2 rounded-full px-3 text-[13px] text-mute shadow-[inset_0_0_0_var(--hair)_var(--line)] transition-[color,background-color] duration-150 ease-out hover:bg-sunken hover:text-ink pointer-coarse:h-11 wide:hidden"
+    >
+      <span className={cn('size-2 shrink-0 rounded-full', tone)} aria-hidden />
+      <span className="max-w-[24ch] min-w-0 truncate">
+        {listening && call.recordedAt != null ? (
+          <>
+            Listening <Elapsed since={call.recordedAt} />
+          </>
+        ) : (
+          shortStatus(call)
+        )}
+      </span>
+      <PhoneIcon className="size-3.5 shrink-0" aria-hidden />
+    </button>
+  )
+}
+
+/** A voice problem that isn't a failed message: says what to do, dismissable. */
+function Problem({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  const { id, text: body } = splitErrorId(text)
+  return (
+    <div role="alert" className="flex items-start gap-2 rounded-xl bg-destructive-soft py-2 pr-1 pl-3 text-[13px] shadow-[inset_0_0_0_var(--hair)_color-mix(in_srgb,var(--off)_35%,transparent)]">
+      <p className="min-w-0 flex-1 py-1.5 text-ink [overflow-wrap:anywhere]">
+        {id && <span className="mr-1.5 font-mono text-[12px] text-mute">{id}</span>}
+        {body}
+      </p>
+      <Button variant="ghost" size="icon" aria-label="Dismiss" onClick={onDismiss}>
+        <XIcon aria-hidden />
+      </Button>
+    </div>
+  )
+}
+
+/** The mic: start listening, stop and send, or interrupt the companion. */
+function MicButton({ call, companion: c, size }: { call: CallState; companion: Companion; size: 'large' | 'small' }) {
+  const ready = call.connection.status === 'ready'
+  const waiting = call.phase === 'connecting' || call.phase === 'transcribing' || call.phase === 'thinking'
+  const listening = call.phase === 'listening'
+  if (call.voiceOff) {
+    if (size === 'small') return null
+    return (
+      <span className="grid size-16 place-items-center rounded-full text-faint shadow-[inset_0_0_0_var(--hair)_var(--line)]" aria-hidden>
+        <MicOffIcon className="size-6" />
+      </span>
+    )
+  }
+  const label = listening ? 'Stop recording and send' : call.phase === 'speaking' ? `Interrupt ${c.name} and start listening` : 'Start listening'
+  return (
+    <button
+      type="button"
+      disabled={waiting || !ready}
+      onClick={call.microphone}
+      aria-pressed={listening}
+      aria-label={label}
+      className={cn(
+        'grid shrink-0 place-items-center rounded-full outline-none',
+        'transition-[background-color,color,scale] duration-150 ease-out active:scale-[0.96]',
+        'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-pane',
+        'disabled:cursor-not-allowed disabled:bg-sunken disabled:text-faint',
+        size === 'large' ? 'size-16' : 'size-9 pointer-coarse:size-11',
+        listening
+          ? 'bg-destructive text-white'
+          : size === 'large'
+            ? 'bg-accent-strong text-accent-ink hover:bg-[color-mix(in_oklch,var(--accent-strong)_88%,black)]'
+            : 'text-mute hover:bg-sunken hover:text-ink',
+      )}
+    >
+      {waiting && call.phase !== 'thinking' ? (
+        <span className={cn('rounded-full border-2 border-current border-r-transparent motion-safe:animate-spin', size === 'large' ? 'size-6' : 'size-4')} aria-hidden />
+      ) : listening ? (
+        <SquareIcon className={cn('fill-current', size === 'large' ? 'size-5' : 'size-3.5')} aria-hidden />
+      ) : (
+        <MicIcon className={size === 'large' ? 'size-6' : 'size-[18px]'} aria-hidden />
+      )}
+    </button>
+  )
+}
+
+/** The voice call, docked in the details pane. */
+function CallPanel({ call, companion: c }: { call: CallState; companion: Companion }) {
+  const { setDetailsOpen } = useShell()
+  const failed = call.connection.status === 'failed'
+  const listening = call.phase === 'listening'
+  return (
+    <section aria-label={`Call with ${c.name}`} className="flex min-h-0 flex-1 flex-col">
+      <header className="flex min-h-14 shrink-0 items-center gap-2 border-b border-line px-2 md:px-4">
+        <div className="flex min-w-0 flex-1 flex-col py-2 pl-2 md:pl-0">
+          <h2 className="text-[15px] font-semibold">Voice call</h2>
+          <p className="text-[12.5px] text-mute">
+            {c.name} · voice {c.voice}
+          </p>
+        </div>
+        <Button variant="ghost" size="icon" aria-label="Close the call panel" className="wide:hidden" onClick={() => setDetailsOpen(false)}>
+          <XIcon aria-hidden />
+        </Button>
+      </header>
+
+      <div data-hb-scroll className="scroller flex min-h-0 flex-1 flex-col items-center gap-5 overflow-y-auto overscroll-contain px-5 pt-8 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-center">
+        <div className="h-36 w-40">
+          <CompanionAvatar companion={c} phase={failed ? 'idle' : call.phase} analyser={call.analyser} decorative />
+        </div>
+        <div className="flex flex-col items-center gap-1.5">
+          <p className="font-serif text-[24px] leading-none font-semibold">{c.name}</p>
+          <p role="status" aria-live="polite" className="min-h-5 text-[14px] text-balance text-mute">
+            {statusText(call, c)}
+            {listening && call.recordedAt != null && (
+              <span className="ml-1.5 font-medium text-ink">
+                <Elapsed since={call.recordedAt} />
+              </span>
+            )}
+          </p>
+        </div>
+
+        {failed ? (
+          <div className="flex flex-col items-center gap-3">
+            <p className="max-w-[30ch] text-[13px] text-mute">The conversation didn’t open. The reason is beside the chat.</p>
+            <Button variant="primary" onClick={call.retryOpen}>
+              Try again
+            </Button>
+          </div>
+        ) : call.voiceOff ? (
+          <div className="flex max-w-[28ch] flex-col items-center gap-3">
+            <MicButton call={call} companion={c} size="large" />
+            <p className="text-[13px] text-mute">
+              Voice needs <code className="font-mono text-[12px]">OPENAI_API_KEY</code> on the server. Type in the conversation; replies arrive as text.
+            </p>
+          </div>
+        ) : (
+          <>
+            <MicButton call={call} companion={c} size="large" />
+            <div className="flex min-h-11 flex-wrap justify-center gap-2">
+              {listening && (
+                <Button variant="ghost" onClick={call.cancelRecording}>
+                  Cancel recording
+                </Button>
+              )}
+              {call.phase === 'speaking' && (
+                <Button variant="ghost" onClick={call.stopSpeaking}>
+                  <VolumeXIcon aria-hidden />
+                  Stop talking
+                </Button>
+              )}
+              {call.hasAudio && call.phase === 'idle' && (
+                <Button variant="secondary" onClick={call.playReply}>
+                  <Volume2Icon aria-hidden />
+                  Play reply
+                </Button>
+              )}
+            </div>
+            <p className="text-[12px] text-faint">Up to 10 minutes per recording</p>
+          </>
+        )}
+
+        <div className="mt-auto flex w-full flex-col items-center gap-2 border-t border-line pt-4 text-[12.5px] text-mute">
+          {call.session && !call.session.fallback && (
+            <Link to="/topics/$id" params={{ id: call.session.id }} className="font-medium text-accent-strong underline-offset-2 hover:underline">
+              Open {c.name}’s topic
+            </Link>
+          )}
+          <p className="max-w-[34ch] text-pretty">
+            An original AI character with an AI voice. Your audio goes to OpenAI to be written down.
+          </p>
+        </div>
+      </div>
+    </section>
   )
 }
 
@@ -615,36 +826,5 @@ function Elapsed({ since }: { since: number }) {
     return () => clearInterval(id)
   }, [])
   const s = Math.max(0, Math.floor((now - since) / 1000))
-  return <span className="ml-1.5 font-medium text-foreground tabular-nums">{`${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`}</span>
-}
-
-// Topic purpose and name identify companion ownership across devices; never repurpose another topic.
-const opening = new Map<string, Promise<Session & { reason?: string }>>()
-const creationKeys = new Map<string, string>()
-function openCompanion(c: Companion): Promise<Session & { reason?: string }> {
-  const existing = opening.get(c.name)
-  if (existing) return existing
-  const promise = (async () => {
-    const topics = await listTopics()
-    const name = `Companion · ${c.name}`
-    const found = topics.find((t) => t.name.trim() === name && t.purpose?.startsWith(c.purpose.slice(0, 80)))
-    if (found) {
-      if (!found.enabled || found.setup_state !== 'ready')
-        throw new Error(`${c.name}’s topic is switched off or not set up. Turn it back on under Topics.`)
-      return { id: found.id, fallback: false }
-    }
-    try {
-      if (!creationKeys.has(c.name)) creationKeys.set(c.name, crypto.randomUUID())
-      const topic = await createTopic({ data: { name, purpose: c.purpose, idempotencyKey: creationKeys.get(c.name)! } })
-      creationKeys.delete(c.name)
-      return { id: topic.id, fallback: false }
-    } catch (e) {
-      const general = topics.find((t) => t.is_general && t.enabled && t.setup_state === 'ready')
-      if (!general) throw new Error(`Couldn’t create ${c.name}’s topic (${errorText(e)}), and General isn’t available either.`)
-      return { id: general.id, fallback: true, reason: errorText(e) }
-    }
-  })()
-  opening.set(c.name, promise)
-  void promise.finally(() => opening.delete(c.name)).catch(() => {})
-  return promise
+  return <span className="tabular-nums">{`${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`}</span>
 }
