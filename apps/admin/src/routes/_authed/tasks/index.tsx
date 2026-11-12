@@ -3,6 +3,7 @@
 // actions, and New task as a form dialog. Every page of tasks loads, so the
 // counts are exact and "Coming up" really is the soonest (herbot-core allows
 // at most 50 active tasks).
+import { When } from '@/components/hb/when'
 import { DAYS, describeCron } from '@/lib/cron'
 import { dayTime } from '@/lib/time'
 import { useClamped } from '@/lib/use-clamped'
@@ -12,8 +13,8 @@ import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { HashIcon, MessageCircleIcon, PauseIcon, PlayIcon, PlusIcon, Trash2Icon, ZapIcon } from 'lucide-react'
 import { changeTask, createTask, type Task, type TaskInput, type Topic } from '../../../api'
 import { charCount, exact, when } from '../../../format'
-import { taskCountsQuery, tasksQuery, topicsQuery } from '../../../queries'
-import { Button, Field, Segmented, TextArea, TextInput } from '@/components/hb/controls'
+import { overviewQuery, taskCountsQuery, tasksQuery, topicsQuery } from '../../../queries'
+import { Button, DisclosureButton, Field, Segmented, TextArea, TextInput } from '@/components/hb/controls'
 import { ConfirmDialog, FormDialog } from '@/components/hb/dialogs'
 import { ErrorText, InPlaceEmpty, InPlaceError, ListSkeleton, notify } from '@/components/hb/feedback'
 import { QuietAction, ThreadList } from '@/components/hb/rows'
@@ -83,27 +84,10 @@ function taskName(task: Task): string {
   return task.title?.trim() || firstLine(task.prompt)
 }
 
-/** "Weekdays at 09:00", "Once, 23 Nov 2026, 01:44", or "Custom schedule". */
+/** "Weekdays at 09:00", "Once, Tomorrow 01:44", or "Custom schedule". */
 function scheduleWords(task: Task): string {
-  if (!task.cron) return task.once_at ? `Once, ${when(task.once_at)}` : 'Once'
+  if (!task.cron) return task.once_at ? `Once, ${dayTime(task.once_at, Date.now())}` : 'Once'
   return describeCron(task.cron) ?? 'Custom schedule'
-}
-
-function fromNow(iso: string, now: number): string {
-  const seconds = Math.round((new Date(iso).getTime() - now) / 1000)
-  const abs = Math.abs(seconds)
-  const span = abs < 60 ? null : abs < 3600 ? `${Math.round(abs / 60)} min` : abs < 172_800 ? `${Math.round(abs / 3600)} h` : `${Math.round(abs / 86_400)} days`
-  if (!span) return seconds > 0 ? 'in under a minute' : 'just now'
-  return seconds > 0 ? `in ${span}` : `${span} ago`
-}
-
-/** Relative time with the exact time on hover; absolute until mounted. */
-function Moment({ iso, now }: { iso: string; now: number | null }) {
-  return (
-    <time dateTime={iso} title={when(iso)} suppressHydrationWarning className="tabular-nums">
-      {now == null ? when(iso) : fromNow(iso, now)}
-    </time>
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -198,47 +182,81 @@ function TasksPage() {
   )
 }
 
-/** The next three runs, soonest first. */
+/** What runs next. Held until every task has loaded, so its rows never
+ * swap after they appear; past-due runs are their own group, with why. */
 function ComingUp({ tasks, complete, byId, now }: { tasks: Task[]; complete: boolean; byId: Map<number, Topic>; now: number | null }) {
-  const next = useMemo(
-    () =>
-      tasks
-        .filter((t) => t.status === 'active' && t.next_run_at)
-        .sort((a, b) => a.next_run_at!.localeCompare(b.next_run_at!))
-        .slice(0, 3),
-    [tasks],
-  )
-  if (next.length === 0) return null
+  const overview = useQuery(overviewQuery)
+  const { overdue, next } = useMemo(() => {
+    const active = tasks
+      .filter((t) => t.status === 'active' && t.next_run_at)
+      .sort((a, b) => a.next_run_at!.localeCompare(b.next_run_at!))
+    const at = now ?? Date.now()
+    return {
+      overdue: active.filter((t) => new Date(t.next_run_at!).getTime() <= at),
+      next: active.filter((t) => new Date(t.next_run_at!).getTime() > at).slice(0, 3),
+    }
+  }, [tasks, now])
+  if (complete && overdue.length === 0 && next.length === 0) return null
+  // The scheduler only runs while the bot is connected (herbot-core main.rs).
+  const botOff = overview.data != null && !overview.data.bot
   return (
-    <section aria-labelledby="coming-up" className="flex flex-col gap-1.5">
+    <section aria-labelledby="coming-up" aria-busy={!complete} className="flex flex-col gap-1.5">
       <h2 id="coming-up" className="text-[12px] font-semibold tracking-[0.06em] text-mute uppercase">
-        Coming up{!complete && <span className="font-normal tracking-normal normal-case"> · checking every task…</span>}
+        Coming up
       </h2>
-      <ol className="flex flex-col border-y border-line">
-        {next.map((t) => (
-          <li key={t.id} className="flex min-w-0 items-baseline gap-3 border-b border-line py-2 last:border-b-0">
-            <span className="w-[12ch] shrink-0 text-[13px] font-medium whitespace-nowrap text-ink tabular-nums">
-              {now != null && new Date(t.next_run_at!).getTime() <= now ? (
-                // Past its time: the scheduler should have run it (or will at
-                // its next tick, every 15 s); say so instead of "35 min ago".
-                <span className="text-warning" title={`Was due ${when(t.next_run_at!)}`}>
-                  Overdue
+      {!complete ? (
+        // Same height as three rows, so nothing jumps when the runs arrive.
+        <ol aria-label="Checking every task" className="flex flex-col border-y border-line">
+          {[0, 1, 2].map((i) => (
+            <li key={i} className="flex h-[37px] items-center gap-3 border-b border-line last:border-b-0">
+              <span className="h-3 w-[10ch] animate-pulse rounded bg-sunken motion-reduce:animate-none" />
+              <span className="h-3 flex-1 animate-pulse rounded bg-sunken motion-reduce:animate-none" />
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <>
+          {overdue.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <p className="text-[13px] text-warning">
+                <span className="font-medium tabular-nums">Overdue ({exact(overdue.length)})</span>
+                <span className="text-mute">
+                  {' · '}
+                  {botOff
+                    ? 'Telegram is off, so scheduled tasks don’t run until the bot is back.'
+                    : 'Herbot runs them at its next check, within 15 seconds.'}
                 </span>
-              ) : (
-                // Calendar words read faster than "in 19 h" for a schedule.
-                <time dateTime={t.next_run_at!} title={when(t.next_run_at!)} suppressHydrationWarning>
-                  {dayTime(t.next_run_at!, now ?? Date.now())}
-                </time>
-              )}
-            </span>
-            <UserText className="min-w-0 flex-1 text-[14px]">{taskName(t)}</UserText>
-            <span className="hidden w-[22ch] min-w-0 overflow-hidden text-[12.5px] text-faint sm:block">
-              <TopicLink topic={byId.get(t.conversation_id)} className="max-w-full" />
-            </span>
-          </li>
-        ))}
-      </ol>
+              </p>
+              <RunList tasks={overdue.slice(0, 3)} byId={byId} now={now} overdue />
+            </div>
+          )}
+          {next.length > 0 && (
+            <div className="flex flex-col gap-1">
+              {overdue.length > 0 && <p className="text-[13px] font-medium text-mute">Next</p>}
+              <RunList tasks={next} byId={byId} now={now} />
+            </div>
+          )}
+        </>
+      )}
     </section>
+  )
+}
+
+function RunList({ tasks, byId, now, overdue = false }: { tasks: Task[]; byId: Map<number, Topic>; now: number | null; overdue?: boolean }) {
+  return (
+    <ol className="flex flex-col border-y border-line">
+      {tasks.map((t) => (
+        <li key={t.id} className="flex min-w-0 items-baseline gap-3 border-b border-line py-2 last:border-b-0">
+          <span className="w-[12ch] shrink-0 text-[13px] font-medium whitespace-nowrap text-ink tabular-nums">
+            <When iso={t.next_run_at!} format="day" />
+          </span>
+          <UserText className="min-w-0 flex-1 text-[14px]">{taskName(t)}</UserText>
+          <span className="hidden w-[22ch] min-w-0 overflow-hidden text-[12.5px] text-faint sm:block">
+            <TopicLink topic={byId.get(t.conversation_id)} className="max-w-full" />
+          </span>
+        </li>
+      ))}
+    </ol>
   )
 }
 
@@ -303,14 +321,9 @@ function TaskBody({ task }: { task: Task }) {
         </div>
       )}
       {canToggle && (
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((o) => !o)}
-          className="relative z-[1] text-[13px] font-medium text-ink underline-offset-2 before:absolute before:-inset-x-2 before:-inset-y-3 hover:underline"
-        >
+        <DisclosureButton open={open} onClick={() => setOpen((o) => !o)}>
           {open ? 'Show less' : `Show the whole prompt (${exact(charCount(task.prompt))} characters)`}
-        </button>
+        </DisclosureButton>
       )}
       {task.last_error && (
         <p className="flex w-full min-w-0 items-baseline gap-1.5 text-[13px] text-destructive">
@@ -332,7 +345,7 @@ function TaskMeta({ task, topic, now }: { task: Task; topic: Topic | undefined; 
     <MetaLine>
       {[
         <TopicLink key="topic" topic={topic} />,
-        <span key="schedule" title={task.cron ? `${task.cron} (${task.timezone})` : undefined}>
+        <span key="schedule" title={task.cron ? `${task.cron} (${task.timezone})` : undefined} suppressHydrationWarning>
           {words}
         </span>,
         task.cron && words === 'Custom schedule' ? (
@@ -343,7 +356,7 @@ function TaskMeta({ task, topic, now }: { task: Task; topic: Topic | undefined; 
         live && task.next_run_at ? (
           <span key="next">
             {task.status === 'paused' ? 'would run ' : due ? 'due ' : 'next '}
-            <Moment iso={task.next_run_at} now={now} />
+            <When iso={task.next_run_at} format="day" />
           </span>
         ) : null,
         <span key="runs" className="tabular-nums">

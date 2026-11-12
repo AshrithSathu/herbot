@@ -138,7 +138,8 @@ function TopicsPage() {
       ),
       width: '2.75rem',
       noShrink: true,
-      // Phones: the checkbox moves into the name cell.
+      // When the table is narrow (its own width, not the window's), the
+      // checkbox moves into the name cell; see the name column.
       phone: 'hide',
       cell: (t) => <Check label={`Select ${t.name || 'Untitled'}`} checked={selection.has(t.id)} onChange={() => selection.toggle(t.id)} />,
     },
@@ -149,7 +150,9 @@ function TopicsPage() {
       phone: 'title',
       cell: (t) => (
         <span className="flex min-w-0 items-center gap-3">
-          <span className="md:hidden">
+          {/* Shown exactly when the table folds (its @container under 40rem), so
+              selection exists at every width. */}
+          <span className="@min-[40rem]:hidden">
             <Check label={`Select ${t.name || 'Untitled'}`} checked={selection.has(t.id)} onChange={() => selection.toggle(t.id)} />
           </span>
           <Link to="/topics/$id" params={{ id: t.id }} className={`block min-w-0 font-medium outline-none focus-visible:underline ${STRETCH}`}>
@@ -235,7 +238,11 @@ function TopicsPage() {
           onValueChange={setText}
           className="max-w-xl"
         />
-        <div className="grid gap-4 md:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+        {/* Side by side only when both groups fit whole (their labels and
+            counts never truncate); otherwise stacked. Decided by this
+            toolbar's width, not the window's. */}
+        <div className="@container">
+          <div className="grid gap-4 @min-[60rem]:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
           <Segmented
             label="State"
             value={state}
@@ -243,6 +250,7 @@ function TopicsPage() {
             onValueChange={(v) => setSearch({ status: v === 'all' ? undefined : v })}
           />
           <Segmented label="Sort" value={sort} options={SORTS} onValueChange={(v) => setSearch({ sort: v === 'made' ? undefined : v })} />
+          </div>
         </div>
       </div>
 

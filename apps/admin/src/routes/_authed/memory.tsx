@@ -3,6 +3,7 @@
 // Show all for clamped text; Forget behind the Keep-first dialog with Undo.
 // Over the 200 limit the add box gives way to the limit notice.
 // herbot-core's limits (personal.rs): 500 characters a memory, 200 in all.
+import { When } from '@/components/hb/when'
 import { useDeferredValue, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
@@ -10,7 +11,7 @@ import { HashIcon, MessageCircleIcon, PencilIcon, Trash2Icon } from 'lucide-reac
 import { deleteMemory, saveMemory, type Memory, type Topic } from '../../api'
 import { charCount, exact, when } from '../../format'
 import { memoriesQuery, topicsQuery } from '../../queries'
-import { Button, Field, SearchInput, TextArea } from '@/components/hb/controls'
+import { Button, DisclosureButton, Field, SearchInput, TextArea } from '@/components/hb/controls'
 import { ConfirmDialog } from '@/components/hb/dialogs'
 import { InPlaceEmpty, InPlaceError, ListSkeleton, notify, notifyFailure } from '@/components/hb/feedback'
 import { QuietAction, ThreadList } from '@/components/hb/rows'
@@ -160,14 +161,9 @@ function MemoryText({ memory }: { memory: Memory }) {
         </UserText>
       </div>
       {(clamped || open) && (
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((o) => !o)}
-          className="relative z-[1] text-[13px] font-medium text-mute underline-offset-2 before:absolute before:-inset-x-2 before:-inset-y-3 hover:text-ink hover:underline"
-        >
+        <DisclosureButton open={open} onClick={() => setOpen((o) => !o)}>
           {open ? 'Show less' : 'Show all'}
-        </button>
+        </DisclosureButton>
       )}
     </div>
   )
@@ -185,9 +181,7 @@ function MemoryFacts({ memory, topic }: { memory: Memory; topic: Topic | null | 
         <Source key="source" topic={topic} />,
         <span key="when">
           updated{' '}
-          <time dateTime={memory.updated_at} title={when(memory.updated_at)} suppressHydrationWarning>
-            {when(memory.updated_at)}
-          </time>
+          <When iso={memory.updated_at} />
         </span>,
       ]}
     </MetaLine>
@@ -314,6 +308,11 @@ function MemoryEditor({ memory, text, onText, onDone }: { memory: Memory; text: 
             {...p}
             value={text}
             autoFocus
+            // Editing continues where the text ends, not before it.
+            onFocus={(e) => {
+              const end = e.currentTarget.value.length
+              e.currentTarget.setSelectionRange(end, end)
+            }}
             disabled={save.isPending}
             onChange={(e) => {
               setText(e.target.value)
