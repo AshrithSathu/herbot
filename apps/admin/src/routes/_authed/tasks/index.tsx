@@ -537,14 +537,9 @@ function NewTaskDialog({ open, onOpenChange, topics }: { open: boolean; onOpenCh
     const first = ORDER.find((k) => found[k])
     if (first) {
       const field = document.getElementById(`new-task-${first}`)
+      // The topic picker doesn't open on focus, so its error and the
+      // fields below stay visible.
       field?.focus()
-      // The topic picker opens its list on focus, which would cover the
-      // Prompt field and its error. Close it once it has opened (its own
-      // Escape handling keeps the dialog open), leaving focus on the field.
-      if (first === 'topic' && field)
-        requestAnimationFrame(() =>
-          field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })),
-        )
       return
     }
     const base = { conversation_id: draft.topic!, prompt: draft.prompt.trim(), title: draft.title.trim() || undefined }

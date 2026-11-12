@@ -68,7 +68,8 @@ export function TopicPicker({ id, topics, value, onChange, warnUnready, ...aria 
           setOpen(true)
           if (selected && e.target.value !== selected.name) onChange(null)
         }}
-        onFocus={() => setOpen(true)}
+        // Opens on typing, ↓ or a click, never on focus (ARIA combobox
+        // pattern), so focusing it to show an error doesn't cover the form.
         onClick={() => setOpen(true)}
         onBlur={() => setOpen(false)}
         onKeyDown={(e) => {
