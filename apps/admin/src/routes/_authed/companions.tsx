@@ -21,6 +21,7 @@ import { ChatSkeleton, InPlaceEmpty, InPlaceError, splitErrorId } from '@/compon
 import { FailedMessage, Message, MessageRow, Thinking } from '@/components/hb/message'
 import { BackToAgents, ShellDetails, useShell } from '@/components/hb/shell'
 import { cn } from '@/lib/utils'
+import { plainReason } from '@/lib/reasons'
 
 type Name = Companion['name']
 
@@ -561,8 +562,12 @@ function Conversation({ call, companion: c, onPick }: { call: CallState; compani
         <div role="status" className="shrink-0 border-b border-line bg-warning-soft px-4 py-2.5 text-[13px] md:px-6">
           <p className="font-medium text-ink">Talking through General, with shared history</p>
           <p className="text-mute">
-            Herbot couldn’t give {c.name} a topic of its own{call.session.reason ? ` (${splitErrorId(call.session.reason).text})` : ''}, so{' '}
-            {c.name}’s character goes with each message and General’s other conversations share this history.
+            Herbot couldn’t give {c.name} a topic of its own
+            {(() => {
+              const known = plainReason(call.session.reason)
+              return known ? ` because ${known.because}` : ''
+            })()}
+            , so {c.name}’s character goes with each message and General’s other conversations share this history.
           </p>
         </div>
       )}

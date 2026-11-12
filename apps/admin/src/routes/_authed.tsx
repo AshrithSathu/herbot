@@ -9,6 +9,7 @@ import { PlusIcon } from 'lucide-react'
 import { logout, type Topic } from '../api'
 import { activityQuery, overviewQuery, sessionQuery, topicsQuery } from '../queries'
 import { AgentList } from '@/components/hb/agent-list'
+import { plainReason } from '@/lib/reasons'
 import { Button } from '@/components/hb/controls'
 import { StatusStrip } from '@/components/hb/feedback'
 import { NewAgentHost, openNewAgent } from '@/components/new-agent'
@@ -72,7 +73,8 @@ function AgentsPane() {
     <AgentList
       topics={topics.data}
       pending={topics.isPending}
-      error={topics.isError ? topics.error : null}
+      // Plain words for known reasons ("database error" isn't one).
+      error={topics.isError ? new Error(plainReason(topics.error.message)?.sentence ?? 'Try again in a moment.') : null}
       onRetry={() => void topics.refetch()}
       activeId={activeId}
       isUnread={(t: Topic) => t.unread > 0}

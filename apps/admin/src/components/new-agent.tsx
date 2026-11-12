@@ -4,11 +4,11 @@
 // (the agents pane's +, ⌘K, the Overview and Topics pages) opens it with
 // openNewAgent().
 import { useRef, useState, useSyncExternalStore } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { createTopic } from '../api'
 import { charCount, purposeProblem, PURPOSE_MAX } from '../format'
-import { keys } from '../queries'
+import { keys, overviewQuery } from '../queries'
 import { Field, TextArea, TextInput } from '@/components/hb/controls'
 import { FormDialog } from '@/components/hb/dialogs'
 import { notify } from '@/components/hb/feedback'
@@ -56,6 +56,10 @@ function NewAgentDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
   const key = useRef<{ draft: string; key: string } | null>(null)
   const client = useQueryClient()
   const navigate = useNavigate()
+  // Creating a topic needs the running bot. Say so before the form is filled,
+  // not after it fails; the fields stay editable so the draft is ready.
+  const overview = useQuery({ ...overviewQuery, enabled: open })
+  const telegramOff = overview.data != null && !overview.data.bot
 
   const create = useMutation({
     mutationFn: () => {
@@ -100,6 +104,7 @@ function NewAgentDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
       submitLabel="Create agent"
       pendingLabel="Creating…"
       pending={create.isPending}
+      canSubmit={!telegramOff}
       error={create.error?.message ?? null}
       onSubmit={() => {
         setTried(true)
@@ -112,6 +117,12 @@ function NewAgentDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
         create.mutate()
       }}
     >
+      {telegramOff && (
+        <p role="note" className="rounded-lg bg-warning-soft px-3 py-2.5 text-[13.5px] text-ink">
+          <span className="font-medium text-warning">Telegram isn’t connected.</span> Each agent is a topic in the Herbot group, so
+          creating one needs the bot running. You can write the name and purpose now and create it once the bot is back.
+        </p>
+      )}
       <Field id="new-agent-name" label="Name" error={nameError}>
         {(p) => (
           <TextInput

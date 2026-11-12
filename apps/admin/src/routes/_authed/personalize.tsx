@@ -147,7 +147,17 @@ function PersonalizePage() {
                 id={`pv-tab-${t}`}
                 aria-selected={tab === t}
                 aria-controls={`pv-panel-${t}`}
+                // One tab stop; arrows (and Home/End) move between the two,
+                // as the tabs pattern promises.
+                tabIndex={tab === t ? 0 : -1}
                 onClick={() => setTab(t)}
+                onKeyDown={(e) => {
+                  const next = e.key === 'ArrowRight' || e.key === 'ArrowLeft' ? (t === 'edit' ? 'preview' : 'edit') : e.key === 'Home' ? 'edit' : e.key === 'End' ? 'preview' : null
+                  if (!next) return
+                  e.preventDefault()
+                  setTab(next)
+                  document.getElementById(`pv-tab-${next}`)?.focus()
+                }}
                 className={cn(
                   'h-8 rounded-md px-3 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-150 ease-out pointer-coarse:h-11',
                   tab === t ? 'bg-pane text-ink shadow-raised' : 'text-mute hover:text-ink',

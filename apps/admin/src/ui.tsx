@@ -4,7 +4,8 @@ import { useEffect } from 'react'
 import { useQueryErrorResetBoundary } from '@tanstack/react-query'
 import { Link, useRouter, type ErrorComponentProps } from '@tanstack/react-router'
 import { Button } from '@/components/hb/controls'
-import { InPlaceEmpty, InPlaceError, ListSkeleton } from '@/components/hb/feedback'
+import { InPlaceEmpty, InPlaceError, ListSkeleton, splitErrorId } from '@/components/hb/feedback'
+import { plainReason } from '@/lib/reasons'
 import { ShellPage } from '@/components/hb/shell'
 
 /** Holds a page's shape while it loads. */
@@ -25,8 +26,19 @@ export function PageError({ error }: ErrorComponentProps) {
   const router = useRouter()
   const { reset } = useQueryErrorResetBoundary()
   useEffect(() => reset(), [reset])
+  const message = error instanceof Error ? error.message : String(error)
+  // Point at an E-id only when there is one to look up.
+  const hasId = splitErrorId(message).id != null
+  const known = plainReason(message)
   return (
-    <ShellPage title="This page didn’t load" description="If it keeps happening, look the E-id up in Logs or the herbot-core logs.">
+    <ShellPage
+      title="This page didn’t load"
+      description={
+        hasId
+          ? 'If it keeps happening, look the E-id up in Logs or the herbot-core logs.'
+          : (known?.sentence ?? 'If it keeps happening, check the herbot-core logs.')
+      }
+    >
       <InPlaceError title="What went wrong" error={error instanceof Error ? error : String(error)} onRetry={() => void router.invalidate()} />
     </ShellPage>
   )
