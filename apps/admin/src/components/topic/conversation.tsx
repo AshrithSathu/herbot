@@ -1,23 +1,30 @@
 // A topic's conversation (docs/design/DECISIONS.md: "Topic (chat home)",
 // "Chat message", "Composer"). One scroll in the main pane, virtualized so
-// 6,000 messages stay smooth. It opens at the newest message, pages older at
-// the top without moving what you read, follows new replies while you're at
-// the bottom (and counts them when you aren't), draws a "New" line where
-// unread replies began, marks them read when you reach the bottom, jumps to
-// ?message= from search, shows the agent working, and keeps sends that
-// failed with Retry, Edit and Discard.
+// 6,000 messages stay smooth. Two sources feed it:
+// - live (the default): the newest messages, paging older at the top
+//   without moving what you read, following new replies while you're at the
+//   bottom (and counting them when you aren't), a "New" line where unread
+//   replies began, marked read when you reach the bottom;
+// - a window around ?message= (a search hit): the messages either side of
+//   it in one round trip, paging both ways from there, never walking back
+//   from the newest one page at a time.
+// Drafts (the composer's draftKey) and sends that failed (failed-sends.ts)
+// are kept per topic, so switching agents or reloading loses nothing.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query'
+import { infiniteQueryOptions, useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDownIcon } from 'lucide-react'
-import { getMessages, sendMessage, type MessagePage, type Message as MessageData, type Topic } from '../../api'
+import { ArrowDownIcon, PowerIcon } from 'lucide-react'
+import { getMessages, getMessagesAround, sendMessage, setEnabled, type MessagePage, type Message as MessageData, type Topic } from '../../api'
 import { dayKey, dayLabel } from '../../format'
 import { activityQuery, keys, markReadMutation, messagesQuery } from '../../queries'
-import { Composer, type Mode, type Outgoing } from '@/components/hb/composer'
+import { Composer, ComposerBlocked, type Mode, type Outgoing } from '@/components/hb/composer'
 import { Button } from '@/components/hb/controls'
 import { ChatSkeleton, InPlaceEmpty, InPlaceError } from '@/components/hb/feedback'
 import { FailedMessage, Message, MessageRow, Thinking } from '@/components/hb/message'
+import { topicModeLabel } from '@/components/hb/modes'
 import { measureNonZero } from '@/components/hb/rows'
+import { useTopicCache } from '@/components/topic/details'
+import { filesFor, loadFailed, rememberFiles, saveFailed, type FailedSend } from '@/components/topic/failed-sends'
 import { cn } from '@/lib/utils'
 
 type Row =
@@ -25,50 +32,101 @@ type Row =
   | { kind: 'day'; key: string; iso: string }
   | { kind: 'new'; key: 'new'; count: number }
   | { kind: 'message'; key: number; message: MessageData; grouped: boolean }
+  | { kind: 'bottom'; key: 'bottom' }
 
-type Failed = { key: string; text: string; files: File[]; mode: Mode; at: string; error: string; retrying: boolean }
+type Failed = FailedSend & { retrying: boolean }
 
 /** Within this of the bottom counts as "at the bottom" (follow, mark read). */
 const NEAR_BOTTOM = 96
-/** Start loading older messages this far from the top. */
-const NEAR_TOP = 600
+/** Start loading more this far from either end. */
+const NEAR_EDGE = 600
+/** Messages fetched on each side of a search hit. */
+const AROUND = 40
+
+/** A page of the window around a search hit, oldest first. */
+type WindowPage = { messages: MessageData[]; olderMore: boolean; newerMore: boolean }
+type Cursor = { around: number } | { before: number } | { after: number }
+
+/** The messages around one message, paging older (previous pages) and newer
+ * (next pages) from there. The route prefetches it for a search hit. */
+export function windowQuery(topicId: number, target: number) {
+  return infiniteQueryOptions({
+    queryKey: [...keys.messages(topicId), 'window', target],
+    initialPageParam: { around: target } as Cursor,
+    queryFn: async ({ pageParam }): Promise<WindowPage> => {
+      if ('around' in pageParam) {
+        // One round trip: the hit with messages either side of it.
+        const w = await getMessagesAround({ data: { id: topicId, around: pageParam.around, limit: AROUND * 2 } })
+        return { messages: w.messages, olderMore: w.has_more_before, newerMore: w.has_more_after }
+      }
+      if ('before' in pageParam) {
+        const p = await getMessages({ data: { id: topicId, before: pageParam.before, limit: 50 } })
+        return { messages: p.messages, olderMore: p.has_more, newerMore: true }
+      }
+      const p = await getMessages({ data: { id: topicId, after: pageParam.after, limit: 50 } })
+      return { messages: p.messages, olderMore: true, newerMore: p.has_more }
+    },
+    getPreviousPageParam: (first) => (first.olderMore && first.messages[0] ? ({ before: first.messages[0].id } as Cursor) : undefined),
+    getNextPageParam: (last) => (last.newerMore && last.messages.at(-1) ? ({ after: last.messages.at(-1)!.id } as Cursor) : undefined),
+    staleTime: Infinity,
+    gcTime: 60_000,
+  })
+}
 
 /** Whether the agent is working on a reply here (batched activity poll). */
-function useWorking(topicId: number): boolean {
-  const activity = useQuery(activityQuery)
+function useWorking(topicId: number, visible: boolean): boolean {
+  const activity = useQuery({ ...activityQuery, refetchInterval: visible ? 2_000 : false })
   return (activity.data ?? []).some((a) => a.conversation_id === topicId && a.in_progress)
 }
 
-export function Conversation({ topic, target, header }: {
+export function Conversation({ topic, target, header, visible = true, onLeaveTarget }: {
   topic: Topic
-  /** ?message= from search: page back to it, centre it, highlight it. */
+  /** ?message= from search: open a window around it and highlight it. */
   target?: number
   header: ReactNode
+  /** The pane is on screen (phones hide it behind the agents list). */
+  visible?: boolean
+  /** Back to the live end (clears ?message=). */
+  onLeaveTarget: () => void
 }) {
   const topicId = topic.id
   const client = useQueryClient()
-  const query = useInfiniteQuery(messagesQuery(topicId))
-  const working = useWorking(topicId)
+  const windowed = Boolean(target)
+  const live = useInfiniteQuery({ ...messagesQuery(topicId), enabled: !windowed })
+  const around = useInfiniteQuery({ ...windowQuery(topicId, target ?? 0), enabled: windowed })
+  const working = useWorking(topicId, visible)
   const workingSince = useRef(0)
   if (working && !workingSince.current) workingSince.current = Date.now()
   if (!working) workingSince.current = 0
   const markRead = useMutation(markReadMutation(client))
 
-  const messages = useMemo(() => [...(query.data?.pages ?? [])].reverse().flatMap((p) => p.messages), [query.data?.pages])
-  const newestId = messages.at(-1)?.id
-  const syncError = useNewMessages(topicId, topic.messages, newestId, query.isSuccess)
+  const liveMessages = useMemo(() => [...(live.data?.pages ?? [])].reverse().flatMap((p) => p.messages), [live.data?.pages])
+  const windowMessages = useMemo(() => (around.data?.pages ?? []).flatMap((p) => p.messages), [around.data?.pages])
+  const messages = windowed ? windowMessages : liveMessages
+  const liveNewestId = liveMessages.at(-1)?.id
+  const syncError = useNewMessages(topicId, topic.messages, liveNewestId, !windowed && live.isSuccess && visible)
+
+  const source = windowed ? around : live
+  const pending = source.isPending
+  const loadError = source.error
+  const older = windowed
+    ? { has: around.hasPreviousPage, busy: around.isFetchingPreviousPage, failed: around.isFetchPreviousPageError, fetch: () => around.fetchPreviousPage() }
+    : { has: live.hasNextPage, busy: live.isFetchingNextPage, failed: live.isFetchNextPageError, fetch: () => live.fetchNextPage() }
+  const newer = windowed
+    ? { has: around.hasNextPage, busy: around.isFetchingNextPage, failed: around.isFetchNextPageError, fetch: () => around.fetchNextPage() }
+    : null
 
   // Unread when you opened the topic: the line stays put while you read,
-  // even after the marker moves.
+  // even after the marker moves. Only the live end has one.
   const [unreadAtOpen, setUnreadAtOpen] = useState<number | null>(null)
   useEffect(() => {
     if (unreadAtOpen === null) setUnreadAtOpen(topic.unread)
   }, [topic.unread, unreadAtOpen])
   const firstUnreadId = useMemo(() => {
-    if (!unreadAtOpen) return null
+    if (windowed || !unreadAtOpen) return null
     const agent = messages.filter((m) => m.from_bot)
     return agent.length >= unreadAtOpen ? (agent[agent.length - unreadAtOpen]?.id ?? null) : (agent[0]?.id ?? null)
-  }, [messages, unreadAtOpen])
+  }, [messages, unreadAtOpen, windowed])
 
   const rows = useMemo(() => {
     const out: Row[] = [{ kind: 'top', key: 'top' }]
@@ -80,8 +138,9 @@ export function Conversation({ topic, target, header }: {
       if (m.id === firstUnreadId) out.push({ kind: 'new', key: 'new', count: unreadAtOpen ?? 0 })
       out.push({ kind: 'message', key: m.id, message: m, grouped: !newDay && !!prev && prev.from_bot === m.from_bot && m.id !== firstUnreadId })
     })
+    if (windowed) out.push({ kind: 'bottom', key: 'bottom' })
     return out
-  }, [messages, firstUnreadId, unreadAtOpen])
+  }, [messages, firstUnreadId, unreadAtOpen, windowed])
 
   const scroller = useRef<HTMLDivElement>(null)
   const atBottom = useRef(!target)
@@ -116,7 +175,19 @@ export function Conversation({ topic, target, header }: {
     })
     observer.observe(el)
     return () => observer.disconnect()
-  }, [toBottom, query.isSuccess])
+  }, [toBottom, live.isSuccess])
+
+  // Back from a search hit to the live end: fresh newest page, at the bottom.
+  const wasWindowed = useRef(windowed)
+  useEffect(() => {
+    if (wasWindowed.current && !windowed) {
+      atBottom.current = true
+      setAway(false)
+      void client.resetQueries({ queryKey: keys.messages(topicId), exact: true }).then(() => requestAnimationFrame(toBottom))
+    }
+    if (windowed) atBottom.current = false
+    wasWindowed.current = windowed
+  }, [windowed, client, topicId, toBottom])
 
   // Older messages went in above: put what you were reading back.
   const firstId = messages[0]?.id
@@ -129,80 +200,119 @@ export function Conversation({ topic, target, header }: {
     anchor.current = null
   }, [firstId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Newer messages: follow them at the bottom, otherwise count them.
+  // Newer messages at the live end: follow them at the bottom, otherwise count them.
   const lastSeen = useRef<number | undefined>(undefined)
   useLayoutEffect(() => {
+    if (windowed) return
     const previous = lastSeen.current
-    lastSeen.current = newestId
-    if (newestId === undefined || previous === undefined || newestId === previous) return
+    lastSeen.current = liveNewestId
+    if (liveNewestId === undefined || previous === undefined || liveNewestId === previous) return
     if (atBottom.current) toBottom()
-    else setUnseen((n) => n + messages.filter((m) => m.id > previous).length)
-  }, [newestId]) // eslint-disable-line react-hooks/exhaustive-deps
+    else setUnseen((n) => n + liveMessages.filter((m) => m.id > previous).length)
+  }, [liveNewestId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadOlder = useCallback(() => {
-    if (!query.hasNextPage || query.isFetchingNextPage || query.isFetchNextPageError || !scroller.current) return
+    if (!older.has || older.busy || older.failed || !scroller.current) return
     const top = scroller.current.scrollTop
     const first = virtual.getVirtualItems().find((v) => v.end > top && rows[v.index]?.kind === 'message')
     anchor.current = first ? { key: first.key as Row['key'], offset: first.start - top } : null
-    void query.fetchNextPage()
-  }, [query, virtual, rows])
+    void older.fetch()
+  }, [older, virtual, rows])
+
+  const loadNewer = useCallback(() => {
+    if (!newer?.has || newer.busy || newer.failed) return
+    void newer.fetch()
+  }, [newer])
 
   const read = useCallback(() => {
-    if (!newestId || topic.unread === 0 || markRead.isPending) return
-    markRead.mutate({ id: topicId, through_message_id: newestId })
-  }, [newestId, topic.unread, topicId, markRead])
+    if (windowed || !liveNewestId || topic.unread === 0 || markRead.isPending) return
+    markRead.mutate({ id: topicId, through_message_id: liveNewestId })
+  }, [windowed, liveNewestId, topic.unread, topicId, markRead])
+
+  // Arriving from search: centre the hit, then put its top just under the
+  // header once rows have measured.
+  const jumping = useRef(windowed)
+  const jumpedTo = useRef<number | undefined>(undefined)
+  const [missing, setMissing] = useState(false)
+  useEffect(() => {
+    if (!target || !around.isSuccess || jumpedTo.current === target) return
+    jumpedTo.current = target
+    const index = rows.findIndex((r) => r.kind === 'message' && r.message.id === target)
+    if (index < 0) {
+      // Deleted since the search, or in another topic: show where it was.
+      setMissing(true)
+      jumping.current = false
+      return
+    }
+    setMissing(false)
+    virtual.scrollToIndex(index, { align: 'center' })
+    // Rows measure over the next frames; then put the hit's top just under
+    // the header. Not tied to this effect's cleanup: `rows` can change while
+    // it waits, and the jump must still land.
+    let tries = 0
+    const settle = () => {
+      const el = document.getElementById(`message-${target}`)
+      const box = scroller.current
+      if (el && box) box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - 24
+      // Twice more, as measuring the rows above can still move it.
+      if (++tries < 3) settleTimer.current = window.setTimeout(settle, 120)
+      else jumping.current = false
+    }
+    settleTimer.current = window.setTimeout(settle, 120)
+  }, [target, around.isSuccess, rows]) // eslint-disable-line react-hooks/exhaustive-deps
+  const settleTimer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(settleTimer.current), [])
 
   const onScroll = () => {
     const el = scroller.current
     if (!el) return
     const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (fromBottom < NEAR_BOTTOM) {
-      atBottom.current = true
-      setUnseen(0)
-      read()
-    } else if (fromBottom > NEAR_BOTTOM * 2) atBottom.current = false
-    setAway(fromBottom > 600)
-    if (el.scrollTop < NEAR_TOP && !jumping.current) loadOlder()
+    if (!windowed) {
+      if (fromBottom < NEAR_BOTTOM) {
+        atBottom.current = true
+        setUnseen(0)
+        read()
+      } else if (fromBottom > NEAR_BOTTOM * 2) atBottom.current = false
+      setAway(fromBottom > 600)
+    }
+    if (jumping.current) return
+    if (el.scrollTop < NEAR_EDGE) loadOlder()
+    if (windowed && fromBottom < NEAR_EDGE) loadNewer()
   }
 
   // Everything loaded fits on screen: there's no scroll to page older.
   useEffect(() => {
     const el = scroller.current
-    if (el && query.isSuccess && !target && el.scrollHeight <= el.clientHeight + 4) loadOlder()
-  }, [query.isSuccess, firstId, loadOlder, target])
+    if (el && live.isSuccess && !windowed && el.scrollHeight <= el.clientHeight + 4) loadOlder()
+  }, [live.isSuccess, firstId, loadOlder, windowed])
 
   // Opening at the end counts as read.
   useEffect(() => {
-    if (query.isSuccess && atBottom.current) read()
-  }, [query.isSuccess, read])
+    if (live.isSuccess && atBottom.current) read()
+  }, [live.isSuccess, read])
 
-  // Arriving from search (?message=): page back until it's loaded, centre
-  // it, then put its top just under the header once rows have measured.
-  const jumping = useRef(Boolean(target))
-  const jumpedTo = useRef<number | undefined>(undefined)
+  // Sends that failed, kept per topic (sessionStorage; files in memory).
+  const failedRef = useRef<Failed[]>([])
+  const [failed, setFailedState] = useState<Failed[]>([])
+  const updateFailed = useCallback(
+    (next: (all: Failed[]) => Failed[]) => {
+      const list = next(failedRef.current)
+      failedRef.current = list
+      setFailedState(list)
+      saveFailed(topicId, list.map(({ retrying: _r, ...f }) => f))
+    },
+    [topicId],
+  )
   useEffect(() => {
-    if (!target || !query.isSuccess || jumpedTo.current === target) return
-    const index = rows.findIndex((r) => r.kind === 'message' && r.message.id === target)
-    if (index < 0) {
-      if (query.hasNextPage && !query.isFetchingNextPage && !query.isFetchNextPageError) void query.fetchNextPage()
-      else if (!query.hasNextPage || query.isFetchNextPageError) jumping.current = false
-      return
-    }
-    jumpedTo.current = target
-    atBottom.current = false
-    virtual.scrollToIndex(index, { align: 'center' })
-    const settle = setTimeout(() => {
-      const el = document.getElementById(`message-${target}`)
-      const box = scroller.current
-      if (el && box) box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - 24
-      jumping.current = false
-    }, 300)
-    return () => clearTimeout(settle)
-  }, [target, query.isSuccess, rows, query.hasNextPage, query.isFetchingNextPage, query.isFetchNextPageError]) // eslint-disable-line react-hooks/exhaustive-deps
+    const loaded = loadFailed(topicId).map((f) => ({ ...f, retrying: false }))
+    failedRef.current = loaded
+    setFailedState(loaded)
+  }, [topicId])
 
-  // Sending.
-  const [failed, setFailed] = useState<Failed[]>([])
-  const [restore, setRestore] = useState<{ text: string; key: number } | undefined>(undefined)
+  // Edit on a failed send puts the whole draft back (text, files, mode).
+  const [restore, setRestore] = useState<{ text: string; files?: File[]; mode?: Mode; key: string | number } | undefined>(undefined)
+  const [note, setNote] = useState<string | null>(null)
+
   const [sending, setSending] = useState(false)
 
   async function deliver(o: { text: string; files: File[]; mode: Mode }, key: string) {
@@ -210,6 +320,7 @@ export function Conversation({ topic, target, header }: {
     form.set('id', String(topicId))
     form.set('idempotencyKey', key)
     form.set('text', o.text)
+    // Auto means "the topic's own mode": send no style, so it applies.
     if (o.mode !== 'auto') form.set('style', o.mode)
     o.files.forEach((f) => form.append('files', f))
     await sendMessage({ data: form })
@@ -217,46 +328,73 @@ export function Conversation({ topic, target, header }: {
   }
 
   async function send(o: Outgoing) {
-    const key = crypto.randomUUID()
+    const key = `${topicId}:${crypto.randomUUID()}`
     setSending(true)
+    setNote(null)
+    // What you just sent belongs at the live end.
+    if (windowed) onLeaveTarget()
     atBottom.current = true
     try {
       await deliver(o, key)
     } catch (e) {
-      setFailed((all) => [...all, { key, ...o, at: new Date().toISOString(), error: e instanceof Error ? e.message : String(e), retrying: false }])
+      rememberFiles(key, o.files)
+      updateFailed((all) => [
+        ...all,
+        { key, text: o.text, mode: o.mode, fileNames: o.files.map((f) => f.name), at: new Date().toISOString(), error: e instanceof Error ? e.message : String(e), retrying: false },
+      ])
     } finally {
       setSending(false)
       requestAnimationFrame(toBottom)
     }
   }
 
+  /** Back into the composer: text, mode and files (files only while this
+   * session still has them; after a reload, say which to attach again). */
+  function edit(f: Failed) {
+    const files = filesFor(f.key)
+    setRestore({ text: f.text, mode: f.mode, files, key: f.key })
+    const lost = f.fileNames.length - files.length
+    setNote(lost > 0 ? `Attach ${lost === 1 ? f.fileNames[0] : `${lost} files`} again: files don’t survive a reload.` : null)
+    updateFailed((all) => all.filter((x) => x.key !== f.key))
+  }
+
   async function retry(f: Failed) {
-    setFailed((all) => all.map((x) => (x.key === f.key ? { ...x, retrying: true } : x)))
+    const files = filesFor(f.key)
+    if (files.length < f.fileNames.length) {
+      edit(f)
+      return
+    }
+    updateFailed((all) => all.map((x) => (x.key === f.key ? { ...x, retrying: true } : x)))
     try {
       // The same key: if the first try did arrive, the server sends it once.
-      await deliver(f, f.key)
-      setFailed((all) => all.filter((x) => x.key !== f.key))
+      await deliver({ text: f.text, files, mode: f.mode }, f.key)
+      updateFailed((all) => all.filter((x) => x.key !== f.key))
     } catch (e) {
-      setFailed((all) => all.map((x) => (x.key === f.key ? { ...x, retrying: false, error: e instanceof Error ? e.message : String(e) } : x)))
+      updateFailed((all) => all.map((x) => (x.key === f.key ? { ...x, retrying: false, error: e instanceof Error ? e.message : String(e) } : x)))
     }
   }
 
   const items = virtual.getVirtualItems()
-  const disabledReason = !topic.enabled ? 'This topic is switched off. Switch it on in its details to send.' : undefined
+  const empty = !pending && !loadError && messages.length === 0 && failed.length === 0
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {header}
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div ref={scroller} onScroll={onScroll} data-hb-scroll className="scroller min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]">
-          <div className="mx-auto w-full max-w-3xl px-3 sm:px-6">
-            {query.isPending ? (
+          <div className={cn('mx-auto w-full max-w-3xl px-3 sm:px-6', empty && 'flex min-h-full flex-col justify-center')}>
+            {pending ? (
               <div className="py-6">
+                {windowed && (
+                  <p role="status" className="pb-4 text-center text-[13px] text-mute">
+                    Jumping to the message…
+                  </p>
+                )}
                 <ChatSkeleton />
               </div>
-            ) : query.error && messages.length === 0 ? (
-              <InPlaceError title="Couldn’t load this conversation" error={query.error} onRetry={() => void query.refetch()} retrying={query.isRefetching} />
-            ) : messages.length === 0 && failed.length === 0 ? (
+            ) : loadError && messages.length === 0 ? (
+              <InPlaceError title="Couldn’t load this conversation" error={loadError} onRetry={() => void source.refetch()} retrying={source.isRefetching} />
+            ) : empty ? (
               <InPlaceEmpty title="No messages yet">
                 {!topic.enabled
                   ? 'This topic is switched off, so it isn’t answering.'
@@ -265,38 +403,42 @@ export function Conversation({ topic, target, header }: {
                     : 'It doesn’t have a purpose yet: your first message here becomes it.'}
               </InPlaceEmpty>
             ) : (
-              <ol aria-label="Messages" className="relative w-full" style={{ height: virtual.getTotalSize() }}>
-                {items.map((item) => {
-                  const row = rows[item.index]!
-                  return (
-                    <li
-                      key={item.key}
-                      data-index={item.index}
-                      ref={virtual.measureElement}
-                      className="absolute inset-x-0 top-0 list-none"
-                      style={{ transform: `translateY(${item.start}px)` }}
-                    >
-                      <RowView row={row} target={target} hasOlder={!!query.hasNextPage} loadingOlder={query.isFetchingNextPage} olderError={query.isFetchNextPageError} onOlder={loadOlder} />
-                    </li>
-                  )
-                })}
-              </ol>
+              <>
+                {missing && (
+                  <p role="status" className="pt-4 text-center text-[13px] text-mute">
+                    That message isn’t in this topic any more. These are the ones around where it was.
+                  </p>
+                )}
+                <ol aria-label="Messages" className="relative w-full" style={{ height: virtual.getTotalSize() }}>
+                  {items.map((item) => {
+                    const row = rows[item.index]!
+                    return (
+                      <li
+                        key={item.key}
+                        data-index={item.index}
+                        ref={virtual.measureElement}
+                        className="absolute inset-x-0 top-0 list-none"
+                        style={{ transform: `translateY(${item.start}px)` }}
+                      >
+                        <RowView row={row} target={target} older={older} newer={newer} onOlder={loadOlder} onNewer={loadNewer} onLatest={onLeaveTarget} />
+                      </li>
+                    )
+                  })}
+                </ol>
+              </>
             )}
             {(failed.length > 0 || working) && (
               <ol aria-label="Sending" className="flex flex-col pb-2">
                 {failed.map((f) => (
                   <MessageRow key={f.key} side="you">
                     <FailedMessage
-                      body={f.text || `${f.files.length} ${f.files.length === 1 ? 'file' : 'files'}`}
+                      body={f.text || `${f.fileNames.length} ${f.fileNames.length === 1 ? 'file' : 'files'}`}
                       error={f.error}
                       sentAt={f.at}
                       retrying={f.retrying}
                       onRetry={() => void retry(f)}
-                      onEdit={() => {
-                        setRestore({ text: f.text, key: Date.now() })
-                        setFailed((all) => all.filter((x) => x.key !== f.key))
-                      }}
-                      onDiscard={() => setFailed((all) => all.filter((x) => x.key !== f.key))}
+                      onEdit={() => edit(f)}
+                      onDiscard={() => updateFailed((all) => all.filter((x) => x.key !== f.key))}
                     />
                   </MessageRow>
                 ))}
@@ -312,58 +454,127 @@ export function Conversation({ topic, target, header }: {
                 Couldn’t check for new messages ({syncError}). Retrying…
               </p>
             )}
-            <div className="h-4" />
+            {!empty && <div className="h-4" />}
           </div>
         </div>
-        {(away || unseen > 0) && (
+        {(windowed ? !pending : away || unseen > 0) && (
           <button
             type="button"
             onClick={() => {
+              if (windowed) {
+                onLeaveTarget()
+                return
+              }
               atBottom.current = true
               setUnseen(0)
               toBottom()
             }}
             className={cn(
               'absolute right-4 bottom-3 flex h-11 items-center justify-center gap-1.5 rounded-full bg-pane text-ink shadow-raised transition-[scale] duration-150 ease-out active:scale-[0.96]',
-              unseen > 0 ? 'px-4 text-[13px] font-medium' : 'w-11',
+              unseen > 0 || windowed ? 'px-4 text-[13px] font-medium' : 'w-11',
             )}
             aria-label={unseen > 0 ? `${unseen} new ${unseen === 1 ? 'message' : 'messages'}: jump to the latest` : 'Jump to the latest message'}
           >
             <ArrowDownIcon className="size-4" aria-hidden />
-            {unseen > 0 && <span className="tabular-nums">{unseen > 99 ? '99+' : unseen} new</span>}
+            {unseen > 0 ? <span className="tabular-nums">{unseen > 99 ? '99+' : unseen} new</span> : windowed ? <span>Latest</span> : null}
           </button>
         )}
       </div>
       <div className="mx-auto w-full max-w-3xl shrink-0 px-2 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:px-6">
-        <Composer sending={sending} disabledReason={disabledReason} restore={restore} onSend={(o) => void send(o)} />
+        {note && topic.enabled && (
+          <p role="status" className="px-2 pb-1.5 text-[12.5px] text-warning">
+            {note}
+          </p>
+        )}
+        <Composer
+          sending={sending}
+          restore={restore}
+          draftKey={String(topicId)}
+          // Auto sends no mode, so the topic's own applies: say which.
+          defaultLabel={topic.mode === 'auto' ? undefined : topicModeLabel(topic.mode)}
+          blocked={topic.enabled ? undefined : <SwitchedOff topic={topic} />}
+          onSend={(o) => void send(o)}
+        />
       </div>
     </div>
   )
 }
 
-function RowView({ row, target, hasOlder, loadingOlder, olderError, onOlder }: {
+/** In place of the composer while a topic is off: say so, and switch it on. */
+function SwitchedOff({ topic }: { topic: Topic }) {
+  const cache = useTopicCache(topic.id)
+  const on = useMutation({
+    mutationFn: () => setEnabled({ data: { id: topic.id, enabled: true } }),
+    onMutate: () => cache.patch({ enabled: true }),
+    onError: () => cache.patch({ enabled: false }),
+    onSettled: () => void cache.refresh(),
+  })
+  return (
+    <ComposerBlocked
+      action={
+        <span className="flex items-center gap-2">
+          {on.isError && <span className="text-[12.5px] text-destructive">Couldn’t switch it on. Try again.</span>}
+          <Button size="sm" variant="secondary" pending={on.isPending} onClick={() => on.mutate()}>
+            Switch on
+          </Button>
+        </span>
+      }
+    >
+      <span className="flex items-center gap-2">
+        <PowerIcon className="size-4 shrink-0" aria-hidden />
+        Switched off: messages here are ignored.
+      </span>
+    </ComposerBlocked>
+  )
+}
+
+type Pager = { has: boolean; busy: boolean; failed: boolean }
+
+function RowView({ row, target, older, newer, onOlder, onNewer, onLatest }: {
   row: Row
   target?: number
-  hasOlder: boolean
-  loadingOlder: boolean
-  olderError: boolean
+  older: Pager
+  newer: Pager | null
   onOlder: () => void
+  onNewer: () => void
+  onLatest: () => void
 }) {
   if (row.kind === 'top') {
     return (
       <div className="flex min-h-11 items-center justify-center pt-4 text-[12.5px] text-faint">
-        {loadingOlder ? (
+        {older.busy ? (
           'Loading older messages…'
-        ) : olderError ? (
+        ) : older.failed ? (
           <Button size="sm" variant="ghost" onClick={onOlder}>
             Couldn’t load older messages. Try again
           </Button>
-        ) : hasOlder ? (
+        ) : older.has ? (
           <Button size="sm" variant="ghost" onClick={onOlder}>
             Load older messages
           </Button>
         ) : (
           'The beginning of this conversation'
+        )}
+      </div>
+    )
+  }
+  if (row.kind === 'bottom') {
+    return (
+      <div className="flex min-h-11 items-center justify-center pt-3 text-[12.5px] text-faint">
+        {newer?.busy ? (
+          'Loading newer messages…'
+        ) : newer?.failed ? (
+          <Button size="sm" variant="ghost" onClick={onNewer}>
+            Couldn’t load newer messages. Try again
+          </Button>
+        ) : newer?.has ? (
+          <Button size="sm" variant="ghost" onClick={onNewer}>
+            Load newer messages
+          </Button>
+        ) : (
+          <Button size="sm" variant="ghost" onClick={onLatest}>
+            Back to the latest
+          </Button>
         )}
       </div>
     )
@@ -414,18 +625,18 @@ function useNewMessages(topicId: number, total: number, newestId: number | undef
       fetching = true
       try {
         if (known.current !== null && (total < known.current || newestId === undefined)) {
-          await client.resetQueries({ queryKey: keys.messages(topicId) })
+          await client.resetQueries({ queryKey: keys.messages(topicId), exact: true })
         } else {
           const page = await getMessages({ data: { id: topicId, after: newestId, limit: 100 } })
           if (disposed) return
-          if (page.has_more) await client.resetQueries({ queryKey: keys.messages(topicId) })
+          if (page.has_more) await client.resetQueries({ queryKey: keys.messages(topicId), exact: true })
           else
             client.setQueryData<InfiniteData<MessagePage, number | null>>(keys.messages(topicId), (old) => {
               if (!old || old.pages.length === 0) return old
-              const [newest, ...older] = old.pages
+              const [newest, ...olderPages] = old.pages
               const have = new Set(old.pages.flatMap((p) => p.messages.map((m) => m.id)))
               const fresh = page.messages.filter((m) => !have.has(m.id))
-              return fresh.length ? { ...old, pages: [{ ...newest!, messages: [...newest!.messages, ...fresh] }, ...older] } : old
+              return fresh.length ? { ...old, pages: [{ ...newest!, messages: [...newest!.messages, ...fresh] }, ...olderPages] } : old
             })
         }
         if (!disposed) {

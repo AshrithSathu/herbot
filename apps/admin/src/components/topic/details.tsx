@@ -27,7 +27,7 @@ export const VOICES = [
 const voiceLabel = (v: string) => VOICES.find(([id]) => id === v)?.[1] ?? v
 
 /** Patches the topic in the list and the detail caches, then refetches. */
-function useTopicCache(id: number) {
+export function useTopicCache(id: number) {
   const client = useQueryClient()
   return {
     patch(next: Partial<Topic>) {

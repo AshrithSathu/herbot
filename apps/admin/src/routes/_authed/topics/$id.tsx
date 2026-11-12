@@ -10,15 +10,15 @@ import { PanelRightIcon } from 'lucide-react'
 import type { Topic, TopicDetail } from '../../../api'
 import { compact, exact } from '../../../format'
 import { messagesQuery, topicQuery } from '../../../queries'
-import { Button } from '@/components/hb/controls'
+import { Button, Tab, TabList, TabPanel, Tabs } from '@/components/hb/controls'
 import { topicModeLabel } from '@/components/hb/modes'
 import { BackToAgents, ShellDetails, useShell } from '@/components/hb/shell'
+import { useMedia } from '@/components/hb/use-media'
 import { StatusDot, topicTone } from '@/components/hb/status'
-import { Conversation } from '@/components/topic/conversation'
+import { Conversation, windowQuery } from '@/components/topic/conversation'
 import { TopicDetails } from '@/components/topic/details'
 import { TopicFiles } from '@/components/topic/files'
 import { UserText } from '@/components/user-text'
-import { cn } from '@/lib/utils'
 
 type Search = { message?: number; tab?: 'files' | 'settings' }
 
@@ -36,10 +36,14 @@ export const Route = createFileRoute('/_authed/topics/$id')({
     },
     stringify: ({ id }) => ({ id: String(id) }),
   },
-  loader: async ({ context, params }) => {
+  loaderDeps: ({ search }) => ({ message: search.message }),
+  loader: async ({ context, params, deps }) => {
     const [detail] = await Promise.all([
       context.queryClient.ensureQueryData(topicQuery(params.id)),
-      context.queryClient.ensureInfiniteQueryData(messagesQuery(params.id)),
+      // A search hit opens the window around it; otherwise the newest messages.
+      deps.message
+        ? context.queryClient.ensureInfiniteQueryData(windowQuery(params.id, deps.message))
+        : context.queryClient.ensureInfiniteQueryData(messagesQuery(params.id)),
     ])
     return detail
   },
@@ -56,11 +60,14 @@ export const Route = createFileRoute('/_authed/topics/$id')({
 
 function TopicPage() {
   const { id } = Route.useParams()
-  const { data: detail } = useSuspenseQuery(topicQuery(id))
-  const t = detail.conversation
   const { message, tab } = Route.useSearch()
   const navigate = Route.useNavigate()
-  const { detailsOpen, setDetailsOpen } = useShell()
+  const { detailsOpen, setDetailsOpen, phonePane } = useShell()
+  // On phones the agents list can cover this pane: don't poll what you can't see.
+  const twoPanes = useMedia('(min-width: 48rem)', true)
+  const visible = twoPanes || phonePane === 'main'
+  const { data: detail } = useSuspenseQuery(topicQuery(id, { poll: visible }))
+  const t = detail.conversation
   const view = tab === 'files' ? 'files' : 'chat'
 
   // The old Settings tab's links open the details pane instead.
@@ -75,12 +82,12 @@ function TopicPage() {
 
   const header = (
     <TopicHeader topic={t}>
-      <ViewSwitch view={view} onChange={setView} />
+      <ViewSwitch />
       <Button
         variant="ghost"
         size="icon"
-        aria-label={detailsOpen ? 'Hide details' : 'Show details'}
-        aria-pressed={detailsOpen}
+        aria-label="Topic details"
+        aria-expanded={detailsOpen}
         onClick={() => setDetailsOpen(!detailsOpen)}
         className={detailsOpen ? 'text-ink' : 'text-mute'}
       >
@@ -89,16 +96,20 @@ function TopicPage() {
     </TopicHeader>
   )
 
+  const leaveTarget = () => void navigate({ search: (s) => ({ ...s, message: undefined }), replace: true })
+
   return (
     <>
-      {view === 'chat' ? (
-        <Conversation key={t.id} topic={t} target={message} header={header} />
-      ) : (
-        <div className="flex min-h-0 flex-1 flex-col">
+      {/* Chat | Files: the kit's tabs (arrow keys, one tab stop, labelled panels). */}
+      <Tabs value={view} onValueChange={setView} className="flex-1">
+        <TabPanel value="chat">
+          <Conversation key={t.id} topic={t} target={message} header={header} visible={visible} onLeaveTarget={leaveTarget} />
+        </TabPanel>
+        <TabPanel value="files">
           {header}
           <TopicFiles topicId={t.id} />
-        </div>
-      )}
+        </TabPanel>
+      </Tabs>
       <ShellDetails defaultOpen>
         <TopicDetails key={t.id} detail={detail} onClose={() => setDetailsOpen(false)} />
       </ShellDetails>
@@ -137,24 +148,11 @@ function TopicHeader({ topic: t, children }: { topic: Topic; children: ReactNode
   )
 }
 
-function ViewSwitch({ view, onChange }: { view: 'chat' | 'files'; onChange: (view: 'chat' | 'files') => void }) {
+function ViewSwitch() {
   return (
-    <div role="tablist" aria-label="Topic views" className="flex shrink-0 rounded-lg bg-sunken p-0.5">
-      {(['chat', 'files'] as const).map((v) => (
-        <button
-          key={v}
-          type="button"
-          role="tab"
-          aria-selected={view === v}
-          onClick={() => onChange(v)}
-          className={cn(
-            'h-8 rounded-md px-3 text-[13px] font-medium transition-[background-color,color] duration-150 ease-out pointer-coarse:h-10',
-            view === v ? 'bg-pane text-ink shadow-raised' : 'text-mute hover:text-ink',
-          )}
-        >
-          {v === 'chat' ? 'Chat' : 'Files'}
-        </button>
-      ))}
-    </div>
+    <TabList label="Topic views" className="self-stretch">
+      <Tab value="chat" className="h-auto pointer-coarse:h-auto">Chat</Tab>
+      <Tab value="files" className="h-auto pointer-coarse:h-auto">Files</Tab>
+    </TabList>
   )
 }
