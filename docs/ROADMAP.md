@@ -112,3 +112,9 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - [x] Long lists are virtualized (sidebar agents, topics, chat history) with filters; the page uses one native scrollbar
 - [x] Every action has pending, error and retry states; destructive actions are separated and confirmed; touch targets are 44px on touch screens; checked on desktop, phone and dark mode
 - Done when: ⏳ Ashrith signs in and clicks through it himself.
+
+## Step 13: Three-pane messenger API prerequisites
+- [x] Migration 0023: shared forward-only panel read markers, existing history backfilled as read, indexed unread counts capped at 99
+- [x] Authenticated read acknowledgement and batched activity endpoints; existing per-conversation activity preserved
+- [x] Conversation list/detail expose language and private mode; typed panel server functions, activity polling and read mutation options (UI unchanged)
+- Done when: requested Rust checks and panel typecheck pass locally; deployment and messenger UI integration are separate work.

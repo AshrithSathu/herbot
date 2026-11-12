@@ -690,3 +690,108 @@ async fn the_list_carries_short_purposes_and_the_detail_the_full_one(pool: PgPoo
     assert_eq!(overview["last_error"]["message"], "boom");
     assert!(overview["last_error"].get("context").is_none());
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn panel_unread_markers_are_bounded_scoped_and_monotonic(pool: PgPool) {
+    let h = harness(pool, FakeT3::default()).await;
+    let path = "/admin/api/conversations/2/read";
+    let (_, list) = call(&h, Method::GET, "/admin/api/conversations", None).await;
+    assert_eq!(list[1]["unread"], 1);
+    assert_eq!(list[1]["language"], "English");
+    assert_eq!(list[1]["private_mode"], false);
+    assert_eq!(
+        call_with(
+            &h,
+            Method::POST,
+            path,
+            Some(json!({"through_message_id":2})),
+            "wrong"
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    for id in [0, -1, 999999] {
+        assert_eq!(
+            call(
+                &h,
+                Method::POST,
+                path,
+                Some(json!({"through_message_id":id}))
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        call(
+            &h,
+            Method::POST,
+            "/admin/api/conversations/1/read",
+            Some(json!({"through_message_id":2}))
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(
+            &h,
+            Method::POST,
+            "/admin/api/conversations/999/read",
+            Some(json!({"through_message_id":2}))
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let (code, marker) = call(
+        &h,
+        Method::POST,
+        path,
+        Some(json!({"through_message_id":2})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(marker["through_message_id"], 2);
+    let (_, marker) = call(
+        &h,
+        Method::POST,
+        path,
+        Some(json!({"through_message_id":1})),
+    )
+    .await;
+    assert_eq!(marker["through_message_id"], 2);
+    let (_, detail) = call(&h, Method::GET, "/admin/api/conversations/2", None).await;
+    assert_eq!(detail["conversation"]["unread"], 0);
+    // Later replies remain unread after the persisted acknowledgement.
+    sqlx::query("INSERT INTO messages (conversation_id,tg_message_id,from_tg_user_id,from_bot,body,sent_at) SELECT 2,n,999,true,'reply',now() FROM generate_series(3,150) n").execute(&h.pool).await.unwrap();
+    let (_, list) = call(&h, Method::GET, "/admin/api/conversations", None).await;
+    assert_eq!(list[1]["unread"], 99);
+    sqlx::query("UPDATE conversations SET language='French', private_mode=true WHERE id=2")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let (_, detail) = call(&h, Method::GET, "/admin/api/conversations/2", None).await;
+    assert_eq!(detail["conversation"]["language"], "French");
+    assert_eq!(detail["conversation"]["private_mode"], true);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn panel_read_migration_backfills_existing_history(pool: PgPool) {
+    // Recreate the pre-0023 shape in this isolated test database.
+    sqlx::raw_sql("ALTER TABLE conversations DROP COLUMN panel_read_through_message_id; DROP INDEX messages_panel_unread;")
+        .execute(&pool).await.unwrap();
+    let h = harness(pool, FakeT3::default()).await;
+    sqlx::raw_sql(include_str!("../migrations/0023_panel_read_markers.sql"))
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    let (_, list) = call(&h, Method::GET, "/admin/api/conversations", None).await;
+    assert_eq!(list[0]["unread"], 0);
+    assert_eq!(list[1]["unread"], 0);
+    sqlx::query("INSERT INTO messages (conversation_id,tg_message_id,from_tg_user_id,from_bot,body,sent_at) VALUES (2,3,999,true,'new reply',now())").execute(&h.pool).await.unwrap();
+    let (_, list) = call(&h, Method::GET, "/admin/api/conversations", None).await;
+    assert_eq!(list[1]["unread"], 1);
+}

@@ -139,3 +139,5 @@ CI (formatting, clippy, tests against Postgres) is **manual only**: `gh workflow
 ## Workflow
 
 Development happens in T3 Code with Codex: one roadmap step per branch (`step-N/<name>`), small logical commits, and each step lands only when its "Done when" checks pass. See [AGENTS.md](AGENTS.md).
+
+The messenger API also exposes `unread` (bot replies, capped at 99), `language` and `private_mode` in conversation list/detail summaries. `POST /admin/api/conversations/{id}/read` accepts `{through_message_id}` from that conversation and advances a shared, durable read marker. Migration 0023 starts existing history as read. `GET /admin/api/activity` batches active/queued conversations as `[{conversation_id, in_progress: true}]`; the per-topic activity route remains available. Typed server/query helpers are ready for the messenger redesign; this change does not alter panel UI.

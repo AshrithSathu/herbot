@@ -2,13 +2,14 @@
 // `ensureQueryData` with these (so pages render on the server and links
 // prefetch on hover); components read the same keys with `useSuspenseQuery`,
 // so a page never fetches the same thing twice and mutations update in place.
-import { infiniteQueryOptions, queryOptions } from '@tanstack/react-query'
-import { listMemories, getPreferences, listTasks, ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
+import { infiniteQueryOptions, mutationOptions, queryOptions } from '@tanstack/react-query'
+import { listActivity, markRead, listMemories, getPreferences, listTasks, ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
 
 export const keys = {
   session: ['session'] as const,
   uiPrefs: ['ui-prefs'] as const,
   overview: ['overview'] as const,
+  activity: ['activity'] as const,
   /** Prefix of the list and every topic detail, so one invalidate hits all. */
   topics: ['topics'] as const,
   topicList: ['topics', 'list'] as const,
@@ -97,3 +98,16 @@ export const tasksQuery = infiniteQueryOptions({
   getNextPageParam: (last) => last.length === 50 ? last[last.length - 1].id : undefined,
   refetchInterval: 15_000,
 })
+
+export const activityQuery = queryOptions({
+  queryKey: keys.activity,
+  queryFn: () => listActivity(),
+  refetchInterval: 2_000,
+})
+
+/** Refresh list and detail markers after a successful acknowledgement. */
+export const markReadMutation = (client: import('@tanstack/react-query').QueryClient) =>
+  mutationOptions({
+    mutationFn: (data: { id: number; through_message_id: number }) => markRead({ data }),
+    onSuccess: () => client.invalidateQueries({ queryKey: keys.topics }),
+  })
