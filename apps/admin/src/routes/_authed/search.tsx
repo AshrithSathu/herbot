@@ -13,7 +13,7 @@ import { searchMessages, type SearchHit, type Topic } from '../../api'
 import { clip, exact } from '../../format'
 import { topicsQuery } from '../../queries'
 import { Button, SearchInput } from '@/components/hb/controls'
-import { InPlaceEmpty, InPlaceError, ListSkeleton } from '@/components/hb/feedback'
+import { InPlaceEmpty, InPlaceError, ListSkeleton, StaleNote } from '@/components/hb/feedback'
 import { STRETCH, measureNonZero, useScrollParent } from '@/components/hb/rows'
 import { ShellPage } from '@/components/hb/shell'
 import { UserText } from '@/components/user-text'
@@ -102,7 +102,7 @@ function SearchPage() {
         <SearchHelp />
       ) : query.isPending ? (
         <ListSkeleton rows={6} />
-      ) : query.isError && !query.isFetchNextPageError ? (
+      ) : query.isError && !query.isFetchNextPageError && hits.length === 0 ? (
         <InPlaceError title="Search failed" error={query.error} onRetry={() => void query.refetch()} retrying={query.isRefetching} />
       ) : hits.length === 0 ? (
         <InPlaceEmpty title={`Nothing matches “${clip(q, 60)}”`} action={<Button onClick={() => setDraft('')}>Clear search</Button>}>
@@ -110,25 +110,15 @@ function SearchPage() {
         </InPlaceEmpty>
       ) : (
         <div className={cn('flex flex-col gap-2 transition-opacity duration-150 ease-out', query.isPlaceholderData && 'opacity-60')}>
+          {query.isError && !query.isFetchNextPageError && (
+            <StaleNote className="px-1" onRetry={() => void query.refetch()} retrying={query.isRefetching} />
+          )}
           <p className="px-1 text-[13px] text-mute tabular-nums" aria-live="polite">
             {/* Only a full count is a count: while older pages remain, say
-                what's showing instead of "60+ in 1+". */}
+                what's showing instead of "60+ in 1+". "Load older matches"
+                lives once, in the footer. */}
             {query.hasNextPage ? 'Newest ' : ''}
             {exact(hits.length)} {hits.length === 1 ? 'match' : 'matches'} in {exact(groups.length)} {groups.length === 1 ? 'topic' : 'topics'}
-            {query.hasNextPage && (
-              <>
-                {' · '}
-                {/* A button, not "load as you scroll": a short list may not scroll at all. */}
-                <button
-                  type="button"
-                  className="relative rounded-sm font-medium text-accent-strong outline-none before:absolute before:-inset-x-2 before:-inset-y-3 hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                  disabled={query.isFetchingNextPage}
-                  onClick={() => void query.fetchNextPage()}
-                >
-                  {query.isFetchingNextPage ? 'Loading older matches…' : 'Load older matches'}
-                </button>
-              </>
-            )}
           </p>
           <Groups
             groups={groups}

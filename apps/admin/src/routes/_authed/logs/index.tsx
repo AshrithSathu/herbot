@@ -5,6 +5,7 @@
 // in the URL (?e=3999), so /logs/E-3999 links, reloads and Back all land on
 // it.
 import { When } from '@/components/hb/when'
+import { dayTime, fullDate, stamp } from '@/lib/time'
 import { useMedia } from '@/components/hb/use-media'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
@@ -14,7 +15,7 @@ import type { ErrorSummary } from '../../../api'
 import { clip, exact } from '../../../format'
 import { errorQuery, errorSearchQuery, errorsTotalQuery, topicsQuery } from '../../../queries'
 import { Button, SearchInput } from '@/components/hb/controls'
-import { CopyButton, InPlaceEmpty, InPlaceError, ListSkeleton } from '@/components/hb/feedback'
+import { CopyButton, InPlaceEmpty, InPlaceError, ListSkeleton, StaleNote } from '@/components/hb/feedback'
 import { LedgerTable, STRETCH, type Column } from '@/components/hb/rows'
 import { BackToAgents } from '@/components/hb/shell'
 import { UserText } from '@/components/user-text'
@@ -172,7 +173,7 @@ function LogsPage() {
           e != null ? 'max-wide:hidden' : 'flex-1',
         )}
       >
-        <header className="flex flex-col gap-3 px-4 pt-6 pb-3 md:px-5 md:pt-8">
+        <header className="flex flex-col gap-3 px-4 pt-6 pb-3 md:px-8 md:pt-8">
           <div className="flex flex-col items-start gap-1">
             <BackToAgents />
             <h1 className="font-serif text-[30px] leading-[1.1] font-semibold tracking-[-0.015em] text-balance md:text-[34px]">Logs</h1>
@@ -207,19 +208,22 @@ function LogsPage() {
               </p>
             )}
           </div>
+          {query.isError && !query.isFetchNextPageError && rows.length > 0 && (
+            <StaleNote onRetry={() => void query.refetch()} retrying={query.isRefetching} />
+          )}
         </header>
         <div
           data-hb-scroll
           className={cn(
-            // Row text lines up with the title above: compact rows pad 4px, the wide
-            // grid (the table's own box ≥ 40rem, i.e. this column ≥ 42rem) pads 12px.
-            'scroller min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-[max(1rem,env(safe-area-inset-bottom))] transition-opacity duration-150 ease-out md:px-4 @min-[42rem]/logs:px-2',
+            // Row text lines up with the title above (32px from md, the shared page
+            // edge): compact rows pad 4px, the wide grid (table box ≥ 40rem) pads 12px.
+            'scroller min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-[max(1rem,env(safe-area-inset-bottom))] transition-opacity duration-150 ease-out md:px-7 @min-[42rem]/logs:px-5',
             query.isPlaceholderData && 'opacity-60',
           )}
         >
           {query.isPending ? (
             <ListSkeleton rows={12} lines={2} className="px-1" />
-          ) : query.isError && !query.isFetchNextPageError ? (
+          ) : query.isError && !query.isFetchNextPageError && rows.length === 0 ? (
             <InPlaceError title="Couldn’t load the logs" error={query.error} onRetry={() => void query.refetch()} retrying={query.isRefetching} className="px-1" />
           ) : rows.length === 0 ? (
             <InPlaceEmpty
@@ -391,7 +395,7 @@ function ErrorDetail({ id, onGo, back }: { id: number; onGo: (id: number) => voi
         <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
           <Kind kind={err.kind} className="max-w-full" />
           <span className="text-[13px] text-mute tabular-nums">
-            <When iso={err.created_at} format="day" /> · <When iso={err.created_at} />
+            <Moment iso={err.created_at} />
           </span>
         </div>
         <RelatedTopic context={context} />
@@ -418,5 +422,23 @@ function ErrorDetail({ id, onGo, back }: { id: number; onGo: (id: number) => voi
         )}
       </section>
     </article>
+  )
+}
+
+/** When it happened, once: "Today 18:55 · 12 min ago" while recent, then just
+ * the calendar form (the relative one would repeat it). */
+function Moment({ iso }: { iso: string }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    setNow(Date.now())
+    const id = setInterval(() => setNow(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [])
+  const day = dayTime(iso, now)
+  const rel = stamp(iso, now)
+  return (
+    <time dateTime={iso} title={fullDate(iso)} suppressHydrationWarning>
+      {rel === day ? day : `${day} · ${rel}`}
+    </time>
   )
 }

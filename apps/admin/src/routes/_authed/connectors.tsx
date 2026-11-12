@@ -5,7 +5,7 @@
 import { queryOptions, useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { getConnectors } from '../../api'
-import { InPlaceEmpty, InPlaceError, ListSkeleton } from '@/components/hb/feedback'
+import { InPlaceEmpty, InPlaceError, ListSkeleton, StaleNote } from '@/components/hb/feedback'
 import { LedgerTable, type Column } from '@/components/hb/rows'
 import { BackToAgents, ShellPage } from '@/components/hb/shell'
 import { UserText } from '@/components/user-text'
@@ -88,10 +88,11 @@ function ConnectorsPage() {
     >
       {q.isPending ? (
         <ListSkeleton rows={6} lines={1} />
-      ) : q.isError ? (
+      ) : q.isError && !q.data ? (
         <InPlaceError title="Couldn’t read the connectors" error={q.error} onRetry={() => void q.refetch()} retrying={q.isFetching} />
       ) : (
         <>
+          {q.isError && <StaleNote onRetry={() => void q.refetch()} retrying={q.isFetching} />}
           <section aria-labelledby="servers" className="flex flex-col gap-3">
             <h2 id="servers" className="text-[15px] font-semibold">
               MCP servers <span className="font-normal text-faint tabular-nums">{q.data.servers.length}</span>
