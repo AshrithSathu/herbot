@@ -144,6 +144,8 @@ Development happens in T3 Code with Codex: one roadmap step per branch (`step-N/
 
 The messenger API also exposes `unread` (bot replies, capped at 99), `language` and `private_mode` in conversation list/detail summaries. `POST /admin/api/conversations/{id}/read` accepts `{through_message_id}` from that conversation and advances a shared, durable read marker. Migration 0023 starts existing history as read. `GET /admin/api/activity` batches active/queued conversations as `[{conversation_id, in_progress: true}]`; the per-topic activity route remains available. Typed server/query helpers are ready for the messenger redesign; this change does not alter panel UI.
 
+The stress topic inserts messages in timestamp order so its recent history keeps a mix of worst-case bodies.
+
 Panel API review additions: search hits include `sent_at` and `from_bot`.
 `GET /admin/api/tasks/counts` returns all four status totals in one grouped query;
 `GET /admin/api/errors/total?q=` returns `{total, capped}` (a lower bound at 10,000 when capped), using the list's literal filter independently of its cursor.
