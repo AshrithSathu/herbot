@@ -4,7 +4,7 @@
 // top says when Telegram isn't connected or herbot-core can't be reached.
 import type { MouseEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Outlet, createFileRoute, redirect, useMatch, useMatches, useRouter } from '@tanstack/react-router'
+import { Outlet, createFileRoute, redirect, useMatch, useRouter } from '@tanstack/react-router'
 import { PlusIcon } from 'lucide-react'
 import { logout, type Topic } from '../api'
 import { activityQuery, overviewQuery, sessionQuery, topicsQuery } from '../queries'
@@ -55,18 +55,10 @@ function Layout() {
   )
 }
 
-/** Pages rebuilt on the kit render their own panes (staticData.shell =
- * 'page'); the rest get a padded column that scrolls in the main pane. */
+/** Every page renders its own panes and scrolling (ShellPage, or the
+ * topic's conversation); so do the router's fallbacks (ui.tsx). */
 function Page() {
-  const own = useMatches({ select: (m) => m.at(-1)?.staticData.shell === 'page' })
-  if (own) return <Outlet />
-  return (
-    <div data-hb-scroll className="scroller min-h-0 flex-1 overflow-y-auto overscroll-contain">
-      <div className="mx-auto flex w-full max-w-5xl min-w-0 flex-col gap-8 px-4 pt-6 pb-[max(4rem,env(safe-area-inset-bottom))] md:px-8 md:pt-8">
-        <Outlet />
-      </div>
-    </div>
-  )
+  return <Outlet />
 }
 
 function AgentsPane() {
