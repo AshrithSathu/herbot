@@ -2,6 +2,7 @@
 // agents pane is for picking one; this page is for managing them: filter,
 // state and sort (all in the URL), a select column with a bulk bar (switch
 // on/off with Undo), a per-row switch, and New agent.
+import { useMedia } from '@/components/hb/use-media'
 import { useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
@@ -66,15 +67,7 @@ const time = (iso: string | null) => (iso ? new Date(iso).getTime() : 0)
 
 /** True from 75rem: wide enough for every column beside the agents pane. */
 function useRoomy() {
-  return useSyncExternalStore(
-    (on) => {
-      const mq = matchMedia('(min-width: 75rem)')
-      mq.addEventListener('change', on)
-      return () => mq.removeEventListener('change', on)
-    },
-    () => matchMedia('(min-width: 75rem)').matches,
-    () => true,
-  )
+  return useMedia('(min-width: 75rem)', true)
 }
 
 function TopicsPage() {

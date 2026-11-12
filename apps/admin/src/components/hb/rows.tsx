@@ -109,6 +109,9 @@ export function LedgerTable<T>({ label, rows, columns, rowKey, selectedKey, alig
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller,
+    // Heights belong to items, not positions: after a delete or a filter,
+    // a row keeps its own measured height.
+    getItemKey: (i) => rowKey(rows[i]),
     estimateSize: () => estimate,
     measureElement: measureNonZero,
     overscan: 10,
@@ -158,7 +161,7 @@ export function LedgerTable<T>({ label, rows, columns, rowKey, selectedKey, alig
               aria-expanded={expanded ? more !== null : undefined}
               data-index={item.index}
               ref={virtual.measureElement}
-              className={cn('absolute inset-x-0 top-0 border-b border-line', selected && 'bg-sunken shadow-[inset_3px_0_0_var(--ink)]')}
+              className={cn('absolute inset-x-0 top-0 border-b border-line', selected && 'bg-accent-soft/60 shadow-[inset_2px_0_0_var(--accent-strong)]')}
               style={{ transform: `translateY(${item.start - virtual.options.scrollMargin}px)` }}
             >
               {/* Desktop: aligned columns. */}
@@ -257,6 +260,7 @@ export function ThreadList<T>({ label, items, itemKey, title, aside, body, meta,
   const virtual = useVirtualizer({
     count: items.length,
     getScrollElement: () => scroller,
+    getItemKey: (i) => itemKey(items[i]),
     estimateSize: () => estimate,
     measureElement: measureNonZero,
     overscan: 6,

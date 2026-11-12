@@ -4,6 +4,7 @@
 // time (the list, then the error with a way back). The selected error lives
 // in the URL (?e=3999), so /logs/E-3999 links, reloads and Back all land on
 // it.
+import { useMedia } from '@/components/hb/use-media'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
@@ -55,19 +56,6 @@ export function errorIdIn(text: string): number | null {
 /** The first line with text in it (panics start with a useful one). */
 function firstLine(message: string): string {
   return message.split('\n').find((l) => l.trim())?.trim() ?? ''
-}
-
-/** Matches a media query; false on the server and the first client render. */
-function useMedia(query: string): boolean {
-  const [matches, setMatches] = useState(false)
-  useEffect(() => {
-    const m = matchMedia(query)
-    setMatches(m.matches)
-    const on = () => setMatches(m.matches)
-    m.addEventListener('change', on)
-    return () => m.removeEventListener('change', on)
-  }, [query])
-  return matches
 }
 
 function LogsPage() {

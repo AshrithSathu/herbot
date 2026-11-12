@@ -45,6 +45,8 @@ export function Message({ message: m, highlighted = false }: MessageProps) {
   const [open, setOpen] = useState(false)
   return (
     <article
+      // Search results and ?message= jumps land here.
+      id={`message-${m.id}`}
       aria-label={`${you ? 'You' : 'Agent'}, ${clock(m.sent_at)}`}
       data-highlight={highlighted || undefined}
       className={cn(BUBBLE, you ? 'rounded-br-md bg-accent-soft text-ink' : 'rounded-bl-md bg-pane shadow-raised')}

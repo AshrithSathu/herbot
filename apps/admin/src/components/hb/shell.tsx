@@ -4,6 +4,7 @@
 // opens over the main pane), one on phones with a bottom tab bar
 // (Agents, Overview, Search, Tasks, More). A strip on top carries
 // system-wide state. ⌘K opens the palette.
+import { useMedia } from './use-media'
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Dialog } from 'radix-ui'
@@ -97,7 +98,17 @@ export function Shell({ agents, details, strip, onSignOut, signingOut = false, t
       }
     }
   }, [])
+  // Crossing 68.75rem re-derives the pane: wide restores the remembered
+  // choice, narrow closes the overlay (it opens on demand there). So the
+  // state never says "closed" while an overlay shows, or the reverse.
+  const wide = useMedia(WIDE, true)
+  const defaultRef = useRef(true)
+  useEffect(() => {
+    if (registered === 0) return
+    setDetailsOpenState(wide ? readDetailsPref(defaultRef.current) : false)
+  }, [wide, registered])
   const registerDetails = useCallback((defaultOpen: boolean) => {
+    defaultRef.current = defaultOpen
     setRegistered((n) => n + 1)
     setDetailsOpenState(matchMedia(WIDE).matches ? readDetailsPref(defaultOpen) : false)
     return () => {
@@ -127,6 +138,9 @@ export function Shell({ agents, details, strip, onSignOut, signingOut = false, t
     detailsTarget,
   }
   const hasDetails = Boolean(details) || registered > 0
+  // Below 68.75rem the open details pane covers the page: what's behind it
+  // leaves the tab order and the accessibility tree until it closes.
+  const covered = hasDetails && detailsOpen && !wide
 
   return (
     <ShellContext.Provider value={value}>
@@ -137,17 +151,21 @@ export function Shell({ agents, details, strip, onSignOut, signingOut = false, t
         >
           Skip to content
         </a>
-        {strip}
+        <div inert={covered || undefined} className="contents">
+          {strip}
+        </div>
         <div className="flex min-h-0 flex-1 md:gap-2 md:py-2 md:pr-2">
-          <Rail onSignOut={onSignOut} signingOut={signingOut} />
+          <div inert={covered || undefined} className="contents">
+            <Rail onSignOut={onSignOut} signingOut={signingOut} />
 
-          <aside aria-label="Agents" className={cn(PANE, 'md:w-[19rem] md:shrink-0', phonePane === 'agents' ? 'max-md:flex-1' : 'max-md:hidden')}>
-            {agents}
-          </aside>
+            <aside aria-label="Agents" className={cn(PANE, 'md:w-[19rem] md:shrink-0', phonePane === 'agents' ? 'max-md:flex-1' : 'max-md:hidden')}>
+              {agents}
+            </aside>
 
-          <main id="content" tabIndex={-1} className={cn(PANE, 'flex-1 outline-none', phonePane === 'agents' && 'max-md:hidden')}>
-            {children}
-          </main>
+            <main id="content" tabIndex={-1} className={cn(PANE, 'flex-1 outline-none', phonePane === 'agents' && 'max-md:hidden')}>
+              {children}
+            </main>
+          </div>
 
           {hasDetails && (
             <DetailsSlot open={detailsOpen} onClose={() => setDetailsOpen(false)}>
@@ -155,7 +173,9 @@ export function Shell({ agents, details, strip, onSignOut, signingOut = false, t
             </DetailsSlot>
           )}
         </div>
-        <TabBar onMore={() => setMore(true)} />
+        <div inert={covered || undefined} className="contents">
+          <TabBar onMore={() => setMore(true)} />
+        </div>
         <MoreSheet open={more} onOpenChange={setMore} onSignOut={onSignOut} />
         <CommandPalette open={palette} onOpenChange={setPalette} topics={topics} actions={actions} initialQuery={paletteQuery} />
       </div>
@@ -180,7 +200,7 @@ export function ShellDetails({ children, defaultOpen = true }: { children: React
 function DetailsSlot({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLElement>(null)
   useEffect(() => {
-    if (open && !matchMedia('(min-width: 68.75rem)').matches) ref.current?.focus()
+    if (open && !matchMedia(WIDE).matches) ref.current?.focus()
   }, [open])
   return (
     <>

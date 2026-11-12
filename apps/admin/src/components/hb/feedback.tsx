@@ -174,10 +174,12 @@ export function StatusStrip({ tone = 'warn', children, short, action }: StripPro
 }
 
 /** Confirms a finished action; offers Undo when it can be undone. Reading
- * time scales with the words (about 250 per minute, 3–10 s). */
+ * time scales with the words (about 250 per minute): 3–10 s, and never under
+ * 10 s when there's an Undo, which needs time to reach for. */
 export function notify(message: string, undo?: { label?: string; run: () => void }) {
   const words = message.trim().split(/\s+/).length
-  const duration = Math.min(10_000, Math.max(3_000, words * 250 + (undo ? 3_000 : 0)))
+  const reading = Math.max(3_000, words * 250)
+  const duration = undo ? Math.max(10_000, reading + 6_000) : Math.min(10_000, reading)
   toast.success(message, {
     duration,
     action: undo ? { label: undo.label ?? 'Undo', onClick: undo.run } : undefined,

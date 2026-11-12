@@ -458,11 +458,6 @@ function useCall(c: Companion) {
     },
     discardTurn: () => setFailed(null),
     dismissProblem: () => setProblem(''),
-    /** The composer refused something it can't send (files). */
-    refuse: (why: string, text: string) => {
-      setProblem(why)
-      if (text) setRestore({ text, key: Date.now() })
-    },
   }
 }
 
@@ -621,6 +616,9 @@ function Conversation({ call, companion: c, onPick }: { call: CallState; compani
             sending={call.phase === 'thinking'}
             disabledReason={disabledReason}
             restore={call.restore}
+            // Companions take text and voice only, and reply in their own way.
+            attachments={false}
+            modes={false}
             voice={
               // The panel holds the big mic beside the chat; narrow screens
               // get one here so a voice turn needs no panel.
@@ -628,10 +626,7 @@ function Conversation({ call, companion: c, onPick }: { call: CallState; compani
                 <MicButton call={call} companion={c} size="small" />
               </span>
             }
-            onSend={({ text, files }) => {
-              if (files.length > 0) call.refuse(`${c.name} takes text and voice only; files aren’t sent to companions.`, text)
-              else call.send(text)
-            }}
+            onSend={({ text }) => call.send(text)}
           />
         </div>
       </div>

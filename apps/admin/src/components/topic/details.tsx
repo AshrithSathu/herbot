@@ -9,8 +9,8 @@ import { ExternalLinkIcon } from 'lucide-react'
 import { saveMode, savePurpose, saveVoice, setEnabled, wipeTopic, type Topic, type TopicDetail } from '../../api'
 import { PURPOSE_MAX, ago, charCount, compact, exact, purposeProblem } from '../../format'
 import { keys } from '../../queries'
-import { Button, Field, Segmented, SwitchRow, TextArea, type Choice } from '@/components/hb/controls'
-import { DangerAction, DangerZone, DetailRow, DetailsPane, DetailsSection } from '@/components/hb/details-pane'
+import { Button, Field, Segmented, TextArea, type Choice } from '@/components/hb/controls'
+import { DangerAction, DangerZone, DetailRow, DetailSwitch, DetailsPane, DetailsSection } from '@/components/hb/details-pane'
 import { notify, notifyFailure } from '@/components/hb/feedback'
 import { TOPIC_MODES, topicModeLabel, type TopicMode } from '@/components/hb/modes'
 import { StatusDot, topicTone } from '@/components/hb/status'
@@ -103,16 +103,14 @@ function Behaviour({ topic: t }: { topic: Topic }) {
 
   return (
     <DetailsSection title="Behaviour">
-      <div className="py-1">
-        <SwitchRow
-          label="Answering"
-          description={t.enabled ? 'Messages here go to the agent' : 'Switched off: messages here are ignored'}
-          checked={enabled.isPending ? (enabled.variables ?? t.enabled) : t.enabled}
-          onCheckedChange={(on) => enabled.mutate(on)}
-          pending={enabled.isPending}
-          error={enabled.error && `Couldn’t switch it ${enabled.variables ? 'on' : 'off'}. ${enabled.error.message}`}
+      <DetailSwitch
+        label="Answering"
+        description={t.enabled ? 'Messages here go to the agent' : 'Switched off: messages here are ignored'}
+        checked={enabled.isPending ? (enabled.variables ?? t.enabled) : t.enabled}
+        onCheckedChange={(on) => enabled.mutate(on)}
+        pending={enabled.isPending}
+        error={enabled.error && `Couldn’t switch it ${enabled.variables ? 'on' : 'off'}. ${enabled.error.message}`}
         />
-      </div>
       <DetailRow
         label="Mode"
         value={
@@ -144,16 +142,14 @@ function Behaviour({ topic: t }: { topic: Topic }) {
         )}
       />
       {mode.error && !mode.isPending && <p className="pb-1 text-[12.5px] text-destructive">Couldn’t change the mode. {mode.error.message}</p>}
-      <div className="py-1">
-        <SwitchRow
-          label="Spoken replies"
-          description="Replies also arrive as voice notes"
-          checked={t.voice_replies}
-          onCheckedChange={(on) => voice.mutate({ voice_replies: on, voice: t.voice })}
-          pending={voice.isPending}
-          error={voice.error && `Couldn’t save the voice settings. ${voice.error.message}`}
+      <DetailSwitch
+        label="Spoken replies"
+        description="Replies also arrive as voice notes"
+        checked={t.voice_replies}
+        onCheckedChange={(on) => voice.mutate({ voice_replies: on, voice: t.voice })}
+        pending={voice.isPending}
+        error={voice.error && `Couldn’t save the voice settings. ${voice.error.message}`}
         />
-      </div>
       <DetailRow
         label="Voice"
         value={voiceLabel(t.voice)}

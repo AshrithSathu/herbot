@@ -273,7 +273,6 @@ export function Conversation({ topic, target, header }: {
                       key={item.key}
                       data-index={item.index}
                       ref={virtual.measureElement}
-                      id={row.kind === 'message' ? `message-${row.message.id}` : undefined}
                       className="absolute inset-x-0 top-0 list-none"
                       style={{ transform: `translateY(${item.start}px)` }}
                     >

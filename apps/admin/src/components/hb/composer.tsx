@@ -45,6 +45,10 @@ type ComposerProps = {
   restore?: { text: string; key: string | number }
   /** Beside the send button: a mic for voice turns (companions). */
   voice?: ReactNode
+  /** Offer attaching files (default). Off where a turn can't carry files. */
+  attachments?: boolean
+  /** Offer the per-message mode (default). Off where modes don't apply. */
+  modes?: boolean
   className?: string
 }
 
@@ -58,7 +62,7 @@ function fileProblem(files: File[]): string | null {
 
 const coarse = () => typeof window !== 'undefined' && matchMedia('(pointer: coarse)').matches
 
-export function Composer({ onSend, disabledReason, sending = false, placeholder = 'Message this agent', initialText = '', restore, voice, className }: ComposerProps) {
+export function Composer({ onSend, disabledReason, sending = false, placeholder = 'Message this agent', initialText = '', restore, voice, attachments = true, modes = true, className }: ComposerProps) {
   const [text, setText] = useState(initialText)
   const [files, setFiles] = useState<File[]>([])
   const [mode, setMode] = useState<Mode>('auto')
@@ -85,7 +89,7 @@ export function Composer({ onSend, disabledReason, sending = false, placeholder 
   const canSend = !empty && !problem && !sending
 
   function change(value: string) {
-    const m = SLASH.exec(value)
+    const m = modes ? SLASH.exec(value) : null
     if (m) {
       setMode(m[1].toLowerCase() as Mode)
       value = value.slice(m[0].length)
@@ -175,6 +179,7 @@ export function Composer({ onSend, disabledReason, sending = false, placeholder 
             aria-describedby="hb-composer-status"
             className="block w-full resize-none self-center bg-transparent px-2 py-2.5 text-base leading-6 text-ink outline-none [grid-area:text] placeholder:text-faint md:px-2 md:pt-3 pointer-fine:text-[15px]"
           />
+          {attachments && (
           <label
             className="grid size-10 cursor-pointer place-items-center rounded-full text-mute [grid-area:attach] hover:bg-sunken hover:text-ink has-focus-visible:ring-2 has-focus-visible:ring-ring pointer-coarse:size-11"
             title="Attach files"
@@ -192,8 +197,9 @@ export function Composer({ onSend, disabledReason, sending = false, placeholder 
               }}
             />
           </label>
-          <ModeChips mode={mode} setMode={setMode} />
-          <ModeMenu current={current} mode={mode} setMode={setMode} />
+          )}
+          {modes && <ModeChips mode={mode} setMode={setMode} />}
+          {modes && <ModeMenu current={current} mode={mode} setMode={setMode} />}
           <span className={cn('hidden self-center px-1 text-[12px] tabular-nums [grid-area:count] md:inline', count > MAX_CHARS * 0.8 ? '' : 'invisible', over ? 'font-medium text-destructive' : 'text-mute')}>
             {(MAX_CHARS - count).toLocaleString('en-GB')}
           </span>
@@ -215,7 +221,9 @@ export function Composer({ onSend, disabledReason, sending = false, placeholder 
           (count > MAX_CHARS * 0.8 ? (
             <span className="tabular-nums md:hidden">{(MAX_CHARS - count).toLocaleString('en-GB')} characters left</span>
           ) : (
-            <span className="max-md:hidden">Enter to send · Shift+Enter for a new line · /think, /heavy, /fast, /deepsearch set the mode</span>
+            <span className="max-md:hidden">
+              Enter to send · Shift+Enter for a new line{modes && ' · /think, /heavy, /fast, /deepsearch set the mode'}
+            </span>
           ))}
       </p>
     </form>

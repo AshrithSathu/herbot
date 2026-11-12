@@ -215,9 +215,6 @@ function TasksPage() {
               />
             ) : (
               <ThreadList
-                // The kit's virtualizer caches row heights by index: remount when
-                // rows come or go (filter, delete) so heights follow the rows.
-                key={`${filter}:${shown.length}`}
                 label={`${LABEL[filter]} tasks`}
                 items={shown}
                 itemKey={(t) => t.id}

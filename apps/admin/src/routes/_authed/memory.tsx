@@ -84,9 +84,6 @@ function MemoryPage() {
                   />
                 ) : (
                   <ThreadList
-                    // The kit's virtualizer caches row heights by index: remount when
-                    // rows come or go (filter, forget) so heights follow the rows.
-                    key={`${wanted}:${shown.length}`}
                     label="Memories"
                     items={shown}
                     itemKey={(m) => m.id}

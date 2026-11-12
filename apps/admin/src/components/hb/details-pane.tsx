@@ -6,7 +6,7 @@ import { useState, type ReactNode } from 'react'
 import { ChevronLeftIcon, PencilIcon, XIcon } from 'lucide-react'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
-import { Button } from './controls'
+import { Button, SwitchRow } from './controls'
 import { ConfirmDialog, type Guard } from './dialogs'
 
 type PaneProps = {
@@ -99,6 +99,16 @@ export function DetailRow({ label, value, edit, block = false }: RowProps) {
       >
         <PencilIcon aria-hidden className="absolute top-2.5 right-2 size-3.5 text-faint opacity-0 transition-opacity duration-150 group-hover:opacity-100 pointer-coarse:opacity-100" />
       </button>
+    </div>
+  )
+}
+
+/** A details row that is a switch (Answering, Spoken replies): the whole row
+ * toggles, on the same rhythm and height as DetailRow. */
+export function DetailSwitch(props: Parameters<typeof SwitchRow>[0]) {
+  return (
+    <div className="py-1">
+      <SwitchRow {...props} />
     </div>
   )
 }

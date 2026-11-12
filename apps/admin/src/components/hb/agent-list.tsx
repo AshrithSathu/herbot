@@ -42,6 +42,7 @@ export function AgentList({ topics, pending = false, error, onRetry, activeId, i
   const virtual = useVirtualizer({
     count: shown.length,
     getScrollElement: () => scroller.current,
+    getItemKey: (i) => shown[i].id,
     estimateSize: () => 58,
     measureElement: measureNonZero,
     overscan: 8,
