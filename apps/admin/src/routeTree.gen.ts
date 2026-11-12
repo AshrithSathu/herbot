@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as LoginRouteImport } from './routes/login'
-import { Route as ProtoSigninRouteImport } from './routes/proto-signin'
 import { Route as AuthedIndexRouteImport } from './routes/_authed/index'
 import { Route as AuthedCompanionsRouteImport } from './routes/_authed/companions'
 import { Route as AuthedConnectorsRouteImport } from './routes/_authed/connectors'
@@ -20,29 +19,6 @@ import { Route as AuthedPersonalizeRouteImport } from './routes/_authed/personal
 import { Route as AuthedSearchRouteImport } from './routes/_authed/search'
 import { Route as AuthedLogsIndexRouteImport } from './routes/_authed/logs/index'
 import { Route as AuthedLogsIdRouteImport } from './routes/_authed/logs/$id'
-import { Route as AuthedProtoAgentRowRouteImport } from './routes/_authed/proto/agent-row'
-import { Route as AuthedProtoComposerRouteImport } from './routes/_authed/proto/composer'
-import { Route as AuthedProtoControlsRouteImport } from './routes/_authed/proto/controls'
-import { Route as AuthedProtoDetailsRouteImport } from './routes/_authed/proto/details'
-import { Route as AuthedProtoDialogRouteImport } from './routes/_authed/proto/dialog'
-import { Route as AuthedProtoDirectionRouteImport } from './routes/_authed/proto/direction'
-import { Route as AuthedProtoFeedbackRouteImport } from './routes/_authed/proto/feedback'
-import { Route as AuthedProtoKitRouteImport } from './routes/_authed/proto/kit'
-import { Route as AuthedProtoMessageRouteImport } from './routes/_authed/proto/message'
-import { Route as AuthedProtoNavigationRouteImport } from './routes/_authed/proto/navigation'
-import { Route as AuthedProtoPageCompanionsRouteImport } from './routes/_authed/proto/page-companions'
-import { Route as AuthedProtoPageConnectorsRouteImport } from './routes/_authed/proto/page-connectors'
-import { Route as AuthedProtoPageFilesRouteImport } from './routes/_authed/proto/page-files'
-import { Route as AuthedProtoPageLogsRouteImport } from './routes/_authed/proto/page-logs'
-import { Route as AuthedProtoPageMemoryRouteImport } from './routes/_authed/proto/page-memory'
-import { Route as AuthedProtoPageOverviewRouteImport } from './routes/_authed/proto/page-overview'
-import { Route as AuthedProtoPagePersonalizeRouteImport } from './routes/_authed/proto/page-personalize'
-import { Route as AuthedProtoPageSearchRouteImport } from './routes/_authed/proto/page-search'
-import { Route as AuthedProtoPageTasksRouteImport } from './routes/_authed/proto/page-tasks'
-import { Route as AuthedProtoPageTopicRouteImport } from './routes/_authed/proto/page-topic'
-import { Route as AuthedProtoPageTopicsRouteImport } from './routes/_authed/proto/page-topics'
-import { Route as AuthedProtoRowsRouteImport } from './routes/_authed/proto/rows'
-import { Route as AuthedProtoStatusRouteImport } from './routes/_authed/proto/status'
 import { Route as AuthedTasksIndexRouteImport } from './routes/_authed/tasks/index'
 import { Route as AuthedTopicsIndexRouteImport } from './routes/_authed/topics/index'
 import { Route as AuthedTopicsIdRouteImport } from './routes/_authed/topics/$id'
@@ -56,11 +32,6 @@ const AuthedRoute = AuthedRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ProtoSigninRoute = ProtoSigninRouteImport.update({
-  id: '/proto-signin',
-  path: '/proto-signin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthedIndexRoute = AuthedIndexRouteImport.update({
@@ -103,124 +74,6 @@ const AuthedLogsIdRoute = AuthedLogsIdRouteImport.update({
   path: '/logs/$id',
   getParentRoute: () => AuthedRoute,
 } as any)
-const AuthedProtoAgentRowRoute = AuthedProtoAgentRowRouteImport.update({
-  id: '/proto/agent-row',
-  path: '/proto/agent-row',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoComposerRoute = AuthedProtoComposerRouteImport.update({
-  id: '/proto/composer',
-  path: '/proto/composer',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoControlsRoute = AuthedProtoControlsRouteImport.update({
-  id: '/proto/controls',
-  path: '/proto/controls',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoDetailsRoute = AuthedProtoDetailsRouteImport.update({
-  id: '/proto/details',
-  path: '/proto/details',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoDialogRoute = AuthedProtoDialogRouteImport.update({
-  id: '/proto/dialog',
-  path: '/proto/dialog',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoDirectionRoute = AuthedProtoDirectionRouteImport.update({
-  id: '/proto/direction',
-  path: '/proto/direction',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoFeedbackRoute = AuthedProtoFeedbackRouteImport.update({
-  id: '/proto/feedback',
-  path: '/proto/feedback',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoKitRoute = AuthedProtoKitRouteImport.update({
-  id: '/proto/kit',
-  path: '/proto/kit',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoMessageRoute = AuthedProtoMessageRouteImport.update({
-  id: '/proto/message',
-  path: '/proto/message',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoNavigationRoute = AuthedProtoNavigationRouteImport.update({
-  id: '/proto/navigation',
-  path: '/proto/navigation',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoPageCompanionsRoute =
-  AuthedProtoPageCompanionsRouteImport.update({
-    id: '/proto/page-companions',
-    path: '/proto/page-companions',
-    getParentRoute: () => AuthedRoute,
-  } as any)
-const AuthedProtoPageConnectorsRoute =
-  AuthedProtoPageConnectorsRouteImport.update({
-    id: '/proto/page-connectors',
-    path: '/proto/page-connectors',
-    getParentRoute: () => AuthedRoute,
-  } as any)
-const AuthedProtoPageFilesRoute = AuthedProtoPageFilesRouteImport.update({
-  id: '/proto/page-files',
-  path: '/proto/page-files',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoPageLogsRoute = AuthedProtoPageLogsRouteImport.update({
-  id: '/proto/page-logs',
-  path: '/proto/page-logs',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoPageMemoryRoute = AuthedProtoPageMemoryRouteImport.update({
-  id: '/proto/page-memory',
-  path: '/proto/page-memory',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoPageOverviewRoute = AuthedProtoPageOverviewRouteImport.update({
-  id: '/proto/page-overview',
-  path: '/proto/page-overview',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoPagePersonalizeRoute =
-  AuthedProtoPagePersonalizeRouteImport.update({
-    id: '/proto/page-personalize',
-    path: '/proto/page-personalize',
-    getParentRoute: () => AuthedRoute,
-  } as any)
-const AuthedProtoPageSearchRoute = AuthedProtoPageSearchRouteImport.update({
-  id: '/proto/page-search',
-  path: '/proto/page-search',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoPageTasksRoute = AuthedProtoPageTasksRouteImport.update({
-  id: '/proto/page-tasks',
-  path: '/proto/page-tasks',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoPageTopicRoute = AuthedProtoPageTopicRouteImport.update({
-  id: '/proto/page-topic',
-  path: '/proto/page-topic',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoPageTopicsRoute = AuthedProtoPageTopicsRouteImport.update({
-  id: '/proto/page-topics',
-  path: '/proto/page-topics',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoRowsRoute = AuthedProtoRowsRouteImport.update({
-  id: '/proto/rows',
-  path: '/proto/rows',
-  getParentRoute: () => AuthedRoute,
-} as any)
-const AuthedProtoStatusRoute = AuthedProtoStatusRouteImport.update({
-  id: '/proto/status',
-  path: '/proto/status',
-  getParentRoute: () => AuthedRoute,
-} as any)
 const AuthedTasksIndexRoute = AuthedTasksIndexRouteImport.update({
   id: '/tasks/',
   path: '/tasks/',
@@ -250,36 +103,12 @@ const ApiVoiceSplatRoute = ApiVoiceSplatRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof AuthedIndexRoute
   '/login': typeof LoginRoute
-  '/proto-signin': typeof ProtoSigninRoute
   '/companions': typeof AuthedCompanionsRoute
   '/connectors': typeof AuthedConnectorsRoute
   '/memory': typeof AuthedMemoryRoute
   '/personalize': typeof AuthedPersonalizeRoute
   '/search': typeof AuthedSearchRoute
   '/logs/$id': typeof AuthedLogsIdRoute
-  '/proto/agent-row': typeof AuthedProtoAgentRowRoute
-  '/proto/composer': typeof AuthedProtoComposerRoute
-  '/proto/controls': typeof AuthedProtoControlsRoute
-  '/proto/details': typeof AuthedProtoDetailsRoute
-  '/proto/dialog': typeof AuthedProtoDialogRoute
-  '/proto/direction': typeof AuthedProtoDirectionRoute
-  '/proto/feedback': typeof AuthedProtoFeedbackRoute
-  '/proto/kit': typeof AuthedProtoKitRoute
-  '/proto/message': typeof AuthedProtoMessageRoute
-  '/proto/navigation': typeof AuthedProtoNavigationRoute
-  '/proto/page-companions': typeof AuthedProtoPageCompanionsRoute
-  '/proto/page-connectors': typeof AuthedProtoPageConnectorsRoute
-  '/proto/page-files': typeof AuthedProtoPageFilesRoute
-  '/proto/page-logs': typeof AuthedProtoPageLogsRoute
-  '/proto/page-memory': typeof AuthedProtoPageMemoryRoute
-  '/proto/page-overview': typeof AuthedProtoPageOverviewRoute
-  '/proto/page-personalize': typeof AuthedProtoPagePersonalizeRoute
-  '/proto/page-search': typeof AuthedProtoPageSearchRoute
-  '/proto/page-tasks': typeof AuthedProtoPageTasksRoute
-  '/proto/page-topic': typeof AuthedProtoPageTopicRoute
-  '/proto/page-topics': typeof AuthedProtoPageTopicsRoute
-  '/proto/rows': typeof AuthedProtoRowsRoute
-  '/proto/status': typeof AuthedProtoStatusRoute
   '/topics/$id': typeof AuthedTopicsIdRoute
   '/api/files/$': typeof ApiFilesSplatRoute
   '/api/voice/$': typeof ApiVoiceSplatRoute
@@ -289,7 +118,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
-  '/proto-signin': typeof ProtoSigninRoute
   '/companions': typeof AuthedCompanionsRoute
   '/connectors': typeof AuthedConnectorsRoute
   '/memory': typeof AuthedMemoryRoute
@@ -297,29 +125,6 @@ export interface FileRoutesByTo {
   '/search': typeof AuthedSearchRoute
   '/': typeof AuthedIndexRoute
   '/logs/$id': typeof AuthedLogsIdRoute
-  '/proto/agent-row': typeof AuthedProtoAgentRowRoute
-  '/proto/composer': typeof AuthedProtoComposerRoute
-  '/proto/controls': typeof AuthedProtoControlsRoute
-  '/proto/details': typeof AuthedProtoDetailsRoute
-  '/proto/dialog': typeof AuthedProtoDialogRoute
-  '/proto/direction': typeof AuthedProtoDirectionRoute
-  '/proto/feedback': typeof AuthedProtoFeedbackRoute
-  '/proto/kit': typeof AuthedProtoKitRoute
-  '/proto/message': typeof AuthedProtoMessageRoute
-  '/proto/navigation': typeof AuthedProtoNavigationRoute
-  '/proto/page-companions': typeof AuthedProtoPageCompanionsRoute
-  '/proto/page-connectors': typeof AuthedProtoPageConnectorsRoute
-  '/proto/page-files': typeof AuthedProtoPageFilesRoute
-  '/proto/page-logs': typeof AuthedProtoPageLogsRoute
-  '/proto/page-memory': typeof AuthedProtoPageMemoryRoute
-  '/proto/page-overview': typeof AuthedProtoPageOverviewRoute
-  '/proto/page-personalize': typeof AuthedProtoPagePersonalizeRoute
-  '/proto/page-search': typeof AuthedProtoPageSearchRoute
-  '/proto/page-tasks': typeof AuthedProtoPageTasksRoute
-  '/proto/page-topic': typeof AuthedProtoPageTopicRoute
-  '/proto/page-topics': typeof AuthedProtoPageTopicsRoute
-  '/proto/rows': typeof AuthedProtoRowsRoute
-  '/proto/status': typeof AuthedProtoStatusRoute
   '/topics/$id': typeof AuthedTopicsIdRoute
   '/api/files/$': typeof ApiFilesSplatRoute
   '/api/voice/$': typeof ApiVoiceSplatRoute
@@ -331,7 +136,6 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
-  '/proto-signin': typeof ProtoSigninRoute
   '/_authed/companions': typeof AuthedCompanionsRoute
   '/_authed/connectors': typeof AuthedConnectorsRoute
   '/_authed/memory': typeof AuthedMemoryRoute
@@ -339,29 +143,6 @@ export interface FileRoutesById {
   '/_authed/search': typeof AuthedSearchRoute
   '/_authed/': typeof AuthedIndexRoute
   '/_authed/logs/$id': typeof AuthedLogsIdRoute
-  '/_authed/proto/agent-row': typeof AuthedProtoAgentRowRoute
-  '/_authed/proto/composer': typeof AuthedProtoComposerRoute
-  '/_authed/proto/controls': typeof AuthedProtoControlsRoute
-  '/_authed/proto/details': typeof AuthedProtoDetailsRoute
-  '/_authed/proto/dialog': typeof AuthedProtoDialogRoute
-  '/_authed/proto/direction': typeof AuthedProtoDirectionRoute
-  '/_authed/proto/feedback': typeof AuthedProtoFeedbackRoute
-  '/_authed/proto/kit': typeof AuthedProtoKitRoute
-  '/_authed/proto/message': typeof AuthedProtoMessageRoute
-  '/_authed/proto/navigation': typeof AuthedProtoNavigationRoute
-  '/_authed/proto/page-companions': typeof AuthedProtoPageCompanionsRoute
-  '/_authed/proto/page-connectors': typeof AuthedProtoPageConnectorsRoute
-  '/_authed/proto/page-files': typeof AuthedProtoPageFilesRoute
-  '/_authed/proto/page-logs': typeof AuthedProtoPageLogsRoute
-  '/_authed/proto/page-memory': typeof AuthedProtoPageMemoryRoute
-  '/_authed/proto/page-overview': typeof AuthedProtoPageOverviewRoute
-  '/_authed/proto/page-personalize': typeof AuthedProtoPagePersonalizeRoute
-  '/_authed/proto/page-search': typeof AuthedProtoPageSearchRoute
-  '/_authed/proto/page-tasks': typeof AuthedProtoPageTasksRoute
-  '/_authed/proto/page-topic': typeof AuthedProtoPageTopicRoute
-  '/_authed/proto/page-topics': typeof AuthedProtoPageTopicsRoute
-  '/_authed/proto/rows': typeof AuthedProtoRowsRoute
-  '/_authed/proto/status': typeof AuthedProtoStatusRoute
   '/_authed/topics/$id': typeof AuthedTopicsIdRoute
   '/api/files/$': typeof ApiFilesSplatRoute
   '/api/voice/$': typeof ApiVoiceSplatRoute
@@ -374,36 +155,12 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
-    | '/proto-signin'
     | '/companions'
     | '/connectors'
     | '/memory'
     | '/personalize'
     | '/search'
     | '/logs/$id'
-    | '/proto/agent-row'
-    | '/proto/composer'
-    | '/proto/controls'
-    | '/proto/details'
-    | '/proto/dialog'
-    | '/proto/direction'
-    | '/proto/feedback'
-    | '/proto/kit'
-    | '/proto/message'
-    | '/proto/navigation'
-    | '/proto/page-companions'
-    | '/proto/page-connectors'
-    | '/proto/page-files'
-    | '/proto/page-logs'
-    | '/proto/page-memory'
-    | '/proto/page-overview'
-    | '/proto/page-personalize'
-    | '/proto/page-search'
-    | '/proto/page-tasks'
-    | '/proto/page-topic'
-    | '/proto/page-topics'
-    | '/proto/rows'
-    | '/proto/status'
     | '/topics/$id'
     | '/api/files/$'
     | '/api/voice/$'
@@ -413,7 +170,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
-    | '/proto-signin'
     | '/companions'
     | '/connectors'
     | '/memory'
@@ -421,29 +177,6 @@ export interface FileRouteTypes {
     | '/search'
     | '/'
     | '/logs/$id'
-    | '/proto/agent-row'
-    | '/proto/composer'
-    | '/proto/controls'
-    | '/proto/details'
-    | '/proto/dialog'
-    | '/proto/direction'
-    | '/proto/feedback'
-    | '/proto/kit'
-    | '/proto/message'
-    | '/proto/navigation'
-    | '/proto/page-companions'
-    | '/proto/page-connectors'
-    | '/proto/page-files'
-    | '/proto/page-logs'
-    | '/proto/page-memory'
-    | '/proto/page-overview'
-    | '/proto/page-personalize'
-    | '/proto/page-search'
-    | '/proto/page-tasks'
-    | '/proto/page-topic'
-    | '/proto/page-topics'
-    | '/proto/rows'
-    | '/proto/status'
     | '/topics/$id'
     | '/api/files/$'
     | '/api/voice/$'
@@ -454,7 +187,6 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_authed'
     | '/login'
-    | '/proto-signin'
     | '/_authed/companions'
     | '/_authed/connectors'
     | '/_authed/memory'
@@ -462,29 +194,6 @@ export interface FileRouteTypes {
     | '/_authed/search'
     | '/_authed/'
     | '/_authed/logs/$id'
-    | '/_authed/proto/agent-row'
-    | '/_authed/proto/composer'
-    | '/_authed/proto/controls'
-    | '/_authed/proto/details'
-    | '/_authed/proto/dialog'
-    | '/_authed/proto/direction'
-    | '/_authed/proto/feedback'
-    | '/_authed/proto/kit'
-    | '/_authed/proto/message'
-    | '/_authed/proto/navigation'
-    | '/_authed/proto/page-companions'
-    | '/_authed/proto/page-connectors'
-    | '/_authed/proto/page-files'
-    | '/_authed/proto/page-logs'
-    | '/_authed/proto/page-memory'
-    | '/_authed/proto/page-overview'
-    | '/_authed/proto/page-personalize'
-    | '/_authed/proto/page-search'
-    | '/_authed/proto/page-tasks'
-    | '/_authed/proto/page-topic'
-    | '/_authed/proto/page-topics'
-    | '/_authed/proto/rows'
-    | '/_authed/proto/status'
     | '/_authed/topics/$id'
     | '/api/files/$'
     | '/api/voice/$'
@@ -496,7 +205,6 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AuthedRoute: typeof AuthedRouteWithChildren
   LoginRoute: typeof LoginRoute
-  ProtoSigninRoute: typeof ProtoSigninRoute
   ApiFilesSplatRoute: typeof ApiFilesSplatRoute
   ApiVoiceSplatRoute: typeof ApiVoiceSplatRoute
 }
@@ -515,13 +223,6 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/proto-signin': {
-      id: '/proto-signin'
-      path: '/proto-signin'
-      fullPath: '/proto-signin'
-      preLoaderRoute: typeof ProtoSigninRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authed/': {
@@ -580,167 +281,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedLogsIdRouteImport
       parentRoute: typeof AuthedRoute
     }
-    '/_authed/proto/agent-row': {
-      id: '/_authed/proto/agent-row'
-      path: '/proto/agent-row'
-      fullPath: '/proto/agent-row'
-      preLoaderRoute: typeof AuthedProtoAgentRowRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/composer': {
-      id: '/_authed/proto/composer'
-      path: '/proto/composer'
-      fullPath: '/proto/composer'
-      preLoaderRoute: typeof AuthedProtoComposerRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/controls': {
-      id: '/_authed/proto/controls'
-      path: '/proto/controls'
-      fullPath: '/proto/controls'
-      preLoaderRoute: typeof AuthedProtoControlsRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/details': {
-      id: '/_authed/proto/details'
-      path: '/proto/details'
-      fullPath: '/proto/details'
-      preLoaderRoute: typeof AuthedProtoDetailsRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/dialog': {
-      id: '/_authed/proto/dialog'
-      path: '/proto/dialog'
-      fullPath: '/proto/dialog'
-      preLoaderRoute: typeof AuthedProtoDialogRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/direction': {
-      id: '/_authed/proto/direction'
-      path: '/proto/direction'
-      fullPath: '/proto/direction'
-      preLoaderRoute: typeof AuthedProtoDirectionRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/feedback': {
-      id: '/_authed/proto/feedback'
-      path: '/proto/feedback'
-      fullPath: '/proto/feedback'
-      preLoaderRoute: typeof AuthedProtoFeedbackRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/kit': {
-      id: '/_authed/proto/kit'
-      path: '/proto/kit'
-      fullPath: '/proto/kit'
-      preLoaderRoute: typeof AuthedProtoKitRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/message': {
-      id: '/_authed/proto/message'
-      path: '/proto/message'
-      fullPath: '/proto/message'
-      preLoaderRoute: typeof AuthedProtoMessageRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/navigation': {
-      id: '/_authed/proto/navigation'
-      path: '/proto/navigation'
-      fullPath: '/proto/navigation'
-      preLoaderRoute: typeof AuthedProtoNavigationRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-companions': {
-      id: '/_authed/proto/page-companions'
-      path: '/proto/page-companions'
-      fullPath: '/proto/page-companions'
-      preLoaderRoute: typeof AuthedProtoPageCompanionsRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-connectors': {
-      id: '/_authed/proto/page-connectors'
-      path: '/proto/page-connectors'
-      fullPath: '/proto/page-connectors'
-      preLoaderRoute: typeof AuthedProtoPageConnectorsRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-files': {
-      id: '/_authed/proto/page-files'
-      path: '/proto/page-files'
-      fullPath: '/proto/page-files'
-      preLoaderRoute: typeof AuthedProtoPageFilesRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-logs': {
-      id: '/_authed/proto/page-logs'
-      path: '/proto/page-logs'
-      fullPath: '/proto/page-logs'
-      preLoaderRoute: typeof AuthedProtoPageLogsRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-memory': {
-      id: '/_authed/proto/page-memory'
-      path: '/proto/page-memory'
-      fullPath: '/proto/page-memory'
-      preLoaderRoute: typeof AuthedProtoPageMemoryRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-overview': {
-      id: '/_authed/proto/page-overview'
-      path: '/proto/page-overview'
-      fullPath: '/proto/page-overview'
-      preLoaderRoute: typeof AuthedProtoPageOverviewRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-personalize': {
-      id: '/_authed/proto/page-personalize'
-      path: '/proto/page-personalize'
-      fullPath: '/proto/page-personalize'
-      preLoaderRoute: typeof AuthedProtoPagePersonalizeRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-search': {
-      id: '/_authed/proto/page-search'
-      path: '/proto/page-search'
-      fullPath: '/proto/page-search'
-      preLoaderRoute: typeof AuthedProtoPageSearchRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-tasks': {
-      id: '/_authed/proto/page-tasks'
-      path: '/proto/page-tasks'
-      fullPath: '/proto/page-tasks'
-      preLoaderRoute: typeof AuthedProtoPageTasksRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-topic': {
-      id: '/_authed/proto/page-topic'
-      path: '/proto/page-topic'
-      fullPath: '/proto/page-topic'
-      preLoaderRoute: typeof AuthedProtoPageTopicRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/page-topics': {
-      id: '/_authed/proto/page-topics'
-      path: '/proto/page-topics'
-      fullPath: '/proto/page-topics'
-      preLoaderRoute: typeof AuthedProtoPageTopicsRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/rows': {
-      id: '/_authed/proto/rows'
-      path: '/proto/rows'
-      fullPath: '/proto/rows'
-      preLoaderRoute: typeof AuthedProtoRowsRouteImport
-      parentRoute: typeof AuthedRoute
-    }
-    '/_authed/proto/status': {
-      id: '/_authed/proto/status'
-      path: '/proto/status'
-      fullPath: '/proto/status'
-      preLoaderRoute: typeof AuthedProtoStatusRouteImport
-      parentRoute: typeof AuthedRoute
-    }
     '/_authed/tasks/': {
       id: '/_authed/tasks/'
       path: '/tasks'
@@ -787,29 +327,6 @@ interface AuthedRouteChildren {
   AuthedSearchRoute: typeof AuthedSearchRoute
   AuthedIndexRoute: typeof AuthedIndexRoute
   AuthedLogsIdRoute: typeof AuthedLogsIdRoute
-  AuthedProtoAgentRowRoute: typeof AuthedProtoAgentRowRoute
-  AuthedProtoComposerRoute: typeof AuthedProtoComposerRoute
-  AuthedProtoControlsRoute: typeof AuthedProtoControlsRoute
-  AuthedProtoDetailsRoute: typeof AuthedProtoDetailsRoute
-  AuthedProtoDialogRoute: typeof AuthedProtoDialogRoute
-  AuthedProtoDirectionRoute: typeof AuthedProtoDirectionRoute
-  AuthedProtoFeedbackRoute: typeof AuthedProtoFeedbackRoute
-  AuthedProtoKitRoute: typeof AuthedProtoKitRoute
-  AuthedProtoMessageRoute: typeof AuthedProtoMessageRoute
-  AuthedProtoNavigationRoute: typeof AuthedProtoNavigationRoute
-  AuthedProtoPageCompanionsRoute: typeof AuthedProtoPageCompanionsRoute
-  AuthedProtoPageConnectorsRoute: typeof AuthedProtoPageConnectorsRoute
-  AuthedProtoPageFilesRoute: typeof AuthedProtoPageFilesRoute
-  AuthedProtoPageLogsRoute: typeof AuthedProtoPageLogsRoute
-  AuthedProtoPageMemoryRoute: typeof AuthedProtoPageMemoryRoute
-  AuthedProtoPageOverviewRoute: typeof AuthedProtoPageOverviewRoute
-  AuthedProtoPagePersonalizeRoute: typeof AuthedProtoPagePersonalizeRoute
-  AuthedProtoPageSearchRoute: typeof AuthedProtoPageSearchRoute
-  AuthedProtoPageTasksRoute: typeof AuthedProtoPageTasksRoute
-  AuthedProtoPageTopicRoute: typeof AuthedProtoPageTopicRoute
-  AuthedProtoPageTopicsRoute: typeof AuthedProtoPageTopicsRoute
-  AuthedProtoRowsRoute: typeof AuthedProtoRowsRoute
-  AuthedProtoStatusRoute: typeof AuthedProtoStatusRoute
   AuthedTopicsIdRoute: typeof AuthedTopicsIdRoute
   AuthedLogsIndexRoute: typeof AuthedLogsIndexRoute
   AuthedTasksIndexRoute: typeof AuthedTasksIndexRoute
@@ -824,29 +341,6 @@ const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSearchRoute: AuthedSearchRoute,
   AuthedIndexRoute: AuthedIndexRoute,
   AuthedLogsIdRoute: AuthedLogsIdRoute,
-  AuthedProtoAgentRowRoute: AuthedProtoAgentRowRoute,
-  AuthedProtoComposerRoute: AuthedProtoComposerRoute,
-  AuthedProtoControlsRoute: AuthedProtoControlsRoute,
-  AuthedProtoDetailsRoute: AuthedProtoDetailsRoute,
-  AuthedProtoDialogRoute: AuthedProtoDialogRoute,
-  AuthedProtoDirectionRoute: AuthedProtoDirectionRoute,
-  AuthedProtoFeedbackRoute: AuthedProtoFeedbackRoute,
-  AuthedProtoKitRoute: AuthedProtoKitRoute,
-  AuthedProtoMessageRoute: AuthedProtoMessageRoute,
-  AuthedProtoNavigationRoute: AuthedProtoNavigationRoute,
-  AuthedProtoPageCompanionsRoute: AuthedProtoPageCompanionsRoute,
-  AuthedProtoPageConnectorsRoute: AuthedProtoPageConnectorsRoute,
-  AuthedProtoPageFilesRoute: AuthedProtoPageFilesRoute,
-  AuthedProtoPageLogsRoute: AuthedProtoPageLogsRoute,
-  AuthedProtoPageMemoryRoute: AuthedProtoPageMemoryRoute,
-  AuthedProtoPageOverviewRoute: AuthedProtoPageOverviewRoute,
-  AuthedProtoPagePersonalizeRoute: AuthedProtoPagePersonalizeRoute,
-  AuthedProtoPageSearchRoute: AuthedProtoPageSearchRoute,
-  AuthedProtoPageTasksRoute: AuthedProtoPageTasksRoute,
-  AuthedProtoPageTopicRoute: AuthedProtoPageTopicRoute,
-  AuthedProtoPageTopicsRoute: AuthedProtoPageTopicsRoute,
-  AuthedProtoRowsRoute: AuthedProtoRowsRoute,
-  AuthedProtoStatusRoute: AuthedProtoStatusRoute,
   AuthedTopicsIdRoute: AuthedTopicsIdRoute,
   AuthedLogsIndexRoute: AuthedLogsIndexRoute,
   AuthedTasksIndexRoute: AuthedTasksIndexRoute,
@@ -859,7 +353,6 @@ const AuthedRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   AuthedRoute: AuthedRouteWithChildren,
   LoginRoute: LoginRoute,
-  ProtoSigninRoute: ProtoSigninRoute,
   ApiFilesSplatRoute: ApiFilesSplatRoute,
   ApiVoiceSplatRoute: ApiVoiceSplatRoute,
 }

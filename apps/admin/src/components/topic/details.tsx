@@ -110,7 +110,7 @@ function Behaviour({ topic: t }: { topic: Topic }) {
         onCheckedChange={(on) => enabled.mutate(on)}
         pending={enabled.isPending}
         error={enabled.error && `Couldn’t switch it ${enabled.variables ? 'on' : 'off'}. ${enabled.error.message}`}
-        />
+      />
       <DetailRow
         label="Mode"
         value={
@@ -149,7 +149,7 @@ function Behaviour({ topic: t }: { topic: Topic }) {
         onCheckedChange={(on) => voice.mutate({ voice_replies: on, voice: t.voice })}
         pending={voice.isPending}
         error={voice.error && `Couldn’t save the voice settings. ${voice.error.message}`}
-        />
+      />
       <DetailRow
         label="Voice"
         value={voiceLabel(t.voice)}
