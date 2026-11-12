@@ -317,9 +317,10 @@ function TaskBody({ task }: { task: Task }) {
         </DisclosureButton>
       )}
       {task.last_error && (
-        <p className="flex w-full min-w-0 items-baseline gap-1.5 text-[13px] text-destructive">
-          <span className="shrink-0 font-medium">Last run failed:</span>
-          <ErrorText error={task.last_error} lines={1} className="min-w-0 font-mono text-[12.5px]" />
+        <p className="flex w-full min-w-0 items-baseline gap-1.5 text-[13px] text-mute">
+          <span className="shrink-0 font-medium text-destructive">Last run failed:</span>
+          {/* The E-id stays red; the reason reads as muted prose, not a red wall. */}
+          <ErrorText error={task.last_error} lines={1} className="min-w-0 [&>span:first-child]:text-destructive" />
         </p>
       )}
     </div>
@@ -535,7 +536,15 @@ function NewTaskDialog({ open, onOpenChange, topics }: { open: boolean; onOpenCh
     const found = problems(draft, topics)
     const first = ORDER.find((k) => found[k])
     if (first) {
-      document.getElementById(`new-task-${first}`)?.focus()
+      const field = document.getElementById(`new-task-${first}`)
+      field?.focus()
+      // The topic picker opens its list on focus, which would cover the
+      // Prompt field and its error. Close it once it has opened (its own
+      // Escape handling keeps the dialog open), leaving focus on the field.
+      if (first === 'topic' && field)
+        requestAnimationFrame(() =>
+          field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })),
+        )
       return
     }
     const base = { conversation_id: draft.topic!, prompt: draft.prompt.trim(), title: draft.title.trim() || undefined }

@@ -59,9 +59,29 @@ function MemoryPage() {
       else next[id] = text
       return next
     })
+  // Closing an editor (Save, Cancel, Escape) hands focus back to that
+  // memory's Edit button, never to the page.
+  const [refocus, setRefocus] = useState<number | null>(null)
+  useEffect(() => {
+    if (refocus == null) return
+    // The list re-measures and re-renders the row after the editor closes,
+    // which can replace the button just focused; keep focusing it for a few
+    // frames until it holds.
+    let frame = 0
+    let tries = 0
+    const step = () => {
+      const button = document.querySelector<HTMLElement>(`[data-memory-edit="${refocus}"]`)
+      if (button && document.activeElement !== button) button.focus()
+      if (++tries < 8) frame = requestAnimationFrame(step)
+      else setRefocus(null)
+    }
+    frame = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(frame)
+  }, [refocus])
   const stopEditing = (id: number) => {
     setDraft(id, null)
     setEditing((e) => (e === id ? null : e))
+    setRefocus(id)
   }
   const forget = useForget(all.length)
 
@@ -123,7 +143,7 @@ function MemoryPage() {
                     actions={(m) =>
                       editing === m.id ? null : (
                         <>
-                          <QuietAction onClick={() => setEditing(m.id)} aria-label={`Edit memory #${m.id}`}>
+                          <QuietAction onClick={() => setEditing(m.id)} aria-label={`Edit memory #${m.id}`} data-memory-edit={m.id}>
                             <PencilIcon aria-hidden />
                             {drafts[m.id] != null ? 'Edit (unsaved)' : 'Edit'}
                           </QuietAction>

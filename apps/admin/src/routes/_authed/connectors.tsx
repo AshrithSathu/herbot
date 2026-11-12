@@ -54,7 +54,13 @@ const SERVER_COLUMNS: Column<Server>[] = [
     header: 'Command or address',
     width: 'minmax(10rem,2fr)',
     phone: 'below',
-    cell: (s) => <UserText className="font-mono text-[12.5px] text-mute">{reach(s).where}</UserText>,
+    // Wraps in full (it breaks anywhere), so the whole address or command is
+    // readable on a phone and by keyboard, not only in a hover tooltip.
+    cell: (s) => (
+      <UserText lines="all" className="font-mono text-[12.5px] text-mute">
+        {reach(s).where}
+      </UserText>
+    ),
   },
   { id: 'source', header: 'From', width: '6rem', phone: 'below', cell: (s) => <span className="text-mute">{s.source}</span> },
 ]

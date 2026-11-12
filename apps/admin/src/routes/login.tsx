@@ -66,7 +66,6 @@ function SignInForm() {
     onSuccess: async (result) => {
       if (!result.ok) {
         setWrongTries((n) => n + 1)
-        input.current?.select()
         return
       }
       queryClient.setQueryData(keys.session, { signedIn: true })
@@ -75,6 +74,15 @@ function SignInForm() {
   })
   const wrong = signIn.data && !signIn.data.ok
   const succeeded = signIn.data?.ok === true
+  // After a wrong password, select it once the field is enabled again (it's
+  // disabled while checking, and a disabled input can't take focus), so you
+  // can retype straight away. Keyed on the try count, so each wrong try does it.
+  useEffect(() => {
+    if (wrongTries > 0 && !signIn.isPending) {
+      input.current?.focus()
+      input.current?.select()
+    }
+  }, [wrongTries, signIn.isPending])
   const problem = missing
     ? 'Enter your password.'
     : wrong

@@ -217,8 +217,13 @@ function Group<T>({ tone, title, items, count, more = false, all, itemKey, row }
   const label = more ? null : exact(total)
   return (
     <section className="flex flex-col">
-      <div className="flex min-h-10 items-center gap-3">
-        <Dot tone={tone} />
+      {/* Top-aligned, with the dot in a one-line box: when the heading wraps
+          (phones), the dot stays beside its first line instead of centring
+          between two. */}
+      <div className="flex min-h-10 items-start gap-3 py-2 text-[14px]">
+        <span className="flex h-[1lh] shrink-0 items-center">
+          <Dot tone={tone} />
+        </span>
         <h3 className="min-w-0 flex-1 text-[14px] font-medium">{title(label ?? 'Some')}</h3>
         {total > NAMED &&
           (all ? (

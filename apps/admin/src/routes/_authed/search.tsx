@@ -106,7 +106,7 @@ function SearchPage() {
         <InPlaceError title="Search failed" error={query.error} onRetry={() => void query.refetch()} retrying={query.isRefetching} />
       ) : hits.length === 0 ? (
         <InPlaceEmpty title={`Nothing matches “${clip(q, 60)}”`} action={<Button onClick={() => setDraft('')}>Clear search</Button>}>
-          Search matches whole words. Try fewer words, another spelling, or a phrase in "quotes".
+          Search matches whole words. Try fewer words, another spelling, or a phrase in “quotes”.
         </InPlaceEmpty>
       ) : (
         <div className={cn('flex flex-col gap-2 transition-opacity duration-150 ease-out', query.isPlaceholderData && 'opacity-60')}>

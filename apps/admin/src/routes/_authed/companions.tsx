@@ -10,7 +10,7 @@
 // (with a timer), writing it down, thinking, speaking, failed (with retry),
 // and voice unavailable (no OPENAI_API_KEY: typing still works).
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { MicIcon, MicOffIcon, PhoneIcon, SquareIcon, Volume2Icon, VolumeXIcon, XIcon } from 'lucide-react'
 import { companionReply, createTopic, getMessages, listTopics, type Message as MessageData } from '../../api'
@@ -87,7 +87,10 @@ type Session = { id: number; fallback: boolean; reason?: string }
 // quick revisits, so one companion never gets two topics.
 const opening = new Map<string, Promise<Session>>()
 const creationKeys = new Map<string, string>()
-function openCompanion(c: Companion): Promise<Session> {
+/** Telegram is known to be off: no topic can be created, so asking would only
+ * record an error on every visit. */
+const TELEGRAM_OFF_REASON = 'Telegram is off'
+function openCompanion(c: Companion, botRunning: () => Promise<boolean>): Promise<Session> {
   const existing = opening.get(c.name)
   if (existing) return existing
   const promise = (async (): Promise<Session> => {
@@ -99,6 +102,12 @@ function openCompanion(c: Companion): Promise<Session> {
         throw new Error(`${c.name}’s topic is switched off or not set up. Switch it back on under Topics.`)
       return { id: found.id, fallback: false }
     }
+    const general = () => topics.find((t) => t.is_general && t.enabled && t.setup_state === 'ready')
+    if (!(await botRunning())) {
+      const g = general()
+      if (!g) throw new Error(`${c.name} needs a topic, and Telegram is off, so Herbot can’t make one yet.`)
+      return { id: g.id, fallback: true, reason: TELEGRAM_OFF_REASON }
+    }
     try {
       if (!creationKeys.has(c.name)) creationKeys.set(c.name, crypto.randomUUID())
       const topic = await createTopic({ data: { name, purpose: c.purpose, idempotencyKey: creationKeys.get(c.name)! } })
@@ -107,9 +116,9 @@ function openCompanion(c: Companion): Promise<Session> {
     } catch (e) {
       // No topic of its own (Telegram can't create one): talk through General,
       // sending the character with each message.
-      const general = topics.find((t) => t.is_general && t.enabled && t.setup_state === 'ready')
-      if (!general) throw new Error(`Couldn’t create ${c.name}’s topic (${errorText(e)}), and General isn’t available either.`)
-      return { id: general.id, fallback: true, reason: errorText(e) }
+      const g = general()
+      if (!g) throw new Error(`Couldn’t create ${c.name}’s topic (${errorText(e)}), and General isn’t available either.`)
+      return { id: g.id, fallback: true, reason: errorText(e) }
     }
   })()
   opening.set(c.name, promise)
@@ -152,6 +161,7 @@ function useCall(c: Companion) {
     url?: string
     timer?: ReturnType<typeof setTimeout>
   }>({})
+  const queryClient = useQueryClient()
   const active = useRef(true)
   const busy = useRef(false)
   const generation = useRef(0)
@@ -200,7 +210,13 @@ function useCall(c: Companion) {
     setConnection({ status: 'opening' })
     setPhase('connecting')
     setProblem('')
-    void openCompanion(c)
+    void openCompanion(c, () =>
+      queryClient
+        .ensureQueryData(overviewQuery)
+        .then((o) => o.bot !== null)
+        // Unknown: try, and let a failure fall back as before.
+        .catch(() => true),
+    )
       .then(async (value) => {
         if (disposed) return
         if (!value.fallback) {
@@ -601,7 +617,7 @@ function Conversation({ call, companion: c, onPick }: { call: CallState; compani
           ) : call.messages.length === 0 && !call.failed && call.phase !== 'thinking' ? (
             <InPlaceEmpty title={`Say hello to ${c.name}`} className="my-auto px-0">
               {telegramOff
-                ? `${c.name} can’t reply while Telegram is off. Messages go through once the bot is running.`
+                ? `${c.name} can’t reply while Telegram is off. You can send once the bot is running.`
                 : call.voiceOff
                   ? `Type below. ${VOICE_OFF}`
                   : 'Talk out loud with the microphone, or type below. The conversation also shows in Telegram, like any topic.'}

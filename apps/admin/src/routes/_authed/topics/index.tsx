@@ -10,7 +10,7 @@ import { setEnabled, type Topic } from '../../../api'
 import { compact, exact } from '../../../format'
 import { keys, topicsQuery } from '../../../queries'
 import { fold } from '@/components/hb/agent-list'
-import { Button, SearchInput, Segmented, type Choice } from '@/components/hb/controls'
+import { Button, Checkbox, SearchInput, Segmented, type Choice } from '@/components/hb/controls'
 import { InPlaceEmpty, InPlaceError, ListSkeleton, notify } from '@/components/hb/feedback'
 import { LedgerTable, QuietAction, STRETCH, type Column } from '@/components/hb/rows'
 import { BackToAgents, ShellPage } from '@/components/hb/shell'
@@ -125,16 +125,18 @@ function TopicsPage() {
   const [tableRef, roomy] = useRoomy()
   const shownIds = shown.map((t) => t.id)
   const allShownSelected = shown.length > 0 && shownIds.every(selection.has)
+  const someShownSelected = !allShownSelected && shownIds.some(selection.has)
   const filtering = deferred.trim() !== ''
 
   const columns: Column<Topic>[] = [
     {
       id: 'select',
       header: (
-        <Check
+        <Checkbox
           label={allShownSelected ? 'Clear the selection' : `Select all ${exact(shown.length)} shown`}
           checked={allShownSelected}
-          onChange={() => selection.setMany(shownIds, !allShownSelected)}
+          indeterminate={someShownSelected}
+          onCheckedChange={() => selection.setMany(shownIds, !allShownSelected)}
         />
       ),
       width: '2.75rem',
@@ -142,7 +144,7 @@ function TopicsPage() {
       // When the table is narrow (its own width, not the window's), the
       // checkbox moves into the name cell; see the name column.
       phone: 'hide',
-      cell: (t) => <Check label={`Select ${t.name || 'Untitled'}`} checked={selection.has(t.id)} onChange={() => selection.toggle(t.id)} />,
+      cell: (t) => <Checkbox label={`Select ${t.name || 'Untitled'}`} checked={selection.has(t.id)} onCheckedChange={() => selection.toggle(t.id)} />,
     },
     {
       id: 'name',
@@ -156,7 +158,7 @@ function TopicsPage() {
           {/* Shown exactly when the table folds (its @container under 40rem), so
               selection exists at every width. */}
           <span className="self-center @min-[40rem]:hidden">
-            <Check label={`Select ${t.name || 'Untitled'}`} checked={selection.has(t.id)} onChange={() => selection.toggle(t.id)} />
+            <Checkbox label={`Select ${t.name || 'Untitled'}`} checked={selection.has(t.id)} onCheckedChange={() => selection.toggle(t.id)} />
           </span>
           <Link to="/topics/$id" params={{ id: t.id }} className={`block min-w-0 font-medium outline-none focus-visible:underline ${STRETCH}`}>
             <UserText>{t.name}</UserText>
@@ -293,21 +295,16 @@ function TopicsPage() {
           <p className="text-[13px] text-mute tabular-nums" aria-live="polite">
             {shown.length === all.length ? `${exact(all.length)} topics` : `${exact(shown.length)} of ${exact(all.length)} topics`}
           </p>
-          <LedgerTable label="Topics" rows={shown} columns={columns} rowKey={(t) => t.id} />
+          {/* Selected rows get a subtle tint (the table itself tracks one
+              selected row, so the wrapper tints any row whose box is ticked). */}
+          <div className="contents [&_[data-index]:has(input[type=checkbox]:checked)]:bg-accent-soft/40">
+            <LedgerTable label="Topics" rows={shown} columns={columns} rowKey={(t) => t.id} />
+          </div>
         </div>
       )}
 
       <BulkBar selection={selection} bulk={bulk} all={all} />
     </ShellPage>
-  )
-}
-
-/** A checkbox with a 40px hit area (44px on touch) around a visible 16px box. */
-function Check({ label, checked, onChange }: { label: string; checked: boolean; onChange: () => void }) {
-  return (
-    <label className="relative z-[1] -m-2 grid size-10 shrink-0 cursor-pointer place-items-center pointer-coarse:size-11">
-      <input type="checkbox" checked={checked} onChange={onChange} aria-label={label} className="size-4 cursor-pointer accent-[var(--accent)]" />
-    </label>
   )
 }
 
