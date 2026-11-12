@@ -1,387 +1,90 @@
-import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { useMutation, useQueryClient, useSuspenseInfiniteQuery, useSuspenseQuery } from '@tanstack/react-query'
-import { Link, createFileRoute } from '@tanstack/react-router'
-import { AlarmClockIcon, CheckIcon, ChevronsUpDownIcon, HashIcon, MessageCircleIcon, PauseIcon, PlayIcon, PlusIcon, Trash2Icon, XIcon, ZapIcon } from 'lucide-react'
+// Tasks (docs/design/DECISIONS.md, "Tasks"): one Thread list with a status
+// filter, a "Coming up" line with the next three runs, quiet always-visible
+// actions, and New task as a form dialog. Every page of tasks loads, so the
+// counts are exact and "Coming up" really is the soonest (herbot-core allows
+// at most 50 active tasks).
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
+import { HashIcon, MessageCircleIcon, PauseIcon, PlayIcon, PlusIcon, Trash2Icon, ZapIcon } from 'lucide-react'
 import { changeTask, createTask, type Task, type TaskInput, type Topic } from '../../../api'
-import { charCount, exact, topicStatus, when } from '../../../format'
+import { charCount, exact, when } from '../../../format'
 import { tasksQuery, topicsQuery } from '../../../queries'
-import { EmptyState, ErrorNote, PageHeader, StaleWarning, notify } from '../../../ui'
-import { ClampedText } from '@/components/clamped-text'
+import { Button, Field, Segmented, TextArea, TextInput } from '@/components/hb/controls'
+import { ConfirmDialog, FormDialog } from '@/components/hb/dialogs'
+import { InPlaceEmpty, InPlaceError, ListSkeleton, notify } from '@/components/hb/feedback'
+import { QuietAction, ThreadList } from '@/components/hb/rows'
+import { BackToAgents, ShellPage } from '@/components/hb/shell'
+import { MetaLine, StatusDot, taskTone } from '@/components/hb/status'
+import { TopicPicker } from '@/components/hb/topic-picker'
 import { UserText } from '@/components/user-text'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Sheet, SheetClose, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet'
-import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 
-type Filter = 'all' | 'active' | 'paused' | 'done' | 'cancelled'
-const FILTERS: { value: Filter; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'active', label: 'Active' },
-  { value: 'paused', label: 'Paused' },
-  { value: 'done', label: 'Done' },
-  { value: 'cancelled', label: 'Deleted' },
-]
+type Filter = 'all' | Task['status']
+const FILTERS: Filter[] = ['all', 'active', 'paused', 'done', 'cancelled']
+const LABEL: Record<Filter, string> = { all: 'All', active: 'Active', paused: 'Paused', done: 'Done', cancelled: 'Deleted' }
+const HINT: Record<Filter, string> = {
+  all: 'Every task, newest first.',
+  active: 'Running on their schedule.',
+  paused: 'Kept, but won’t run until you resume them.',
+  done: 'One-off tasks that already ran.',
+  cancelled: 'Deleted tasks, kept for their history.',
+}
 
 export const Route = createFileRoute('/_authed/tasks/')({
   validateSearch: (s: Record<string, unknown>): { status?: Filter } =>
-    FILTERS.some((f) => f.value === s.status) && s.status !== 'all' ? { status: s.status as Filter } : {},
+    FILTERS.includes(s.status as Filter) && s.status !== 'all' ? { status: s.status as Filter } : {},
   loader: async ({ context }) => {
-    await Promise.all([
-      context.queryClient.ensureInfiniteQueryData(tasksQuery),
-      context.queryClient.ensureQueryData(topicsQuery),
-    ])
+    await Promise.all([context.queryClient.ensureInfiniteQueryData(tasksQuery), context.queryClient.ensureQueryData(topicsQuery)])
   },
-  staticData: { crumb: 'Tasks' },
+  staticData: { crumb: 'Tasks', shell: 'page' },
   head: () => ({ meta: [{ title: 'Tasks · Herbot admin' }] }),
   component: TasksPage,
 })
 
-function TasksPage() {
-  const { status = 'all' } = Route.useSearch()
-  const navigate = Route.useNavigate()
-  const { data, error, fetchNextPage, hasNextPage, isFetchingNextPage, isFetchNextPageError } =
-    useSuspenseInfiniteQuery(tasksQuery)
-  const { data: topics } = useSuspenseQuery(topicsQuery)
-  const [creating, setCreating] = useState(false)
-  const tasks = useMemo(() => data.pages.flat(), [data])
-  const byTopic = useMemo(() => new Map(topics.map((t) => [t.id, t])), [topics])
-  const counts = useMemo(() => {
-    const c: Record<Filter, number> = { all: 0, active: 0, paused: 0, done: 0, cancelled: 0 }
-    for (const t of tasks) {
-      c[t.status]++
-      if (t.status !== 'cancelled') c.all++
-    }
-    return c
-  }, [tasks])
-  const shown = tasks.filter((t) => (status === 'all' ? t.status !== 'cancelled' : t.status === status))
-
-  return (
-    <>
-      <PageHeader
-        title="Tasks"
-        description="Reminders and recurring prompts. Each one runs in its topic, and the agent answers there."
-      >
-        <div className="pt-2">
-          <Button onClick={() => setCreating(true)}>
-            <PlusIcon aria-hidden />
-            New task
-          </Button>
-        </div>
-      </PageHeader>
-      <StaleWarning error={error} />
-
-      <div className="flex flex-col gap-4">
-        <div role="group" aria-label="Show tasks" className="flex flex-wrap gap-1">
-          {FILTERS.map((f) => (
-            <button
-              key={f.value}
-              type="button"
-              aria-pressed={status === f.value}
-              onClick={() => void navigate({ search: f.value === 'all' ? {} : { status: f.value }, replace: true })}
-              className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-lg px-3 text-sm text-muted-foreground transition-[color,background-color,scale] duration-150 ease-out outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.96] aria-pressed:bg-secondary aria-pressed:text-foreground md:h-9 [@media(hover:hover)]:hover:text-foreground"
-            >
-              {f.label}
-              <span className="text-xs tabular-nums opacity-70">
-                {exact(counts[f.value])}
-                {hasNextPage ? '+' : ''}
-              </span>
-            </button>
-          ))}
-        </div>
-
-        {shown.length === 0 ? (
-          status === 'all' ? (
-            <EmptyState
-              icon={AlarmClockIcon}
-              title="No tasks yet"
-              action={<Button onClick={() => setCreating(true)}>New task</Button>}
-            >
-              Ask any agent “remind me every morning…”, or create one here.
-            </EmptyState>
-          ) : (
-            <EmptyState icon={AlarmClockIcon} title={`No ${FILTERS.find((f) => f.value === status)?.label.toLowerCase()} tasks`}>
-              {hasNextPage ? 'None among the tasks loaded so far.' : 'Nothing here right now.'}
-            </EmptyState>
-          )
-        ) : (
-          <ol className="flex flex-col gap-3">
-            {shown.map((task) => (
-              <TaskCard key={task.id} task={task} topic={byTopic.get(task.conversation_id)} />
-            ))}
-          </ol>
-        )}
-
-        {hasNextPage ? (
-          <div className="flex flex-col items-center gap-3">
-            {isFetchNextPageError && <ErrorNote title="Couldn’t load older tasks">{error?.message}</ErrorNote>}
-            <Button variant="outline" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()}>
-              {isFetchingNextPage && <Spinner />}
-              {isFetchingNextPage ? 'Loading older tasks…' : `Load older tasks (${exact(tasks.length)} loaded)`}
-            </Button>
-          </div>
-        ) : (
-          tasks.length > 0 && <p className="text-center text-xs text-muted-foreground">That’s every task.</p>
-        )}
-      </div>
-
-      <CreateTaskSheet open={creating} onOpenChange={setCreating} topics={topics} />
-    </>
-  )
-}
-
 // ---------------------------------------------------------------------------
-// One task
+// Data
 
-const STATUS: Record<Task['status'], { label: string; tone: 'success' | 'warning' | 'muted' | 'danger' }> = {
-  active: { label: 'Active', tone: 'success' },
-  paused: { label: 'Paused', tone: 'warning' },
-  done: { label: 'Done', tone: 'muted' },
-  cancelled: { label: 'Deleted', tone: 'danger' },
+/** Every task, page after page, newest first. */
+function useAllTasks() {
+  const q = useInfiniteQuery(tasksQuery)
+  const tasks = useMemo(() => q.data?.pages.flat() ?? [], [q.data])
+  const { hasNextPage, isFetchingNextPage, fetchNextPage, isFetchNextPageError } = q
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage && !isFetchNextPageError) void fetchNextPage()
+  }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage])
+  return { ...q, tasks }
 }
 
-type Action = 'pause' | 'resume' | 'cancel' | 'run'
-
-function TaskCard({ task, topic }: { task: Task; topic: Topic | undefined }) {
-  const client = useQueryClient()
-  const change = useMutation({
-    mutationFn: (action: Action) => changeTask({ data: { id: task.id, action } }),
-    onSuccess: (_task, action) =>
-      notify(
-        action === 'run'
-          ? 'Run requested. It starts within 15 seconds if the topic is ready and on.'
-          : action === 'cancel'
-            ? 'Task deleted.'
-            : action === 'pause'
-              ? 'Task paused.'
-              : 'Task resumed.',
-      ),
-    onSettled: () => client.invalidateQueries({ queryKey: ['tasks'] }),
-  })
-  const pending = change.isPending ? change.variables : null
-  const status = STATUS[task.status]
-  const heading = task.title?.trim() || firstLine(task.prompt)
-  // Without a title the heading already is the prompt's first line; show the
-  // prompt again only if there's more of it.
-  const showPrompt = Boolean(task.title?.trim()) || task.prompt.trim() !== heading
-  const live = task.status === 'active' || task.status === 'paused'
-
-  return (
-    <li className="flex flex-col gap-3 rounded-xl border bg-card px-4 py-4 shadow-xs md:px-5">
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="min-w-0 font-medium leading-snug">
-          <UserText lines={2} fallback="Untitled task">
-            {heading}
-          </UserText>
-        </h3>
-        <Badge variant={status.tone} className="mt-0.5 shrink-0">
-          {status.label}
-        </Badge>
-      </div>
-
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
-        <dt className="text-muted-foreground">Topic</dt>
-        <dd className="min-w-0">
-          {topic ? (
-            <Link to="/topics/$id" params={{ id: topic.id }} className="relative inline-flex max-w-full items-center gap-1 before:absolute before:-inset-x-1 before:-inset-y-3">
-              {topic.is_general ? (
-                <MessageCircleIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-              ) : (
-                <HashIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-              )}
-              <UserText className="min-w-0">{topic.name}</UserText>
-            </Link>
-          ) : (
-            <span className="text-muted-foreground tabular-nums">#{task.conversation_id} (removed)</span>
-          )}
-        </dd>
-        <dt className="text-muted-foreground">Schedule</dt>
-        <dd className="min-w-0">
-          <Schedule task={task} />
-        </dd>
-        {live && (
-          <>
-            <dt className="text-muted-foreground">Next run</dt>
-            <dd className="tabular-nums">
-              {task.status === 'paused' ? (
-                <span className="text-muted-foreground">Paused</span>
-              ) : (
-                <Moment iso={task.next_run_at} />
-              )}
-            </dd>
-          </>
-        )}
-        <dt className="text-muted-foreground">Runs</dt>
-        <dd className="tabular-nums">
-          {task.run_count === 0 ? (
-            <span className="text-muted-foreground">Not run yet</span>
-          ) : (
-            <>
-              {exact(task.run_count)} · last <Moment iso={task.last_run_at} />
-            </>
-          )}
-        </dd>
-      </dl>
-
-      {showPrompt && (
-        <div className="flex flex-col gap-1 rounded-lg bg-muted/50 px-3 py-2.5 text-sm">
-          <ClampedText lines={3} className="user-text max-w-[65ch]" toggleClassName="text-xs">
-            <span dir="auto">{task.prompt}</span>
-          </ClampedText>
-        </div>
-      )}
-
-      {task.last_error && (
-        <div role="note" className="flex flex-col gap-1 rounded-lg border border-destructive/25 bg-destructive-soft px-3 py-2.5 text-sm">
-          <p className="font-medium text-destructive">Last run failed</p>
-          <ClampedText lines={2} className="user-text font-mono text-xs" toggleClassName="text-xs">
-            {task.last_error}
-          </ClampedText>
-        </div>
-      )}
-
-      {change.isError && (
-        <ErrorNote title={`Couldn’t ${change.variables === 'cancel' ? 'delete' : change.variables === 'run' ? 'run' : change.variables} the task`}>
-          {change.error.message}
-        </ErrorNote>
-      )}
-
-      {task.status !== 'cancelled' && (
-        <div className="flex flex-wrap items-center gap-2 border-t pt-3">
-          {live && (
-            <ActionButton
-              icon={task.status === 'active' ? PauseIcon : PlayIcon}
-              pending={pending === 'pause' || pending === 'resume'}
-              disabled={pending != null}
-              onClick={() => change.mutate(task.status === 'active' ? 'pause' : 'resume')}
-            >
-              {task.status === 'active' ? 'Pause' : 'Resume'}
-            </ActionButton>
-          )}
-          <ActionButton icon={ZapIcon} pending={pending === 'run'} disabled={pending != null} onClick={() => change.mutate('run')}>
-            Run now
-          </ActionButton>
-          {/* Destructive, so it sits apart from the everyday actions. */}
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={pending != null}
-                className="ml-auto min-h-11 text-destructive hover:bg-destructive-soft hover:text-destructive md:min-h-9"
-              >
-                {pending === 'cancel' ? <Spinner /> : <Trash2Icon aria-hidden />}
-                Delete
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete this task?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  “<span dir="auto">{clipChars(heading, 80)}</span>” stops running. A run that already started may still
-                  finish.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel autoFocus>Keep task</AlertDialogCancel>
-                <AlertDialogAction
-                  className="bg-destructive text-white hover:bg-[color-mix(in_oklch,var(--destructive)_86%,black)]"
-                  onClick={() => change.mutate('cancel')}
-                >
-                  Delete task
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </div>
-      )}
-    </li>
-  )
-}
-
-function ActionButton({ icon: Icon, pending, disabled, onClick, children }: {
-  icon: typeof PauseIcon
-  pending: boolean
-  disabled: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <Button variant="outline" size="sm" className="min-h-11 md:min-h-9" disabled={disabled} onClick={onClick}>
-      {pending ? <Spinner /> : <Icon aria-hidden />}
-      {children}
-    </Button>
-  )
-}
-
-/** The schedule in words, with the cron itself underneath for precision. */
-function Schedule({ task }: { task: Task }) {
-  if (!task.cron) {
-    return (
-      <span>
-        Once
-        {task.once_at && (
-          <>
-            , <time dateTime={task.once_at} suppressHydrationWarning>{when(task.once_at)}</time>
-          </>
-        )}
-      </span>
-    )
-  }
-  const words = describeCron(task.cron)
-  return (
-    <span className="flex min-w-0 flex-col">
-      <span>{words ?? 'Custom schedule'}</span>
-      <span className="truncate font-mono text-xs text-muted-foreground" title={`${task.cron} (${task.timezone})`}>
-        {task.cron} · {task.timezone}
-      </span>
-    </span>
-  )
-}
-
-/** "in 3 h" / "2 days ago", with the exact time on hover. */
-function Moment({ iso }: { iso: string | null }) {
+/** Re-renders every 30 s so "in 5 min" stays true; null until mounted
+ * (the server renders absolute times, so hydration matches). */
+function useNow(): number | null {
   const [now, setNow] = useState<number | null>(null)
   useEffect(() => {
     setNow(Date.now())
     const id = setInterval(() => setNow(Date.now()), 30_000)
     return () => clearInterval(id)
   }, [])
-  if (!iso) return <span className="text-muted-foreground">—</span>
-  return (
-    <time dateTime={iso} title={when(iso)} suppressHydrationWarning>
-      {now == null ? when(iso) : fromNow(iso, now)}
-    </time>
-  )
-}
-
-function fromNow(iso: string, now: number): string {
-  const seconds = Math.round((new Date(iso).getTime() - now) / 1000)
-  const future = seconds > 0
-  const abs = Math.abs(seconds)
-  const span =
-    abs < 60 ? null : abs < 3600 ? `${Math.round(abs / 60)} min` : abs < 172_800 ? `${Math.round(abs / 3600)} h` : `${Math.round(abs / 86_400)} days`
-  if (!span) return future ? 'in under a minute' : 'just now'
-  return future ? `in ${span}` : `${span} ago`
+  return now
 }
 
 // ---------------------------------------------------------------------------
-// Cron in words (herbot-core uses five-field cron: minute hour day month weekday)
+// Words
+
+function firstLine(text: string): string {
+  return text.split('\n').find((l) => l.trim())?.trim() ?? ''
+}
+
+/** A task's name: its title, or the first line of its prompt. */
+function taskName(task: Task): string {
+  return task.title?.trim() || firstLine(task.prompt)
+}
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 const DAY_NAMES: Record<string, number> = { SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6 }
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const isNum = (s: string) => /^\d+$/.test(s)
+const pad = (n: string) => n.padStart(2, '0')
 
 function dayNumber(token: string): number | null {
   const upper = token.toUpperCase()
@@ -401,9 +104,8 @@ function weekdays(field: string): string | null {
   return `${days.slice(0, -1).map((d) => `${DAYS[d]}s`).join(', ')} and ${DAYS[days.at(-1)!]}s`
 }
 
-const isNum = (s: string) => /^\d+$/.test(s)
-const pad = (n: string) => n.padStart(2, '0')
-
+/** A five-field cron in words, or null when it doesn't read simply. */
+// Exported only for the Stage 2 rows prototype (src/proto/rows/data.tsx); drop the export with src/proto.
 export function describeCron(cron: string): string | null {
   const parts = cron.trim().split(/\s+/)
   if (parts.length !== 5) return null
@@ -414,9 +116,7 @@ export function describeCron(cron: string): string | null {
     return n === 1 ? 'Every minute' : `Every ${n} minutes`
   }
   if (isNum(min) && hour === '*' && dom === '*' && month === '*' && dow === '*') return `Every hour at :${pad(min)}`
-  if (isNum(min) && every.test(hour) && dom === '*' && month === '*' && dow === '*') {
-    return `Every ${hour.match(every)![1]} hours at :${pad(min)}`
-  }
+  if (isNum(min) && every.test(hour) && dom === '*' && month === '*' && dow === '*') return `Every ${hour.match(every)![1]} hours at :${pad(min)}`
   if (!isNum(min) || !isNum(hour)) return null
   const at = `${pad(hour)}:${pad(min)}`
   if (dom === '*' && month === '*') {
@@ -427,45 +127,355 @@ export function describeCron(cron: string): string | null {
   if (dow !== '*') return null
   if (dom.toUpperCase() === 'L' && month === '*') return `Last day of every month at ${at}`
   if (isNum(dom) && month === '*') return `Day ${Number(dom)} of every month at ${at}`
-  if (isNum(dom) && isNum(month) && Number(month) >= 1 && Number(month) <= 12) {
-    return `Every ${Number(dom)} ${MONTHS[Number(month) - 1]} at ${at}`
-  }
+  if (isNum(dom) && isNum(month) && Number(month) >= 1 && Number(month) <= 12) return `Every ${Number(dom)} ${MONTHS[Number(month) - 1]} at ${at}`
   return null
 }
 
-function firstLine(text: string): string {
-  return text.split('\n').find((l) => l.trim())?.trim() ?? ''
+/** "Weekdays at 09:00", "Once, 23 Nov 2026, 01:44", or "Custom schedule". */
+function scheduleWords(task: Task): string {
+  if (!task.cron) return task.once_at ? `Once, ${when(task.once_at)}` : 'Once'
+  return describeCron(task.cron) ?? 'Custom schedule'
 }
 
-function clipChars(text: string, max: number): string {
-  const chars = Array.from(text)
-  return chars.length > max ? `${chars.slice(0, max - 1).join('')}…` : text
+function fromNow(iso: string, now: number): string {
+  const seconds = Math.round((new Date(iso).getTime() - now) / 1000)
+  const abs = Math.abs(seconds)
+  const span = abs < 60 ? null : abs < 3600 ? `${Math.round(abs / 60)} min` : abs < 172_800 ? `${Math.round(abs / 3600)} h` : `${Math.round(abs / 86_400)} days`
+  if (!span) return seconds > 0 ? 'in under a minute' : 'just now'
+  return seconds > 0 ? `in ${span}` : `${span} ago`
+}
+
+/** Relative time with the exact time on hover; absolute until mounted. */
+function Moment({ iso, now }: { iso: string; now: number | null }) {
+  return (
+    <time dateTime={iso} title={when(iso)} suppressHydrationWarning className="tabular-nums">
+      {now == null ? when(iso) : fromNow(iso, now)}
+    </time>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The page
+
+function TasksPage() {
+  const { status } = Route.useSearch()
+  const filter: Filter = status ?? 'all'
+  const navigate = useNavigate({ from: Route.fullPath })
+  const setFilter = (f: Filter) => void navigate({ search: f === 'all' ? {} : { status: f }, replace: true })
+  const q = useAllTasks()
+  const topics = useQuery(topicsQuery)
+  const byId = useMemo(() => new Map((topics.data ?? []).map((t) => [t.id, t])), [topics.data])
+  const now = useNow()
+  const [creating, setCreating] = useState(false)
+  // Counts are exact once every page is in; until then they say "+".
+  const more = q.hasNextPage ? '+' : ''
+  const counts = useMemo(() => {
+    const c: Record<Filter, number> = { all: q.tasks.length, active: 0, paused: 0, done: 0, cancelled: 0 }
+    for (const t of q.tasks) c[t.status]++
+    return c
+  }, [q.tasks])
+  const shown = useMemo(() => (filter === 'all' ? q.tasks : q.tasks.filter((t) => t.status === filter)), [q.tasks, filter])
+  const options = FILTERS.map((f) => ({ value: f, label: `${LABEL[f]} ${exact(counts[f])}${more}`, hint: HINT[f] }))
+  const newTask = (
+    <Button variant="primary" onClick={() => setCreating(true)}>
+      <PlusIcon aria-hidden />
+      New task
+    </Button>
+  )
+
+  return (
+    <ShellPage
+      title="Tasks"
+      description="Reminders and recurring prompts. Each one runs in its topic, and the agent answers there."
+      back={<BackToAgents />}
+      actions={q.tasks.length > 0 ? newTask : undefined}
+    >
+      {q.isPending ? (
+        <ListSkeleton rows={6} />
+      ) : q.isError && q.tasks.length === 0 ? (
+        <InPlaceError title="Couldn’t load tasks" error={q.error} onRetry={() => q.refetch()} retrying={q.isRefetching} />
+      ) : q.tasks.length === 0 ? (
+        <InPlaceEmpty title="No tasks yet" action={newTask}>
+          A task is a prompt that runs in a topic on a schedule, like “every weekday at 9, summarise yesterday”. Agents also add them when
+          you ask in a topic.
+        </InPlaceEmpty>
+      ) : (
+        <div className="flex flex-col gap-6">
+          {(filter === 'all' || filter === 'active') && <ComingUp tasks={q.tasks} complete={!q.hasNextPage} byId={byId} now={now} />}
+          <div className="flex flex-col gap-4">
+            <Segmented label="Show" value={filter} options={options} onValueChange={setFilter} />
+            {shown.length === 0 && !q.hasNextPage ? (
+              <InPlaceEmpty
+                title={`No ${LABEL[filter].toLowerCase()} tasks`}
+                action={
+                  <Button variant="secondary" onClick={() => setFilter('all')}>
+                    Show all tasks
+                  </Button>
+                }
+              />
+            ) : (
+              <ThreadList
+                // The kit's virtualizer caches row heights by index: remount when
+                // rows come or go (filter, delete) so heights follow the rows.
+                key={`${filter}:${shown.length}`}
+                label={`${LABEL[filter]} tasks`}
+                items={shown}
+                itemKey={(t) => t.id}
+                estimate={150}
+                title={(t) => <TaskTitle task={t} />}
+                aside={(t) => <StatusDot status={taskTone(t.status)} dense />}
+                body={(t) => <TaskBody task={t} />}
+                meta={(t) => <TaskMeta task={t} topic={byId.get(t.conversation_id)} now={now} />}
+                actions={(t) => <TaskActions task={t} />}
+                footer={<PagesFooter q={q} />}
+              />
+            )}
+          </div>
+        </div>
+      )}
+      <NewTaskDialog open={creating} onOpenChange={setCreating} topics={topics.data ?? []} />
+    </ShellPage>
+  )
+}
+
+/** The next three runs, soonest first. */
+function ComingUp({ tasks, complete, byId, now }: { tasks: Task[]; complete: boolean; byId: Map<number, Topic>; now: number | null }) {
+  const next = useMemo(
+    () =>
+      tasks
+        .filter((t) => t.status === 'active' && t.next_run_at)
+        .sort((a, b) => a.next_run_at!.localeCompare(b.next_run_at!))
+        .slice(0, 3),
+    [tasks],
+  )
+  if (next.length === 0) return null
+  return (
+    <section aria-labelledby="coming-up" className="flex flex-col gap-1.5">
+      <h2 id="coming-up" className="text-[12px] font-semibold tracking-[0.06em] text-mute uppercase">
+        Coming up{!complete && <span className="font-normal tracking-normal normal-case"> · checking every task…</span>}
+      </h2>
+      <ol className="flex flex-col border-y border-line">
+        {next.map((t) => (
+          <li key={t.id} className="flex min-w-0 items-baseline gap-3 border-b border-line py-2 last:border-b-0">
+            <span className="w-[9ch] shrink-0 text-[13px] font-medium text-ink">
+              {now != null && new Date(t.next_run_at!).getTime() <= now ? (
+                // Past its time: the scheduler should have run it (or will at
+                // its next tick, every 15 s); say so instead of "35 min ago".
+                <span className="text-warning" title={`Was due ${when(t.next_run_at!)}`}>
+                  Overdue
+                </span>
+              ) : (
+                <Moment iso={t.next_run_at!} now={now} />
+              )}
+            </span>
+            <UserText className="min-w-0 flex-1 text-[14px]">{taskName(t)}</UserText>
+            <span className="hidden max-w-[22ch] min-w-0 text-[12.5px] text-faint sm:block">
+              <TopicLink topic={byId.get(t.conversation_id)} />
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Row parts
+
+function TopicLink({ topic }: { topic: Topic | undefined }) {
+  if (!topic) return <span className="italic">a deleted topic</span>
+  const Icon = topic.is_general ? MessageCircleIcon : HashIcon
+  return (
+    <Link
+      to="/topics/$id"
+      params={{ id: topic.id }}
+      className="relative z-[1] inline-flex max-w-[24ch] min-w-0 items-center gap-1 align-bottom text-mute underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 hover:text-ink hover:underline"
+    >
+      <Icon aria-hidden className="size-3 shrink-0" />
+      <UserText className="min-w-0">{topic.name}</UserText>
+    </Link>
+  )
+}
+
+function TaskTitle({ task }: { task: Task }) {
+  return (
+    <UserText lines={2} className={cn('text-[15px] font-medium', task.status === 'cancelled' && 'text-mute line-through decoration-1')}>
+      {taskName(task)}
+    </UserText>
+  )
+}
+
+/** The prompt when it says more than the title (two lines, the rest on
+ * request), then the last run's failure. */
+function TaskBody({ task }: { task: Task }) {
+  const [open, setOpen] = useState(false)
+  const repeatsTitle = !task.title?.trim() && task.prompt.trim() === firstLine(task.prompt)
+  const long = charCount(task.prompt) > 160 || task.prompt.includes('\n')
+  if (repeatsTitle && !task.last_error) return null
+  return (
+    <div className="flex flex-col items-start gap-1.5">
+      {!repeatsTitle && (
+        <>
+          <UserText as="p" lines={open ? 'all' : 2} className={cn('text-[14px] text-mute', open && 'max-h-80 overflow-y-auto pr-2')}>
+            {task.prompt}
+          </UserText>
+          {long && (
+            <button
+              type="button"
+              aria-expanded={open}
+              onClick={() => setOpen((o) => !o)}
+              className="relative z-[1] text-[13px] font-medium text-ink underline-offset-2 before:absolute before:-inset-x-2 before:-inset-y-3 hover:underline"
+            >
+              {open ? 'Show less' : `Show the whole prompt (${exact(charCount(task.prompt))} characters)`}
+            </button>
+          )}
+        </>
+      )}
+      {task.last_error && (
+        <p className="flex w-full min-w-0 items-baseline gap-1.5 text-[13px] text-destructive">
+          <span className="shrink-0 font-medium">Last run failed:</span>
+          <UserText className="min-w-0 font-mono text-[12.5px]">{task.last_error}</UserText>
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** Small facts: topic · schedule · raw cron when it doesn't read simply ·
+ * next run · runs. */
+function TaskMeta({ task, topic, now }: { task: Task; topic: Topic | undefined; now: number | null }) {
+  const words = scheduleWords(task)
+  const live = task.status === 'active' || task.status === 'paused'
+  const due = now != null && task.next_run_at != null && new Date(task.next_run_at).getTime() <= now
+  return (
+    <MetaLine>
+      {[
+        <TopicLink key="topic" topic={topic} />,
+        <span key="schedule" title={task.cron ? `${task.cron} (${task.timezone})` : undefined}>
+          {words}
+        </span>,
+        task.cron && words === 'Custom schedule' ? (
+          <span key="cron" className="max-w-full truncate font-mono text-[12px]">
+            {task.cron} · {task.timezone}
+          </span>
+        ) : null,
+        live && task.next_run_at ? (
+          <span key="next">
+            {task.status === 'paused' ? 'would run ' : due ? 'due ' : 'next '}
+            <Moment iso={task.next_run_at} now={now} />
+          </span>
+        ) : null,
+        <span key="runs" className="tabular-nums">
+          {task.run_count === 0 ? 'not run yet' : `ran ${exact(task.run_count)}×`}
+        </span>,
+      ]}
+    </MetaLine>
+  )
+}
+
+type TaskAction = 'pause' | 'resume' | 'cancel' | 'run'
+const DONE: Record<TaskAction, string> = { pause: 'Task paused.', resume: 'Task resumed.', run: 'Task queued to run now.', cancel: 'Task deleted.' }
+const VERB: Record<TaskAction, string> = { pause: 'pause it', resume: 'resume it', run: 'run it', cancel: 'delete it' }
+
+/** Pause or Resume, Run now, and a separated Delete…; each shows its own
+ * pending state, and a failure shows on the row. Delete is confirmed. */
+function TaskActions({ task }: { task: Task }) {
+  const client = useQueryClient()
+  const [confirm, setConfirm] = useState(false)
+  const act = useMutation({
+    mutationFn: (action: TaskAction) => changeTask({ data: { id: task.id, action } }),
+    onSuccess: async (_t, action) => {
+      setConfirm(false)
+      notify(DONE[action])
+      await client.invalidateQueries({ queryKey: tasksQuery.queryKey })
+    },
+  })
+  const pending = act.isPending ? act.variables : null
+  if (task.status === 'cancelled') return null
+  return (
+    <>
+      {task.status === 'active' && (
+        <QuietAction onClick={() => act.mutate('pause')} pending={pending === 'pause'} disabled={act.isPending}>
+          <PauseIcon aria-hidden />
+          Pause
+        </QuietAction>
+      )}
+      {task.status === 'paused' && (
+        <QuietAction onClick={() => act.mutate('resume')} pending={pending === 'resume'} disabled={act.isPending}>
+          <PlayIcon aria-hidden />
+          Resume
+        </QuietAction>
+      )}
+      <QuietAction onClick={() => act.mutate('run')} pending={pending === 'run'} disabled={act.isPending}>
+        <ZapIcon aria-hidden />
+        Run now
+      </QuietAction>
+      <span aria-hidden className="ml-auto" />
+      <QuietAction tone="danger" onClick={() => setConfirm(true)} disabled={act.isPending}>
+        <Trash2Icon aria-hidden />
+        Delete…
+      </QuietAction>
+      {act.isError && act.variables !== 'cancel' && (
+        <p role="alert" className="basis-full px-2 text-[12.5px] text-destructive">
+          Couldn’t {VERB[act.variables]}: {act.error.message}
+        </p>
+      )}
+      <ConfirmDialog
+        open={confirm}
+        onOpenChange={(o) => {
+          setConfirm(o)
+          if (!o && act.variables === 'cancel') act.reset()
+        }}
+        title="Delete this task?"
+        subject={taskName(task)}
+        consequences={['Stops its schedule; it won’t run again', 'Moves it to Deleted']}
+        keeps="Replies it already posted stay in its topic."
+        actionLabel="Delete task"
+        keepLabel="Keep the task"
+        guard={{ kind: 'separated' }}
+        pending={pending === 'cancel'}
+        error={act.isError && act.variables === 'cancel' ? act.error : null}
+        onConfirm={() => act.mutate('cancel')}
+      />
+    </>
+  )
+}
+
+/** "Loading every task… 150 so far" while pages arrive; Retry if one fails. */
+function PagesFooter({ q }: { q: ReturnType<typeof useAllTasks> }) {
+  if (q.isFetchNextPageError) {
+    return (
+      <div role="alert" className="flex flex-wrap items-center gap-3 px-1 py-4 text-[13px] text-destructive">
+        Couldn’t load older tasks: {q.error?.message}
+        <Button size="sm" variant="secondary" onClick={() => q.fetchNextPage()}>
+          Retry
+        </Button>
+      </div>
+    )
+  }
+  if (!q.hasNextPage) return null
+  return (
+    <p role="status" className="px-1 py-4 text-[13px] text-mute">
+      Loading older tasks… {exact(q.tasks.length)} so far
+    </p>
+  )
 }
 
 // ---------------------------------------------------------------------------
 // New task
 
 type Repeat = 'once' | 'daily' | 'weekly' | 'custom'
-const REPEATS: { value: Repeat; label: string }[] = [
-  { value: 'once', label: 'Once' },
-  { value: 'daily', label: 'Every day' },
-  { value: 'weekly', label: 'Every week' },
-  { value: 'custom', label: 'Custom' },
-]
+const REPEATS = [
+  { value: 'once', label: 'Once', hint: 'Runs one time, at the moment you pick.' },
+  { value: 'daily', label: 'Every day', hint: 'Runs every day at the same time.' },
+  { value: 'weekly', label: 'Every week', hint: 'Runs on one weekday at the same time.' },
+  { value: 'custom', label: 'Custom', hint: 'A five-field cron: minute hour day month weekday.' },
+] as const
 const TITLE_MAX = 200
 const PROMPT_MAX = 16_000
+const ZONES = ['Asia/Kolkata', 'UTC', 'Europe/London', 'Europe/Berlin', 'America/New_York', 'America/Los_Angeles', 'Asia/Singapore', 'Asia/Tokyo', 'Australia/Sydney']
 
-type Draft = {
-  topic: number | null
-  title: string
-  prompt: string
-  repeat: Repeat
-  when: string
-  time: string
-  weekday: string
-  cron: string
-  timezone: string
-}
+type Draft = { topic: number | null; title: string; prompt: string; repeat: Repeat; when: string; time: string; weekday: string; cron: string; timezone: string }
 
 function browserZone(): string {
   try {
@@ -491,7 +501,7 @@ function cronOf(d: Draft): string {
   return d.cron.trim()
 }
 
-/** Problems by field, worked out the way herbot-core checks them. */
+/** Problems by field, checked the way herbot-core checks them (tasks.rs). */
 function problems(d: Draft, topics: Topic[]): Partial<Record<keyof Draft, string>> {
   const p: Partial<Record<keyof Draft, string>> = {}
   if (d.topic == null || !topics.some((t) => t.id === d.topic)) p.topic = 'Pick the topic this task runs in.'
@@ -505,42 +515,31 @@ function problems(d: Draft, topics: Topic[]): Partial<Record<keyof Draft, string
     else if (at.getTime() <= Date.now()) p.when = 'Pick a time in the future.'
   } else {
     if ((d.repeat === 'daily' || d.repeat === 'weekly') && !/^\d{1,2}:\d{2}$/.test(d.time)) p.time = 'Pick a time.'
-    if (d.repeat === 'custom' && d.cron.trim().split(/\s+/).length !== 5) {
-      p.cron = 'Use five fields: minute hour day month weekday, like 0 9 * * 1-5.'
-    }
+    if (d.repeat === 'custom' && d.cron.trim().split(/\s+/).length !== 5) p.cron = 'Use five fields: minute hour day month weekday, like 0 9 * * 1-5.'
     if (!d.timezone.trim()) p.timezone = 'Pick a time zone, like Asia/Kolkata.'
-    else if (!validZone(d.timezone.trim())) p.timezone = `“${clipChars(d.timezone.trim(), 40)}” isn’t a time zone. Try Asia/Kolkata or Europe/London.`
+    else if (!validZone(d.timezone.trim())) p.timezone = 'That isn’t a time zone. Try Asia/Kolkata or Europe/London.'
   }
   return p
 }
 
-function CreateTaskSheet({ open, onOpenChange, topics }: { open: boolean; onOpenChange: (open: boolean) => void; topics: Topic[] }) {
+const ORDER = ['topic', 'prompt', 'title', 'when', 'time', 'cron', 'timezone'] as const
+
+function NewTaskDialog({ open, onOpenChange, topics }: { open: boolean; onOpenChange: (open: boolean) => void; topics: Topic[] }) {
   const client = useQueryClient()
-  const empty = (): Draft => ({
-    topic: null,
-    title: '',
-    prompt: '',
-    repeat: 'once',
-    when: '',
-    time: '09:00',
-    weekday: '1',
-    cron: '',
-    timezone: browserZone(),
-  })
+  const empty = (): Draft => ({ topic: null, title: '', prompt: '', repeat: 'once', when: '', time: '09:00', weekday: '1', cron: '', timezone: browserZone() })
   const [draft, setDraft] = useState<Draft>(empty)
-  // Errors show after the first try, then update as you fix them.
+  // Errors appear after the first submit, then follow your edits.
   const [tried, setTried] = useState(false)
   const errors = tried ? problems(draft, topics) : {}
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }))
-
   const create = useMutation({
     mutationFn: (data: TaskInput) => createTask({ data }),
     onSuccess: async () => {
-      notify('Task created.')
+      notify('Task created. It runs in its topic on schedule.')
       onOpenChange(false)
       setDraft(empty())
       setTried(false)
-      await client.invalidateQueries({ queryKey: ['tasks'] })
+      await client.invalidateQueries({ queryKey: tasksQuery.queryKey })
     },
   })
 
@@ -549,403 +548,119 @@ function CreateTaskSheet({ open, onOpenChange, topics }: { open: boolean; onOpen
     if (create.isPending) return
     setTried(true)
     const found = problems(draft, topics)
-    if (Object.keys(found).length > 0) {
-      // Take the user to the first thing to fix.
-      const first = (['topic', 'prompt', 'title', 'when', 'time', 'cron', 'timezone'] as const).find((k) => found[k])
-      if (first) document.getElementById(`task-${first}`)?.focus()
+    const first = ORDER.find((k) => found[k])
+    if (first) {
+      document.getElementById(`new-task-${first}`)?.focus()
       return
     }
     const base = { conversation_id: draft.topic!, prompt: draft.prompt.trim(), title: draft.title.trim() || undefined }
     create.mutate(
-      draft.repeat === 'once'
-        ? { ...base, when: new Date(draft.when).toISOString() }
-        : { ...base, cron: cronOf(draft), timezone: draft.timezone.trim() },
+      draft.repeat === 'once' ? { ...base, when: new Date(draft.when).toISOString() } : { ...base, cron: cronOf(draft), timezone: draft.timezone.trim() },
     )
   }
 
-  const preview = draft.repeat === 'once' ? null : describeCron(cronOf(draft))
-  const zones = useMemo(() => {
-    try {
-      return Intl.supportedValuesOf('timeZone')
-    } catch {
-      return []
-    }
-  }, [])
-
+  const preview = draft.repeat === 'custom' && draft.cron.trim() ? describeCron(draft.cron) : null
   return (
-    <Sheet open={open} onOpenChange={(next) => !create.isPending && onOpenChange(next)}>
-      <SheetContent
-        side="right"
-        showCloseButton={false}
-        className="w-full gap-0 p-0 sm:max-w-lg"
-        // On a phone, don't pop the keyboard the moment the sheet opens.
-        onOpenAutoFocus={(e) => matchMedia('(pointer: coarse)').matches && e.preventDefault()}
+    <FormDialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) create.reset()
+        onOpenChange(o)
+      }}
+      title="New task"
+      description="A prompt that runs in a topic on a schedule; the agent answers there."
+      submitLabel="Create task"
+      pendingLabel="Creating…"
+      onSubmit={submit}
+      pending={create.isPending}
+      error={create.error}
+    >
+      <Field id="new-task-topic" label="Topic" error={errors.topic}>
+        {(p) => (
+          <TopicPicker
+            {...p}
+            topics={topics}
+            value={draft.topic}
+            onChange={(id) => set('topic', id)}
+            warnUnready={(label) => `This topic is ${label.toLowerCase()}; the task runs once it’s on and set up.`}
+          />
+        )}
+      </Field>
+      <Field id="new-task-prompt" label="What the agent should do" error={errors.prompt} counter={{ count: charCount(draft.prompt), max: PROMPT_MAX }}>
+        {(p) => (
+          <TextArea {...p} value={draft.prompt} onChange={(e) => set('prompt', e.target.value)} placeholder="Summarise yesterday’s messages in this topic" className="min-h-24" />
+        )}
+      </Field>
+      <Field
+        id="new-task-title"
+        label="Title (optional)"
+        error={errors.title}
+        hint="Shown in the list; otherwise the prompt’s first line is."
+        counter={{ count: charCount(draft.title), max: TITLE_MAX }}
       >
-        <form noValidate onSubmit={submit} className="flex h-full min-h-0 flex-col">
-          <div className="flex items-start justify-between gap-3 border-b px-5 py-4">
-            <div className="flex flex-col gap-1">
-              <SheetTitle className="text-lg font-semibold tracking-tight">New task</SheetTitle>
-              <SheetDescription>The agent in the topic runs the prompt on schedule and answers there.</SheetDescription>
-            </div>
-            <SheetClose asChild>
-              <Button type="button" variant="ghost" size="icon" className="-mr-2 size-11 shrink-0 md:size-9" aria-label="Close">
-                <XIcon aria-hidden />
-              </Button>
-            </SheetClose>
-          </div>
-
-          <fieldset disabled={create.isPending} className="scroller flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
-            <FormField id="task-topic" label="Topic" error={errors.topic}>
-              <TopicPicker
-                id="task-topic"
-                topics={topics}
-                value={draft.topic}
-                invalid={Boolean(errors.topic)}
-                onChange={(id) => set('topic', id)}
-              />
-            </FormField>
-
-            <FormField
-              id="task-prompt"
-              label="What should the agent do?"
-              error={errors.prompt}
-              hint={`${exact(charCount(draft.prompt))} / ${exact(PROMPT_MAX)}`}
-            >
-              <textarea
-                id="task-prompt"
-                value={draft.prompt}
-                onChange={(e) => set('prompt', e.target.value)}
-                onKeyDown={(e) => {
-                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                    e.preventDefault()
-                    submit()
-                  }
-                }}
-                rows={5}
-                dir="auto"
-                placeholder="Summarise yesterday’s news about Rust, with links."
-                aria-invalid={Boolean(errors.prompt)}
-                aria-describedby={errors.prompt ? 'task-prompt-error' : undefined}
-                className={cn(fieldClass, 'min-h-28 resize-y py-2.5 leading-relaxed')}
-              />
-            </FormField>
-
-            <FormField id="task-title" label="Title" optional error={errors.title}>
-              <input
-                id="task-title"
-                value={draft.title}
-                onChange={(e) => set('title', e.target.value)}
-                dir="auto"
-                autoComplete="off"
-                placeholder="Morning Rust news"
-                aria-invalid={Boolean(errors.title)}
-                aria-describedby={errors.title ? 'task-title-error' : undefined}
-                className={fieldClass}
-              />
-            </FormField>
-
-            <fieldset className="flex flex-col gap-2">
-              <legend className="mb-2 text-sm font-medium">Repeat</legend>
-              <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1 sm:grid-cols-4">
-                {REPEATS.map((r) => (
-                  <label
-                    key={r.value}
-                    className="relative grid h-11 cursor-pointer place-items-center rounded-md text-sm text-muted-foreground transition-[color,background-color] duration-150 has-checked:bg-card has-checked:text-foreground has-checked:shadow-xs has-focus-visible:ring-2 has-focus-visible:ring-ring md:h-9"
-                  >
-                    <input
-                      type="radio"
-                      name="repeat"
-                      value={r.value}
-                      checked={draft.repeat === r.value}
-                      onChange={() => set('repeat', r.value)}
-                      className="sr-only"
-                    />
-                    {r.label}
-                  </label>
-                ))}
-              </div>
-            </fieldset>
-
-            {draft.repeat === 'once' && (
-              <FormField id="task-when" label="Date and time" error={errors.when} hint={`Your time: ${browserZone()}`}>
-                <input
-                  id="task-when"
-                  type="datetime-local"
-                  value={draft.when}
-                  onChange={(e) => set('when', e.target.value)}
-                  aria-invalid={Boolean(errors.when)}
-                  aria-describedby={errors.when ? 'task-when-error' : undefined}
-                  className={fieldClass}
-                />
-              </FormField>
-            )}
-
-            {(draft.repeat === 'daily' || draft.repeat === 'weekly') && (
-              <div className="grid gap-4 sm:grid-cols-2">
-                {draft.repeat === 'weekly' && (
-                  <FormField id="task-weekday" label="Day">
-                    <select
-                      id="task-weekday"
-                      value={draft.weekday}
-                      onChange={(e) => set('weekday', e.target.value)}
-                      className={fieldClass}
-                    >
-                      {[1, 2, 3, 4, 5, 6, 0].map((d) => (
-                        <option key={d} value={String(d)}>
-                          {DAYS[d]}
-                        </option>
-                      ))}
-                    </select>
-                  </FormField>
-                )}
-                <FormField id="task-time" label="Time" error={errors.time}>
-                  <input
-                    id="task-time"
-                    type="time"
-                    value={draft.time}
-                    onChange={(e) => set('time', e.target.value)}
-                    aria-invalid={Boolean(errors.time)}
-                    aria-describedby={errors.time ? 'task-time-error' : undefined}
-                    className={fieldClass}
-                  />
-                </FormField>
-              </div>
-            )}
-
-            {draft.repeat === 'custom' && (
-              <FormField
-                id="task-cron"
-                label="Cron schedule"
-                error={errors.cron}
-                hint="minute hour day month weekday · 0 9 * * 1-5 is weekdays at 09:00"
-              >
-                <input
-                  id="task-cron"
-                  value={draft.cron}
-                  onChange={(e) => set('cron', e.target.value)}
-                  spellCheck={false}
-                  autoComplete="off"
-                  autoCapitalize="off"
-                  placeholder="0 9 * * 1-5"
-                  aria-invalid={Boolean(errors.cron)}
-                  aria-describedby={errors.cron ? 'task-cron-error' : undefined}
-                  className={cn(fieldClass, 'font-mono')}
-                />
-              </FormField>
-            )}
-
-            {draft.repeat !== 'once' && (
-              <>
-                <FormField id="task-timezone" label="Time zone" error={errors.timezone}>
-                  <input
-                    id="task-timezone"
-                    list="task-zones"
-                    value={draft.timezone}
-                    onChange={(e) => set('timezone', e.target.value)}
-                    spellCheck={false}
-                    autoComplete="off"
-                    autoCapitalize="off"
-                    aria-invalid={Boolean(errors.timezone)}
-                    aria-describedby={errors.timezone ? 'task-timezone-error' : undefined}
-                    className={fieldClass}
-                  />
-                  <datalist id="task-zones">
-                    {zones.map((z) => (
-                      <option key={z} value={z} />
-                    ))}
-                  </datalist>
-                </FormField>
-                <p className="-mt-2 text-sm text-muted-foreground" aria-live="polite">
-                  {preview ? `${preview}, ${draft.timezone.trim() || 'no time zone'}.` : draft.repeat === 'custom' && draft.cron.trim() ? 'A custom schedule.' : ''}
-                </p>
-              </>
-            )}
-
-            {create.isError && <ErrorNote title="Couldn’t create the task">{create.error.message}</ErrorNote>}
-          </fieldset>
-
-          <div className="flex items-center justify-end gap-2 border-t px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-            <SheetClose asChild>
-              <Button type="button" variant="ghost" disabled={create.isPending}>
-                Cancel
-              </Button>
-            </SheetClose>
-            <Button type="submit" disabled={create.isPending} title="Create task (⌘/Ctrl + Enter in the prompt)">
-              {create.isPending && <Spinner />}
-              {create.isPending ? 'Creating…' : 'Create task'}
-            </Button>
-          </div>
-        </form>
-      </SheetContent>
-    </Sheet>
-  )
-}
-
-const fieldClass =
-  'h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 text-base shadow-xs outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30 disabled:bg-muted disabled:text-muted-foreground aria-invalid:border-destructive aria-invalid:ring-destructive/20 md:h-10 md:text-sm'
-
-function FormField({ id, label, optional = false, hint, error, children }: {
-  id: string
-  label: string
-  optional?: boolean
-  hint?: string
-  error?: string
-  children: ReactNode
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-baseline justify-between gap-3">
-        <label htmlFor={id} className="text-sm font-medium">
-          {label}
-          {optional && <span className="ml-1.5 font-normal text-muted-foreground">optional</span>}
-        </label>
-        {hint && <span className="truncate text-xs text-muted-foreground tabular-nums">{hint}</span>}
-      </div>
-      {children}
-      {error && (
-        <p id={`${id}-error`} className="flex items-start gap-1.5 text-sm text-destructive">
-          <span aria-hidden className="mt-[0.45em] size-1.5 shrink-0 rounded-full bg-current" />
-          {error}
-        </p>
+        {(p) => <TextInput {...p} dir="auto" value={draft.title} onChange={(e) => set('title', e.target.value)} autoComplete="off" />}
+      </Field>
+      <Segmented label="Repeat" value={draft.repeat} options={REPEATS} onValueChange={(v) => set('repeat', v)} />
+      {draft.repeat === 'once' && (
+        <Field id="new-task-when" label="When" error={errors.when}>
+          {(p) => <TextInput {...p} type="datetime-local" value={draft.when} onChange={(e) => set('when', e.target.value)} />}
+        </Field>
       )}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Topic picker: a filterable combobox, because a native select can't show
-// hundreds of names in every script, nor say which topics are off.
-
-function fold(text: string): string {
-  return text.normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase()
-}
-
-function TopicPicker({ id, topics, value, invalid, onChange }: {
-  id: string
-  topics: Topic[]
-  value: number | null
-  invalid: boolean
-  onChange: (id: number | null) => void
-}) {
-  const listId = useId()
-  const selected = topics.find((t) => t.id === value) ?? null
-  const [text, setText] = useState(selected?.name ?? '')
-  const [open, setOpen] = useState(false)
-  const [active, setActive] = useState(0)
-  const list = useRef<HTMLUListElement>(null)
-
-  // Show the chosen name whenever the choice changes from outside.
-  useEffect(() => setText(selected?.name ?? ''), [selected?.id]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const typed = selected && text === selected.name ? '' : text
-  const matches = useMemo(() => {
-    const wanted = fold(typed.trim())
-    return wanted ? topics.filter((t) => fold(t.name).includes(wanted)) : topics
-  }, [topics, typed])
-
-  useEffect(() => setActive(0), [typed])
-  useEffect(() => {
-    list.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' })
-  }, [active, open])
-
-  function pick(t: Topic) {
-    onChange(t.id)
-    setText(t.name)
-    setOpen(false)
-  }
-
-  return (
-    <div className="relative">
-      <input
-        id={id}
-        role="combobox"
-        aria-expanded={open}
-        aria-controls={listId}
-        aria-autocomplete="list"
-        aria-activedescendant={open && matches[active] ? `${listId}-${matches[active].id}` : undefined}
-        aria-invalid={invalid}
-        aria-describedby={invalid ? `${id}-error` : undefined}
-        value={text}
-        dir="auto"
-        placeholder={`Search ${exact(topics.length)} topics`}
-        autoComplete="off"
-        spellCheck={false}
-        onChange={(e) => {
-          setText(e.target.value)
-          setOpen(true)
-          if (selected && e.target.value !== selected.name) onChange(null)
-        }}
-        onFocus={() => setOpen(true)}
-        onClick={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onKeyDown={(e) => {
-          if (e.key === 'ArrowDown') {
-            e.preventDefault()
-            setOpen(true)
-            setActive((i) => Math.min(i + 1, matches.length - 1))
-          } else if (e.key === 'ArrowUp') {
-            e.preventDefault()
-            setActive((i) => Math.max(i - 1, 0))
-          } else if (e.key === 'Enter' && open && matches[active]) {
-            e.preventDefault()
-            pick(matches[active])
-          } else if (e.key === 'Escape' && open) {
-            e.preventDefault()
-            setOpen(false)
-          }
-        }}
-        className={cn(fieldClass, 'pr-10')}
-      />
-      <ChevronsUpDownIcon className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-      {open && (
-        <ul
-          ref={list}
-          id={listId}
-          role="listbox"
-          aria-label="Topics"
-          className="scroller absolute inset-x-0 top-full z-50 mt-1 max-h-72 overflow-y-auto rounded-lg border bg-popover p-1 shadow-lg"
-        >
-          {matches.length === 0 ? (
-            <li className="px-3 py-2.5 text-sm text-muted-foreground">No topic matches that name.</li>
-          ) : (
-            matches.map((t, i) => {
-              const status = topicStatus(t)
-              const ready = status.label === 'Ready'
-              return (
-                <li
-                  key={t.id}
-                  id={`${listId}-${t.id}`}
-                  data-index={i}
-                  role="option"
-                  aria-selected={t.id === value}
-                  // mousedown would blur the input first and close the list.
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => pick(t)}
-                  onMouseMove={() => setActive(i)}
-                  className={cn(
-                    'flex min-h-11 cursor-pointer items-center gap-2 rounded-md px-2.5 text-sm md:min-h-9',
-                    i === active && 'bg-accent text-accent-foreground',
-                  )}
+      {(draft.repeat === 'daily' || draft.repeat === 'weekly') && (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {draft.repeat === 'weekly' && (
+            <Field id="new-task-weekday" label="Day">
+              {(p) => (
+                <select
+                  {...p}
+                  value={draft.weekday}
+                  onChange={(e) => set('weekday', e.target.value)}
+                  className="h-10 w-full rounded-lg bg-sunken px-3 text-base text-ink shadow-[inset_0_0_0_var(--hair)_var(--line)] outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--mute)] pointer-fine:text-[14px]"
                 >
-                  {t.is_general ? (
-                    <MessageCircleIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                  ) : (
-                    <HashIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                  )}
-                  <UserText className="min-w-0 flex-1">{t.name}</UserText>
-                  {!ready && <span className="shrink-0 text-xs text-muted-foreground">{status.label}</span>}
-                  <CheckIcon className={cn('size-4 shrink-0', t.id === value ? 'opacity-100' : 'opacity-0')} aria-hidden />
-                </li>
-              )
-            })
+                  {DAYS.map((d, i) => (
+                    <option key={d} value={String(i)}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
           )}
-        </ul>
+          <Field id="new-task-time" label="Time" error={errors.time}>
+            {(p) => <TextInput {...p} type="time" value={draft.time} onChange={(e) => set('time', e.target.value)} />}
+          </Field>
+        </div>
       )}
-      {selected && topicStatus(selected).label !== 'Ready' && (
-        <p className="mt-1.5 text-xs text-warning">
-          This topic is {topicStatus(selected).label.toLowerCase()}; the task runs once it’s on and set up.
-        </p>
+      {draft.repeat === 'custom' && (
+        <Field id="new-task-cron" label="Cron" error={errors.cron} hint={preview ?? 'minute hour day month weekday, like 0 9 * * 1-5 for weekdays at 09:00'}>
+          {(p) => (
+            <TextInput
+              {...p}
+              value={draft.cron}
+              onChange={(e) => set('cron', e.target.value)}
+              placeholder="0 9 * * 1-5"
+              className="font-mono"
+              autoComplete="off"
+              spellCheck={false}
+              autoCapitalize="off"
+            />
+          )}
+        </Field>
       )}
-    </div>
+      {draft.repeat !== 'once' && (
+        <Field id="new-task-timezone" label="Time zone" error={errors.timezone}>
+          {(p) => (
+            <>
+              <TextInput {...p} list="new-task-zones" value={draft.timezone} onChange={(e) => set('timezone', e.target.value)} autoComplete="off" spellCheck={false} autoCapitalize="off" />
+              <datalist id="new-task-zones">
+                {ZONES.map((z) => (
+                  <option key={z} value={z} />
+                ))}
+              </datalist>
+            </>
+          )}
+        </Field>
+      )}
+    </FormDialog>
   )
 }

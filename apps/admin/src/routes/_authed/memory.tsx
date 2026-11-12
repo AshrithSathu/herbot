@@ -1,403 +1,367 @@
-import { useDeferredValue, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
-import { createFileRoute } from '@tanstack/react-router'
-import { BrainIcon, SearchIcon, XIcon } from 'lucide-react'
-import { deleteMemory, saveMemory, type Memory } from '../../api'
+// Memory (docs/design/DECISIONS.md, "Memory"): one filterable Thread list,
+// newest edits first; edit in place (⌘/Ctrl+Enter saves, Escape cancels);
+// Show all for clamped text; Forget behind the Keep-first dialog with Undo.
+// Over the 200 limit the add box gives way to the limit notice.
+// herbot-core's limits (personal.rs): 500 characters a memory, 200 in all.
+import { useDeferredValue, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, createFileRoute } from '@tanstack/react-router'
+import { HashIcon, MessageCircleIcon, PencilIcon, Trash2Icon } from 'lucide-react'
+import { deleteMemory, saveMemory, type Memory, type Topic } from '../../api'
+import { charCount, exact, when } from '../../format'
 import { memoriesQuery, topicsQuery } from '../../queries'
-import { charCount, plural } from '../../format'
-import { EmptyState, ErrorNote, PageHeader, StaleWarning, Time, notify } from '../../ui'
+import { Button, Field, SearchInput, TextArea } from '@/components/hb/controls'
+import { ConfirmDialog } from '@/components/hb/dialogs'
+import { InPlaceEmpty, InPlaceError, ListSkeleton, notify, notifyFailure } from '@/components/hb/feedback'
+import { QuietAction, ThreadList } from '@/components/hb/rows'
+import { BackToAgents, ShellPage } from '@/components/hb/shell'
+import { MetaLine } from '@/components/hb/status'
+import { fold } from '@/components/hb/agent-list'
 import { UserText } from '@/components/user-text'
-import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
-import { Spinner } from '@/components/ui/spinner'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
 
 export const Route = createFileRoute('/_authed/memory')({
   loader: ({ context }) => context.queryClient.ensureQueryData(memoriesQuery),
-  staticData: { crumb: 'Memory' },
+  staticData: { crumb: 'Memory', shell: 'page' },
   head: () => ({ meta: [{ title: 'Memory · Herbot admin' }] }),
   component: MemoryPage,
 })
 
-/** herbot-core's limits (personal.rs): 500 characters each, 200 in all. */
-const MAX_CHARS = 500
-const MAX_MEMORIES = 200
-/** Rows rendered at first; the rest arrive in steps, so 300 long memories
- * don't make the page heavy before anyone asks for them. */
-const PAGE = 50
+const MEMORY_MAX = 500
+const MEMORY_LIMIT = 200
 
-/** Folds case and accents, so "cafe" finds "Café". */
-function fold(text: string): string {
-  return text.normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase()
+/** ⌘ on Apple devices, Ctrl elsewhere; decided after mount (hydration). */
+function useModKey(): string {
+  const [key, setKey] = useState('Ctrl')
+  useEffect(() => setKey(/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl'), [])
+  return key
 }
-
-const isMac = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 
 function MemoryPage() {
-  const { data: memories, error } = useSuspenseQuery(memoriesQuery)
+  const q = useQuery(memoriesQuery)
   const topics = useQuery(topicsQuery)
-  const topicName = useMemo(() => new Map((topics.data ?? []).map((t) => [t.id, t.name])), [topics.data])
+  const byId = useMemo(() => new Map((topics.data ?? []).map((t) => [t.id, t])), [topics.data])
+  const all = useMemo(() => [...(q.data ?? [])].sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id), [q.data])
   const [filter, setFilter] = useState('')
   const wanted = fold(useDeferredValue(filter).trim())
-  const [limit, setLimit] = useState(PAGE)
-  const [deleting, setDeleting] = useState<Memory | 'all' | null>(null)
-
-  // Newest edits first: what you just changed is at the top.
-  const sorted = useMemo(
-    () => [...memories].sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id),
-    [memories],
-  )
-  const matches = useMemo(
-    () => (wanted ? sorted.filter((m) => fold(m.content).includes(wanted)) : sorted),
-    [sorted, wanted],
-  )
-  const shown = matches.slice(0, limit)
-  const full = memories.length >= MAX_MEMORIES
-  const over = memories.length - MAX_MEMORIES
+  const shown = useMemo(() => (wanted ? all.filter((m) => fold(m.content).includes(wanted)) : all), [all, wanted])
+  const [editing, setEditing] = useState<number | null>(null)
+  const forget = useForget(all.length)
 
   return (
-    <>
-      <PageHeader
-        title="Memory"
-        description="Facts and preferences every agent can recall. Agents add them when you say “remember…”; you can add, edit and forget them here. Never store secrets."
-      />
-      <StaleWarning error={error} />
-
-      <section aria-labelledby="add-memory" className="flex flex-col gap-3">
-        <h2 id="add-memory" className="text-base font-semibold tracking-tight">
-          Add a memory
-        </h2>
-        {full ? (
-          <ErrorNote title={over > 0 ? `${plural(memories.length, 'memory', 'memories')}, over the limit of ${MAX_MEMORIES}` : `At the limit of ${MAX_MEMORIES} memories`}>
-            {over > 0
-              ? `Forget at least ${plural(over + 1, 'memory', 'memories')} before adding another.`
-              : 'Forget one before adding another.'}
-          </ErrorNote>
-        ) : (
-          <MemoryEditor />
-        )}
-      </section>
-
-      <section aria-labelledby="memories" className="flex flex-col gap-3">
-        <div className="flex min-h-9 flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          <h2 id="memories" className="text-base font-semibold tracking-tight">
-            Memories{' '}
-            <span className={cn('font-normal tabular-nums', over > 0 ? 'text-destructive' : 'text-muted-foreground')}>
-              {memories.length.toLocaleString('en-GB')} / {MAX_MEMORIES}
-            </span>
-          </h2>
-          {memories.length > 0 && (
-            <Button variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setDeleting('all')}>
-              Forget all…
-            </Button>
-          )}
-        </div>
-
-        {memories.length > 0 && (
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="memory-filter" className="sr-only">
-              Filter memories
-            </label>
-            <div className="relative max-w-xl">
-              <SearchIcon aria-hidden className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-              <input
-                id="memory-filter"
-                type="search"
-                value={filter}
-                onChange={(e) => {
-                  setFilter(e.target.value)
-                  setLimit(PAGE)
-                }}
-                onKeyDown={(e) => e.key === 'Escape' && setFilter('')}
-                placeholder="Filter memories"
-                autoComplete="off"
-                spellCheck={false}
-                className="h-9 w-full rounded-md border border-input bg-transparent pr-9 pl-9 text-base shadow-xs outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 pointer-coarse:h-11 md:text-sm dark:bg-input/30 [&::-webkit-search-cancel-button]:hidden"
-              />
-              {filter && (
-                <button
-                  type="button"
-                  aria-label="Clear filter"
-                  onClick={() => {
-                    setFilter('')
-                    document.getElementById('memory-filter')?.focus()
-                  }}
-                  className="absolute top-1/2 right-1.5 grid size-7 -translate-y-1/2 place-items-center rounded-md text-muted-foreground before:absolute before:-inset-1.5 hover:text-foreground"
-                >
-                  <XIcon className="size-4" aria-hidden />
-                </button>
-              )}
-            </div>
-            <p className="text-sm text-muted-foreground tabular-nums" role="status">
-              {wanted ? `${plural(matches.length, 'memory', 'memories')} match` : null}
-            </p>
-          </div>
-        )}
-
-        {matches.length === 0 ? (
-          wanted ? (
-            <EmptyState icon={SearchIcon} title="No memory matches">
-              Nothing contains “{filter.trim()}”. Try a shorter word.
-            </EmptyState>
-          ) : (
-            <EmptyState icon={BrainIcon} title="No memories yet">
-              Add a fact above, or tell any agent “remember that…” in Telegram.
-            </EmptyState>
-          )
-        ) : (
-          <ul className="divide-y overflow-hidden rounded-xl border bg-card">
-            {shown.map((memory) => (
-              <MemoryRow
-                key={memory.id}
-                memory={memory}
-                source={memory.source_conversation_id == null ? null : (topicName.get(memory.source_conversation_id) ?? 'a deleted topic')}
-                onForget={() => setDeleting(memory)}
-              />
-            ))}
-          </ul>
-        )}
-        {matches.length > shown.length && (
-          <Button variant="outline" className="self-start" onClick={() => setLimit((n) => n + PAGE)}>
-            Show {Math.min(PAGE, matches.length - shown.length)} more
-            <span className="text-muted-foreground tabular-nums">
-              ({(matches.length - shown.length).toLocaleString('en-GB')} left)
-            </span>
-          </Button>
-        )}
-      </section>
-
-      <ForgetDialog target={deleting} onClose={() => setDeleting(null)} total={memories.length} />
-    </>
+    <ShellPage
+      title="Memory"
+      description="Facts and preferences every agent can recall. Agents add them when you say “remember…”; you can add, edit and forget them here. Never store secrets."
+      back={<BackToAgents />}
+    >
+      {q.isPending ? (
+        <ListSkeleton rows={6} />
+      ) : q.isError && all.length === 0 ? (
+        <InPlaceError title="Couldn’t load memories" error={q.error} onRetry={() => q.refetch()} retrying={q.isRefetching} />
+      ) : (
+        <>
+          <AddMemory count={all.length} />
+          <section aria-labelledby="memories-heading" className="flex flex-col gap-3">
+            <h2 id="memories-heading" className="flex items-baseline gap-2 text-[15px] font-semibold">
+              Memories
+              <span className={cn('text-[13px] font-normal tabular-nums', all.length > MEMORY_LIMIT ? 'font-medium text-destructive' : 'text-mute')}>
+                {exact(all.length)} / {exact(MEMORY_LIMIT)}
+              </span>
+            </h2>
+            {all.length === 0 ? (
+              <InPlaceEmpty title="No memories yet">Say “remember that…” in any topic, or add one above. Every agent reads them.</InPlaceEmpty>
+            ) : (
+              <>
+                <SearchInput label="Filter memories" value={filter} onValueChange={setFilter} placeholder={`Filter ${exact(all.length)} memories`} dir="auto" />
+                {shown.length === 0 ? (
+                  <InPlaceEmpty
+                    title="No memory matches that"
+                    action={
+                      <Button variant="secondary" onClick={() => setFilter('')}>
+                        Clear filter
+                      </Button>
+                    }
+                  />
+                ) : (
+                  <ThreadList
+                    // The kit's virtualizer caches row heights by index: remount when
+                    // rows come or go (filter, forget) so heights follow the rows.
+                    key={`${wanted}:${shown.length}`}
+                    label="Memories"
+                    items={shown}
+                    itemKey={(m) => m.id}
+                    estimate={130}
+                    title={(m) => (
+                      <div className="font-normal">
+                        {editing === m.id ? <MemoryEditor memory={m} onDone={() => setEditing(null)} /> : <MemoryText memory={m} />}
+                      </div>
+                    )}
+                    meta={(m) => <MemoryFacts memory={m} topic={m.source_conversation_id == null ? null : (byId.get(m.source_conversation_id) ?? undefined)} />}
+                    actions={(m) =>
+                      editing === m.id ? null : (
+                        <>
+                          <QuietAction onClick={() => setEditing(m.id)} aria-label={`Edit memory #${m.id}`}>
+                            <PencilIcon aria-hidden />
+                            Edit
+                          </QuietAction>
+                          <QuietAction tone="danger" onClick={() => forget.ask(m)} aria-label={`Forget memory #${m.id}`}>
+                            <Trash2Icon aria-hidden />
+                            Forget…
+                          </QuietAction>
+                        </>
+                      )
+                    }
+                  />
+                )}
+              </>
+            )}
+          </section>
+        </>
+      )}
+      {forget.dialog}
+    </ShellPage>
   )
 }
 
-function MemoryRow({ memory, source, onForget }: { memory: Memory; source: string | null; onForget: () => void }) {
-  const [editing, setEditing] = useState(false)
-  const [expanded, setExpanded] = useState(false)
-  const [clamped, setClamped] = useState(false)
-  const text = useRef<HTMLDivElement>(null)
-
-  // Offer "Show all" only when the clamp actually hides something; that
-  // depends on the width, so it's measured, not guessed from the length.
-  useLayoutEffect(() => {
-    const box = text.current?.firstElementChild as HTMLElement | null
-    if (!box || expanded) return
-    const check = () => setClamped(box.scrollHeight > box.clientHeight + 1)
-    check()
-    const observer = new ResizeObserver(check)
-    observer.observe(box)
-    return () => observer.disconnect()
-  }, [memory.content, expanded])
-
-  if (editing) {
-    return (
-      <li className="p-4 sm:px-5">
-        <MemoryEditor memory={memory} onDone={() => setEditing(false)} />
-      </li>
-    )
-  }
+/** The text: three lines, the rest on request (offered only when the clamp
+ * actually hides something). */
+function MemoryText({ memory }: { memory: Memory }) {
+  const [open, setOpen] = useState(false)
+  const long = charCount(memory.content) > 220 || memory.content.split('\n').length > 3
   return (
-    <li className="flex flex-col gap-2 p-4 sm:flex-row sm:items-start sm:gap-4 sm:px-5">
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <div ref={text}>
-          <UserText as="p" lines={expanded ? 'all' : 3} className="leading-relaxed">
-            {memory.content}
-          </UserText>
-        </div>
-        {(clamped || expanded) && (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            aria-expanded={expanded}
-            className="relative self-start text-sm font-medium text-primary before:absolute before:-inset-x-2 before:-inset-y-2.5 hover:underline"
-          >
-            {expanded ? 'Show less' : 'Show all'}
-          </button>
-        )}
-        <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
-          <span className="tabular-nums">#{memory.id}</span>
-          <span aria-hidden>·</span>
-          {source == null ? (
-            <span>added here</span>
-          ) : (
-            <span className="flex min-w-0 max-w-[24ch] items-center gap-1">
-              <span className="shrink-0">from</span>
-              <UserText className="min-w-0">{source}</UserText>
-            </span>
-          )}
-          <span aria-hidden>·</span>
-          <span>
-            updated <Time iso={memory.updated_at} relative />
-          </span>
-        </p>
-      </div>
-      <div className="-ml-2 flex shrink-0 gap-1 sm:-mt-1 sm:ml-0">
-        <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
-          Edit
-        </Button>
-        <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={onForget}>
-          Forget…
-        </Button>
-      </div>
-    </li>
+    <div className="flex flex-col items-start gap-1">
+      <UserText as="p" lines={open ? 'all' : 3} className="text-[15px] leading-relaxed text-ink">
+        {memory.content}
+      </UserText>
+      {long && (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+          className="relative z-[1] text-[13px] font-medium text-mute underline-offset-2 before:absolute before:-inset-x-2 before:-inset-y-3 hover:text-ink hover:underline"
+        >
+          {open ? 'Show less' : 'Show all'}
+        </button>
+      )}
+    </div>
   )
 }
 
-function MemoryEditor({ memory, onDone }: { memory?: Memory; onDone?: () => void }) {
-  const [content, setContent] = useState(memory?.content ?? '')
-  const [touched, setTouched] = useState(false)
+/** #id · where it came from · when it changed. `topic` is null for memories
+ * added in the panel, undefined when the topic is gone. */
+function MemoryFacts({ memory, topic }: { memory: Memory; topic: Topic | null | undefined }) {
+  return (
+    <MetaLine>
+      {[
+        <span key="id" className="tabular-nums">
+          #{memory.id}
+        </span>,
+        <Source key="source" topic={topic} />,
+        <span key="when">
+          updated{' '}
+          <time dateTime={memory.updated_at} title={when(memory.updated_at)} suppressHydrationWarning>
+            {when(memory.updated_at)}
+          </time>
+        </span>,
+      ]}
+    </MetaLine>
+  )
+}
+
+function Source({ topic }: { topic: Topic | null | undefined }) {
+  if (topic === null) return <span>added in the panel</span>
+  if (topic === undefined) return <span className="italic">from a deleted topic</span>
+  const Icon = topic.is_general ? MessageCircleIcon : HashIcon
+  return (
+    <span className="inline-flex min-w-0 items-baseline gap-1">
+      from
+      <Link
+        to="/topics/$id"
+        params={{ id: topic.id }}
+        className="relative z-[1] inline-flex max-w-[26ch] min-w-0 items-center gap-1 self-center underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 hover:text-ink hover:underline"
+      >
+        <Icon aria-hidden className="size-3 shrink-0" />
+        <UserText className="min-w-0">{topic.name}</UserText>
+      </Link>
+    </span>
+  )
+}
+
+function useInvalidate() {
   const client = useQueryClient()
-  const save = useMutation({
-    mutationFn: () => saveMemory({ data: { id: memory?.id, content: content.trim() } }),
+  return () => client.invalidateQueries({ queryKey: memoriesQuery.queryKey })
+}
+
+/** Add a memory, or say plainly why you can't (over the limit). */
+function AddMemory({ count }: { count: number }) {
+  const [text, setText] = useState('')
+  const mod = useModKey()
+  const invalidate = useInvalidate()
+  const add = useMutation({
+    mutationFn: (content: string) => saveMemory({ data: { content } }),
     onSuccess: async () => {
-      await client.invalidateQueries({ queryKey: memoriesQuery.queryKey })
-      setContent('')
-      setTouched(false)
-      onDone?.()
-      notify(memory ? 'Memory updated' : 'Memory added')
+      setText('')
+      notify('Memory added. Every agent sees it from its next message.')
+      await invalidate()
     },
   })
-  const id = `memory-${memory?.id ?? 'new'}`
-  const count = charCount(content.trim())
-  const tooLong = count > MAX_CHARS
-  const unchanged = memory != null && content.trim() === memory.content.trim()
-  const ready = count > 0 && !tooLong && !unchanged && !save.isPending
-  const problem = tooLong ? `Keep it to ${MAX_CHARS} characters; it’s ${count.toLocaleString('en-GB')}.` : null
-
-  const submit = () => {
-    setTouched(true)
-    if (ready) save.mutate()
-  }
-
-  return (
-    <form
-      className="flex max-w-2xl flex-col gap-2"
-      onSubmit={(e) => {
-        e.preventDefault()
-        submit()
-      }}
-    >
-      <label htmlFor={id} className={cn('text-sm font-medium', !memory && 'sr-only')}>
-        {memory ? `Edit memory #${memory.id}` : 'What should every agent remember?'}
-      </label>
-      <Textarea
-        id={id}
-        dir="auto"
-        value={content}
-        disabled={save.isPending}
-        autoFocus={memory != null}
-        placeholder={memory ? undefined : 'e.g. I prefer metric units and short answers.'}
-        onChange={(e) => {
-          setContent(e.target.value)
-          if (save.isError) save.reset()
-        }}
-        onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-            e.preventDefault()
-            submit()
-          }
-          if (e.key === 'Escape' && onDone && !save.isPending) onDone()
-        }}
-        aria-invalid={(touched || tooLong) && problem ? true : undefined}
-        aria-describedby={`${id}-count${problem ? ` ${id}-problem` : ''}`}
-        className="max-h-72 min-h-20 resize-y leading-relaxed"
-      />
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <p
-          id={`${id}-count`}
-          className={cn('text-xs tabular-nums', tooLong ? 'text-destructive' : count > MAX_CHARS * 0.9 ? 'text-warning' : 'text-muted-foreground')}
-        >
-          {count.toLocaleString('en-GB')} / {MAX_CHARS} characters
-        </p>
-        <div className="flex gap-2">
-          {onDone && (
-            <Button type="button" variant="ghost" disabled={save.isPending} onClick={onDone}>
-              Cancel
-            </Button>
-          )}
-          <Button type="submit" disabled={!ready} title={`${isMac() ? '⌘' : 'Ctrl'}+Enter`}>
-            {save.isPending && <Spinner />}
-            {save.isPending ? 'Saving…' : memory ? 'Save changes' : 'Add memory'}
-          </Button>
-        </div>
+  const n = charCount(text.trim())
+  if (count >= MEMORY_LIMIT) {
+    const need = count - MEMORY_LIMIT + 1
+    return (
+      <div role="note" className="flex flex-col gap-1 rounded-lg bg-warning-soft px-3 py-2.5 text-[13.5px]">
+        <span className="font-medium text-warning">
+          {exact(count)} memories, {count > MEMORY_LIMIT ? 'over' : 'at'} the limit of {exact(MEMORY_LIMIT)}
+        </span>
+        <span className="text-ink">
+          Forget at least {exact(need)} {need === 1 ? 'memory' : 'memories'} before adding another. Agents still read all of them.
+        </span>
       </div>
-      {problem && (
-        <p id={`${id}-problem`} className="text-sm text-destructive">
-          {problem}
-        </p>
-      )}
-      {save.isError && <ErrorNote title={memory ? 'Couldn’t save the memory' : 'Couldn’t add the memory'}>{save.error.message}</ErrorNote>}
+    )
+  }
+  const submit = (e?: FormEvent) => {
+    e?.preventDefault()
+    if (!text.trim() || n > MEMORY_MAX || add.isPending) return
+    add.mutate(text.trim())
+  }
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-2">
+      <Field
+        label="Add a memory"
+        counter={{ count: n, max: MEMORY_MAX }}
+        error={add.error?.message ?? (n > MEMORY_MAX ? `${exact(n - MEMORY_MAX)} over the ${MEMORY_MAX}-character limit.` : undefined)}
+        hint={`A fact or preference every agent should know. ${mod}+Enter adds it.`}
+      >
+        {(p) => (
+          <TextArea
+            {...p}
+            value={text}
+            disabled={add.isPending}
+            onChange={(e) => {
+              setText(e.target.value)
+              if (add.isError) add.reset()
+            }}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submit()
+            }}
+            placeholder="I prefer answers in metric units."
+            className="min-h-20"
+          />
+        )}
+      </Field>
+      <Button type="submit" variant="primary" pending={add.isPending} disabled={!text.trim() || n > MEMORY_MAX} className="self-end">
+        {add.isPending ? 'Adding…' : 'Add memory'}
+      </Button>
     </form>
   )
 }
 
-function ForgetDialog({ target, total, onClose }: { target: Memory | 'all' | null; total: number; onClose: () => void }) {
-  const client = useQueryClient()
-  const remove = useMutation({
-    mutationFn: (what: Memory | 'all') => deleteMemory({ data: what === 'all' ? {} : { id: what.id } }),
-    onSuccess: async (_, what) => {
-      await client.invalidateQueries({ queryKey: memoriesQuery.queryKey })
-      onClose()
-      notify(what === 'all' ? 'Every memory forgotten' : 'Memory forgotten')
+/** Edit in place: Save (⌘/Ctrl+Enter) or Cancel (Escape); errors under the text. */
+function MemoryEditor({ memory, onDone }: { memory: Memory; onDone: () => void }) {
+  const [text, setText] = useState(memory.content)
+  const invalidate = useInvalidate()
+  const save = useMutation({
+    mutationFn: (content: string) => saveMemory({ data: { id: memory.id, content } }),
+    onSuccess: async () => {
+      notify('Memory saved. Agents read the new text from their next message.')
+      await invalidate()
+      onDone()
     },
   })
-  const all = target === 'all'
+  const n = charCount(text.trim())
+  const changed = text.trim() !== memory.content.trim()
+  const submit = (e?: FormEvent) => {
+    e?.preventDefault()
+    if (!changed) return onDone()
+    if (!text.trim() || n > MEMORY_MAX || save.isPending) return
+    save.mutate(text.trim())
+  }
   return (
-    <AlertDialog
-      open={target !== null}
-      onOpenChange={(open) => {
-        if (!open && !remove.isPending) {
-          remove.reset()
-          onClose()
+    <form onSubmit={submit} className="flex flex-col gap-2">
+      <Field
+        label={`Memory #${memory.id}`}
+        counter={{ count: n, max: MEMORY_MAX }}
+        error={save.error?.message ?? (n > MEMORY_MAX ? `${exact(n - MEMORY_MAX)} over the ${MEMORY_MAX}-character limit.` : !text.trim() ? 'A memory can’t be empty; use Forget to remove it.' : undefined)}
+      >
+        {(p) => (
+          <TextArea
+            {...p}
+            value={text}
+            autoFocus
+            disabled={save.isPending}
+            onChange={(e) => {
+              setText(e.target.value)
+              if (save.isError) save.reset()
+            }}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') submit()
+              if (e.key === 'Escape') {
+                e.stopPropagation()
+                onDone()
+              }
+            }}
+            className="min-h-24"
+          />
+        )}
+      </Field>
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" onClick={onDone} disabled={save.isPending}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary" pending={save.isPending} disabled={!text.trim() || n > MEMORY_MAX}>
+          {save.isPending ? 'Saving…' : 'Save'}
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+/** Forget, confirmed with Keep as the main button. Undo adds the text back
+ * when the limit allows (it returns as "added in the panel", with a new
+ * number); a failed Undo can only be told in a toast, since its row is gone. */
+function useForget(count: number) {
+  const invalidate = useInvalidate()
+  const [target, setTarget] = useState<Memory | null>(null)
+  const forget = useMutation({
+    mutationFn: (m: Memory) => deleteMemory({ data: { id: m.id } }),
+    onSuccess: async (_r, m) => {
+      setTarget(null)
+      const canUndo = count - 1 < MEMORY_LIMIT
+      notify(
+        'Memory forgotten.',
+        canUndo
+          ? {
+              run: () => {
+                saveMemory({ data: { content: m.content } })
+                  .then(() => invalidate())
+                  .catch((e: Error) => notifyFailure(`Couldn’t bring the memory back: ${e.message}`))
+              },
+            }
+          : undefined,
+      )
+      await invalidate()
+    },
+  })
+  const dialog = (
+    <ConfirmDialog
+      open={target != null}
+      onOpenChange={(o) => {
+        if (!o) {
+          setTarget(null)
+          forget.reset()
         }
       }}
-    >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{all ? `Forget all ${plural(total, 'memory', 'memories')}?` : 'Forget this memory?'}</AlertDialogTitle>
-          <AlertDialogDescription asChild>
-            <div className="flex flex-col gap-2">
-              {all ? (
-                <p>Every agent loses them at once. Custom instructions and what Herbot knows about you stay. This can’t be undone.</p>
-              ) : (
-                target && (
-                  <>
-                    <UserText as="p" lines={3} className="rounded-md border bg-muted/50 px-3 py-2 text-foreground">
-                      {target.content}
-                    </UserText>
-                    <p>Every agent stops recalling it. This can’t be undone.</p>
-                  </>
-                )
-              )}
-            </div>
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        {remove.isError && <ErrorNote title="Couldn’t forget">{remove.error.message}</ErrorNote>}
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={remove.isPending}>Keep {all ? 'them' : 'it'}</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={remove.isPending}
-            className="bg-destructive text-white hover:bg-[color-mix(in_oklch,var(--destructive)_86%,black)]"
-            onClick={(e) => {
-              e.preventDefault()
-              if (target) remove.mutate(target)
-            }}
-          >
-            {remove.isPending && <Spinner />}
-            {remove.isPending ? 'Forgetting…' : all ? 'Forget all' : 'Forget'}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+      title="Forget this memory?"
+      subject={target?.content}
+      consequences={['Every agent stops reading it from its next message']}
+      keeps="Conversations where it came up stay as they are."
+      actionLabel="Forget memory"
+      keepLabel="Keep the memory"
+      guard={{ kind: 'separated' }}
+      pending={forget.isPending}
+      error={forget.error}
+      onConfirm={() => target && forget.mutate(target)}
+    />
   )
+  return { ask: setTarget, dialog }
 }
