@@ -117,4 +117,5 @@ Every Grok feature, mapped in [GROK_PARITY.md](GROK_PARITY.md), built in workstr
 - [x] Migration 0023: shared forward-only panel read markers, existing history backfilled as read, indexed unread counts capped at 99
 - [x] Authenticated read acknowledgement and batched activity endpoints; existing per-conversation activity preserved
 - [x] Conversation list/detail expose language and private mode; typed panel server functions, activity polling and read mutation options (UI unchanged)
+- [x] Backend review: real panel failure reasons, search timestamps/senders, grouped task counts, capped filtered error totals, direct message windows (no UI changes)
 - Done when: requested Rust checks and panel typecheck pass locally; deployment and messenger UI integration are separate work.

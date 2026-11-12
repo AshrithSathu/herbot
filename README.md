@@ -143,3 +143,12 @@ CI (formatting, clippy, tests against Postgres) is **manual only**: `gh workflow
 Development happens in T3 Code with Codex: one roadmap step per branch (`step-N/<name>`), small logical commits, and each step lands only when its "Done when" checks pass. See [AGENTS.md](AGENTS.md).
 
 The messenger API also exposes `unread` (bot replies, capped at 99), `language` and `private_mode` in conversation list/detail summaries. `POST /admin/api/conversations/{id}/read` accepts `{through_message_id}` from that conversation and advances a shared, durable read marker. Migration 0023 starts existing history as read. `GET /admin/api/activity` batches active/queued conversations as `[{conversation_id, in_progress: true}]`; the per-topic activity route remains available. Typed server/query helpers are ready for the messenger redesign; this change does not alter panel UI.
+
+Panel API review additions: search hits include `sent_at` and `from_bot`.
+`GET /admin/api/tasks/counts` returns all four status totals in one grouped query;
+`GET /admin/api/errors/total?q=` returns `{total, capped}` (a lower bound at 10,000 when capped), using the list's literal filter independently of its cursor.
+`GET /admin/api/conversations/{id}/messages?around=<message-id>&limit=N` includes the target,
+up to `(N-1)/2` older and `N/2` newer messages (integer division), oldest first,
+with `has_more_before` and `has_more_after`. The limit stays clamped to 1–100;
+a missing or foreign-conversation target returns 404, and combining `around` with a cursor returns 400.
+Panel server failures record the returned explanation with path, status and an E-id.

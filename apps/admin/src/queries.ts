@@ -3,7 +3,7 @@
 // prefetch on hover); components read the same keys with `useSuspenseQuery`,
 // so a page never fetches the same thing twice and mutations update in place.
 import { infiniteQueryOptions, mutationOptions, queryOptions } from '@tanstack/react-query'
-import { listActivity, markRead, listMemories, getPreferences, listTasks, ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
+import { getMessagesAround, getTaskCounts, getErrorsTotal, listActivity, markRead, listMemories, getPreferences, listTasks, ERROR_PAGE, getError, getMessages, getOverview, getTopic, getUiPrefs, listTopics, searchErrors, whoami } from './api'
 
 export const keys = {
   session: ['session'] as const,
@@ -111,3 +111,18 @@ export const markReadMutation = (client: import('@tanstack/react-query').QueryCl
     mutationFn: (data: { id: number; through_message_id: number }) => markRead({ data }),
     onSuccess: () => client.invalidateQueries({ queryKey: keys.topics }),
   })
+
+export const messagesAroundQuery = (id: number, around: number, limit = 30) =>
+  queryOptions({
+    queryKey: [...keys.messages(id), 'around', around, limit],
+    queryFn: () => getMessagesAround({ data: { id, around, limit } }),
+  })
+export const taskCountsQuery = queryOptions({
+  queryKey: ['tasks', 'counts'],
+  queryFn: () => getTaskCounts(),
+  refetchInterval: 15_000,
+})
+export const errorsTotalQuery = (q: string) => queryOptions({
+  queryKey: [...keys.errors, 'total', q],
+  queryFn: () => getErrorsTotal({ data: { q } }),
+})

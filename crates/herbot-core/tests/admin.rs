@@ -795,3 +795,195 @@ async fn panel_read_migration_backfills_existing_history(pool: PgPool) {
     let (_, list) = call(&h, Method::GET, "/admin/api/conversations", None).await;
     assert_eq!(list[1]["unread"], 1);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn message_windows_jump_directly_and_respect_conversation_boundaries(pool: PgPool) {
+    let h = harness(pool, FakeT3::default()).await;
+    add_messages(&h.pool, 200).await;
+    let ids: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM messages WHERE conversation_id=2 ORDER BY id")
+            .fetch_all(&h.pool)
+            .await
+            .unwrap();
+    for (index, limit, before, after) in [
+        (100, 10, true, true),
+        (0, 9, false, true),
+        (201, 9, true, false),
+        (100, 1, true, true),
+        (100, 1000, true, true),
+    ] {
+        let (status, page) = call(
+            &h,
+            Method::GET,
+            &format!(
+                "/admin/api/conversations/2/messages?around={}&limit={limit}",
+                ids[index]
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let limit = limit.clamp(1, 100) as usize;
+        let start = index.saturating_sub((limit - 1) / 2);
+        let end = (index + limit / 2 + 1).min(ids.len());
+        let actual: Vec<i64> = page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(actual, ids[start..end]);
+        assert_eq!(page["has_more_before"], before);
+        assert_eq!(page["has_more_after"], after);
+    }
+    for path in [
+        format!("/admin/api/conversations/1/messages?around={}", ids[100]),
+        "/admin/api/conversations/2/messages?around=999999".into(),
+    ] {
+        assert_eq!(
+            call(&h, Method::GET, &path, None).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    for cursor in ["before", "after"] {
+        assert_eq!(
+            call(
+                &h,
+                Method::GET,
+                &format!(
+                    "/admin/api/conversations/2/messages?around={}&{cursor}=1",
+                    ids[100]
+                ),
+                None
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn count_endpoints_cover_all_pages_and_literal_filters(pool: PgPool) {
+    let h = harness(pool, FakeT3::default()).await;
+    for path in ["/admin/api/tasks/counts", "/admin/api/errors/total"] {
+        assert_eq!(
+            call_with(&h, Method::GET, path, None, "wrong").await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        call(&h, Method::GET, "/admin/api/tasks/counts", None)
+            .await
+            .1,
+        json!({"active":0,"paused":0,"done":0,"cancelled":0})
+    );
+    sqlx::raw_sql("INSERT INTO tasks (conversation_id,prompt,once_at,timezone,next_run_at,status,run_count,last_run_at)
+        SELECT 2,'task',now(),'UTC',CASE WHEN status IN ('active','paused') THEN now() ELSE NULL END,status,
+               CASE WHEN status='done' THEN 1 ELSE 0 END,CASE WHEN status='done' THEN now() ELSE NULL END
+        FROM unnest(ARRAY['active','paused','done','cancelled']) status CROSS JOIN generate_series(1,60);
+        INSERT INTO errors(kind,message,context) SELECT 'test','literal_%', '{}' FROM generate_series(1,10001);
+        INSERT INTO errors(kind,message,context) VALUES ('test','literalXX','{}');")
+        .execute(&h.pool).await.unwrap();
+    assert_eq!(
+        call(&h, Method::GET, "/admin/api/tasks/counts", None)
+            .await
+            .1,
+        json!({"active":60,"paused":60,"done":60,"cancelled":60})
+    );
+    assert_eq!(
+        call(
+            &h,
+            Method::GET,
+            "/admin/api/errors/total?q=literal_%25",
+            None
+        )
+        .await
+        .1,
+        json!({"total":10000,"capped":true})
+    );
+    sqlx::query("DELETE FROM errors WHERE id=(SELECT min(id) FROM errors)")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &h,
+            Method::GET,
+            "/admin/api/errors/total?q=literal_%25&before=1",
+            None
+        )
+        .await
+        .1,
+        json!({"total":10000,"capped":false})
+    );
+    assert_eq!(
+        call(&h, Method::GET, "/admin/api/errors/total?q=E-1001", None)
+            .await
+            .1,
+        json!({"total":1,"capped":false})
+    );
+    assert_eq!(
+        call(&h, Method::GET, "/admin/api/errors/total?q=missing", None)
+            .await
+            .1,
+        json!({"total":0,"capped":false})
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn panel_records_returned_reason_and_search_includes_sender_and_time(pool: PgPool) {
+    let mut h = harness(pool, FakeT3::default()).await;
+    h.app = h.app.merge(herbot_core::panel::router(
+        Arc::new(AdminState {
+            pool: h.pool.clone(),
+            projects: h.t3.clone(),
+            agents_dir: h.agents.path().to_path_buf(),
+            token: TOKEN.into(),
+            agent_label: "test".into(),
+            bot_username: None,
+        }),
+        None,
+    ));
+    let (status, body) = call(
+        &h,
+        Method::POST,
+        "/admin/api/topics",
+        Some(json!({"name":"Test","purpose":"Test"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let (id, message, context): (i64, String, Value) =
+        sqlx::query_as("SELECT id,message,context FROM errors WHERE kind='panel.request'")
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        message,
+        "Telegram is disabled; chat and topic creation need the running bot"
+    );
+    assert_eq!(body["error"], format!("E-{id}: {message}"));
+    assert_eq!(context, json!({"path":"/admin/api/topics","status":503}));
+    assert_eq!(
+        call_with(&h, Method::GET, "/admin/api/search?q=rmcp", None, "wrong")
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, hits) = call(&h, Method::GET, "/admin/api/search?q=rmcp", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let hits = hits.as_array().unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0]["from_bot"], true);
+    assert_eq!(hits[1]["from_bot"], false);
+    for hit in hits {
+        let (sent_at, from_bot): (chrono::DateTime<chrono::Utc>, bool) =
+            sqlx::query_as("SELECT sent_at,from_bot FROM messages WHERE id=$1")
+                .bind(hit["id"].as_i64().unwrap())
+                .fetch_one(&h.pool)
+                .await
+                .unwrap();
+        assert_eq!(hit["sent_at"], json!(sent_at));
+        assert_eq!(hit["from_bot"], from_bot);
+    }
+}
