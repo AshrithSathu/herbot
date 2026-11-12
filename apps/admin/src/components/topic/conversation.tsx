@@ -16,10 +16,10 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDownIcon, PowerIcon } from 'lucide-react'
 import { getMessages, getMessagesAround, sendMessage, setEnabled, type MessagePage, type Message as MessageData, type Topic } from '../../api'
 import { dayKey, dayLabel } from '../../format'
-import { activityQuery, keys, markReadMutation, messagesQuery } from '../../queries'
+import { activityQuery, keys, markReadMutation, messagesQuery, overviewQuery } from '../../queries'
 import { Composer, ComposerBlocked, type Mode, type Outgoing } from '@/components/hb/composer'
 import { Button } from '@/components/hb/controls'
-import { ChatSkeleton, InPlaceEmpty, InPlaceError } from '@/components/hb/feedback'
+import { ChatSkeleton, InPlaceEmpty, InPlaceError, notify } from '@/components/hb/feedback'
 import { FailedMessage, Message, MessageRow, Thinking } from '@/components/hb/message'
 import { topicModeLabel } from '@/components/hb/modes'
 import { measureNonZero } from '@/components/hb/rows'
@@ -83,7 +83,8 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
   topic: Topic
   /** ?message= from search: open a window around it and highlight it. */
   target?: number
-  header: ReactNode
+  /** Rendered above the scroller (the page usually renders its own). */
+  header?: ReactNode
   /** The pane is on screen (phones hide it behind the agents list). */
   visible?: boolean
   /** Back to the live end (clears ?message=). */
@@ -144,6 +145,13 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
 
   const scroller = useRef<HTMLDivElement>(null)
   const atBottom = useRef(!target)
+  // When you last scrolled yourself (wheel, touch, keys, scrollbar). Only
+  // your own scrolling may unpin the conversation from the latest message;
+  // programmatic scrolls (measuring rows, a jump, restoring) never do.
+  const userScrolledAt = useRef(0)
+  const markUserScroll = useCallback(() => {
+    userScrolledAt.current = Date.now()
+  }, [])
   const anchor = useRef<{ key: Row['key']; offset: number } | null>(null)
   const [away, setAway] = useState(false)
   const [unseen, setUnseen] = useState(0)
@@ -176,6 +184,15 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
     observer.observe(el)
     return () => observer.disconnect()
   }, [toBottom, live.isSuccess])
+
+  // Opening a topic: at its latest message, before the first paint.
+  const opened = useRef(false)
+  useLayoutEffect(() => {
+    if (windowed || !live.isSuccess || opened.current) return
+    opened.current = true
+    atBottom.current = true
+    toBottom()
+  }, [windowed, live.isSuccess, toBottom])
 
   // Back from a search hit to the live end: fresh newest page, at the bottom.
   const wasWindowed = useRef(windowed)
@@ -211,16 +228,17 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
     else setUnseen((n) => n + liveMessages.filter((m) => m.id > previous).length)
   }, [liveNewestId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loadOlder = useCallback(() => {
-    if (!older.has || older.busy || older.failed || !scroller.current) return
+  /** Automatic edge loading stops after a failure; `retry` (the button) doesn't. */
+  const loadOlder = useCallback((retry = false) => {
+    if (!older.has || older.busy || (older.failed && !retry) || !scroller.current) return
     const top = scroller.current.scrollTop
     const first = virtual.getVirtualItems().find((v) => v.end > top && rows[v.index]?.kind === 'message')
     anchor.current = first ? { key: first.key as Row['key'], offset: first.start - top } : null
     void older.fetch()
   }, [older, virtual, rows])
 
-  const loadNewer = useCallback(() => {
-    if (!newer?.has || newer.busy || newer.failed) return
+  const loadNewer = useCallback((retry = false) => {
+    if (!newer?.has || newer.busy || (newer.failed && !retry)) return
     void newer.fetch()
   }, [newer])
 
@@ -229,39 +247,72 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
     markRead.mutate({ id: topicId, through_message_id: liveNewestId })
   }, [windowed, liveNewestId, topic.unread, topicId, markRead])
 
-  // Arriving from search: centre the hit, then put its top just under the
-  // header once rows have measured.
+  // Arriving from search: bring the hit into view, then put its top just
+  // under the header. Rows measure over several frames and can move it, so
+  // keep scrolling to its index until it's mounted and has stayed aligned
+  // (bounded); only then is the jump done and edge loading allowed.
   const jumping = useRef(windowed)
   const jumpedTo = useRef<number | undefined>(undefined)
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
   const [missing, setMissing] = useState(false)
   useEffect(() => {
     if (!target || !around.isSuccess || jumpedTo.current === target) return
     jumpedTo.current = target
-    const index = rows.findIndex((r) => r.kind === 'message' && r.message.id === target)
-    if (index < 0) {
+    const indexOf = () => rowsRef.current.findIndex((r) => r.kind === 'message' && r.message.id === target)
+    if (indexOf() < 0) {
       // Deleted since the search, or in another topic: show where it was.
       setMissing(true)
       jumping.current = false
       return
     }
     setMissing(false)
-    virtual.scrollToIndex(index, { align: 'center' })
-    // Rows measure over the next frames; then put the hit's top just under
-    // the header. Not tied to this effect's cleanup: `rows` can change while
-    // it waits, and the jump must still land.
+    jumping.current = true
     let tries = 0
+    let steady = 0
     const settle = () => {
-      const el = document.getElementById(`message-${target}`)
       const box = scroller.current
-      if (el && box) box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - 24
-      // Twice more, as measuring the rows above can still move it.
-      if (++tries < 3) settleTimer.current = window.setTimeout(settle, 120)
-      else jumping.current = false
+      const index = indexOf()
+      if (index < 0) {
+        jumping.current = false
+        return
+      }
+      const el = box ? document.getElementById(`message-${target}`) : null
+      if (!box) {
+        // The pane isn't mounted yet (a client-side navigation): try again.
+        steady = 0
+      } else if (!el) {
+        // Scroll the box ourselves: the virtualizer may not have attached to
+        // it yet, and then its scrollToIndex does nothing.
+        const offset = virtual.getOffsetForIndex(index, 'start')?.[0]
+        if (offset !== undefined) box.scrollTop = offset
+        else virtual.scrollToIndex(index, { align: 'start' })
+        steady = 0
+      } else {
+        const delta = el.getBoundingClientRect().top - box.getBoundingClientRect().top - 24
+        if (Math.abs(delta) <= 2) steady++
+        else {
+          box.scrollTop += delta
+          steady = 0
+        }
+      }
+      // Done once it has held still for two checks, or after ~2.5 s.
+      if (steady >= 2 || ++tries >= 40) jumping.current = false
+      else settleTimer.current = window.setTimeout(settle, 60)
     }
-    settleTimer.current = window.setTimeout(settle, 120)
+    settleTimer.current = window.setTimeout(settle, 0)
   }, [target, around.isSuccess, rows]) // eslint-disable-line react-hooks/exhaustive-deps
   const settleTimer = useRef<number | undefined>(undefined)
-  useEffect(() => () => window.clearTimeout(settleTimer.current), [])
+  // Unmounting stops a jump in progress and forgets it, so a remount (React
+  // remounts effects in development, and a cached route can remount too)
+  // starts it again instead of skipping it as done.
+  useEffect(
+    () => () => {
+      window.clearTimeout(settleTimer.current)
+      jumpedTo.current = undefined
+    },
+    [],
+  )
 
   const onScroll = () => {
     const el = scroller.current
@@ -272,7 +323,7 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
         atBottom.current = true
         setUnseen(0)
         read()
-      } else if (fromBottom > NEAR_BOTTOM * 2) atBottom.current = false
+      } else if (fromBottom > NEAR_BOTTOM * 2 && Date.now() - userScrolledAt.current < 1000) atBottom.current = false
       setAway(fromBottom > 600)
     }
     if (jumping.current) return
@@ -314,6 +365,10 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
   const [note, setNote] = useState<string | null>(null)
 
   const [sending, setSending] = useState(false)
+  // Telegram off (the overview the shell already polls): say so before you
+  // try, not after. Typing and drafts still work; Send waits for the bot.
+  const overview = useQuery(overviewQuery).data
+  const telegramOff = overview !== undefined && !overview.bot
 
   async function deliver(o: { text: string; files: File[]; mode: Mode }, key: string) {
     const form = new FormData()
@@ -358,6 +413,21 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
     updateFailed((all) => all.filter((x) => x.key !== f.key))
   }
 
+  /** Discard, with Undo for a while (the entry comes back where it was). */
+  function discard(f: Failed) {
+    const at = failedRef.current.findIndex((x) => x.key === f.key)
+    updateFailed((all) => all.filter((x) => x.key !== f.key))
+    notify('Unsent message discarded.', {
+      run: () =>
+        updateFailed((all) => {
+          if (all.some((x) => x.key === f.key)) return all
+          const next = [...all]
+          next.splice(Math.min(Math.max(at, 0), next.length), 0, { ...f, retrying: false })
+          return next
+        }),
+    })
+  }
+
   async function retry(f: Failed) {
     const files = filesFor(f.key)
     if (files.length < f.fileNames.length) {
@@ -381,7 +451,15 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
     <div className="flex min-h-0 flex-1 flex-col">
       {header}
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <div ref={scroller} onScroll={onScroll} data-hb-scroll className="scroller min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]">
+        <div
+          ref={scroller}
+          onScroll={onScroll}
+          onWheel={markUserScroll}
+          onTouchMove={markUserScroll}
+          onKeyDown={markUserScroll}
+          onPointerDown={markUserScroll}
+          data-hb-scroll
+          className="scroller min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]">
           <div className={cn('mx-auto w-full max-w-3xl px-3 sm:px-6', empty && 'flex min-h-full flex-col justify-center')}>
             {pending ? (
               <div className="py-6">
@@ -420,7 +498,7 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
                         className="absolute inset-x-0 top-0 list-none"
                         style={{ transform: `translateY(${item.start}px)` }}
                       >
-                        <RowView row={row} target={target} older={older} newer={newer} onOlder={loadOlder} onNewer={loadNewer} onLatest={onLeaveTarget} />
+                        <RowView row={row} target={target} older={older} newer={newer} onOlder={() => loadOlder(true)} onNewer={() => loadNewer(true)} onLatest={onLeaveTarget} />
                       </li>
                     )
                   })}
@@ -438,7 +516,7 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
                       retrying={f.retrying}
                       onRetry={() => void retry(f)}
                       onEdit={() => edit(f)}
-                      onDiscard={() => updateFailed((all) => all.filter((x) => x.key !== f.key))}
+                      onDiscard={() => discard(f)}
                     />
                   </MessageRow>
                 ))}
@@ -493,6 +571,7 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
           // Auto sends no mode, so the topic's own applies: say which.
           defaultLabel={topic.mode === 'auto' ? undefined : topicModeLabel(topic.mode)}
           blocked={topic.enabled ? undefined : <SwitchedOff topic={topic} />}
+          disabledReason={telegramOff ? 'Telegram is off: messages can’t be sent until the bot is running.' : undefined}
           onSend={(o) => void send(o)}
         />
       </div>

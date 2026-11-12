@@ -24,7 +24,10 @@ export function getRouter() {
   const router = createRouter({
     routeTree,
     context: { queryClient },
-    scrollRestoration: true,
+    // The topic page's conversation owns its scroll (pinned to the latest
+    // message, or a search hit): restoring another page's offsets onto its
+    // scroller sent topic 2 thousands of pixels up and undid search jumps.
+    scrollRestoration: ({ location }) => !location.pathname.startsWith('/topics/'),
     // Hovering a link runs its loader, which warms the query cache.
     defaultPreload: 'intent',
     // Let TanStack Query decide freshness, not the router's own cache.

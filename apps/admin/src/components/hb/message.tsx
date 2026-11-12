@@ -6,9 +6,10 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AlertCircleIcon, CheckIcon, ChevronDownIcon, CopyIcon, PaperclipIcon, PencilIcon, RotateCcwIcon, Trash2Icon } from 'lucide-react'
 import type { Attachment, Message as MessageData } from '../../api'
 import { clock } from '../../format'
-import { FilePreview, RichMessage, formatBytes } from '@/components/rich-message'
+import { FilePreview, RichMessage, formatBytes, isOnlyCode } from '@/components/rich-message'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
+import { DisclosureButton } from './controls'
 import { ErrorText } from './feedback'
 
 /** Fold past this many characters or lines (production's chat rules). */
@@ -35,12 +36,6 @@ export function foldedPreview(body: string): string {
   }
   const fences = out.match(/^\s*(```|~~~)/gm)?.length ?? 0
   return fences % 2 === 1 ? `${out}\n\`\`\`` : out
-}
-
-/** A message that is one fenced code block: its own header already has Copy. */
-function isOnlyCode(body: string): boolean {
-  const t = body.trim()
-  return /^(```|~~~)[^\n]*\n[\s\S]*\n\1$/.test(t) && (t.match(/^(```|~~~)/gm)?.length ?? 0) === 2
 }
 
 const BUBBLE = 'relative min-w-0 max-w-[min(42rem,88%)] rounded-[18px] px-3.5 py-2.5 text-[15px] leading-relaxed'
@@ -89,14 +84,9 @@ export function Message({ message: m, highlighted = false }: MessageProps) {
           </div>
         ))}
       {long && (
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((o) => !o)}
-          className="relative mt-1 text-[13.5px] font-medium text-accent-strong before:absolute before:-inset-x-2 before:-inset-y-3 hover:underline"
-        >
+        <DisclosureButton open={open} onClick={() => setOpen((o) => !o)} className="mt-1">
           {open ? 'Show less' : `Show all ${m.body.length.toLocaleString('en-GB')} characters`}
-        </button>
+        </DisclosureButton>
       )}
       {m.attachments.length > 0 && <Files files={m.attachments} />}
       <div className="mt-1 flex items-center justify-end gap-1">
@@ -214,7 +204,9 @@ function Action({ icon: Icon, children, onClick, disabled }: { icon: typeof Copy
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium text-ink transition-[background-color,scale] duration-150 ease-out hover:bg-sunken active:scale-[0.96] disabled:opacity-50 pointer-coarse:h-11"
+      // 36px to look at, 40px to hit on desktop (44px on touch); a muted
+      // token, not opacity, when disabled.
+      className="relative flex h-9 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] font-medium text-ink transition-[background-color,scale] duration-150 ease-out before:absolute before:inset-x-0 before:-inset-y-0.5 before:content-[''] hover:bg-sunken active:scale-[0.96] disabled:pointer-events-none disabled:text-faint pointer-coarse:h-11 pointer-coarse:before:inset-y-0"
     >
       <Icon className="size-3.5" aria-hidden />
       {children}

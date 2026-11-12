@@ -100,13 +100,15 @@ function TopicPage() {
 
   return (
     <>
-      {/* Chat | Files: the kit's tabs (arrow keys, one tab stop, labelled panels). */}
+      {/* Chat | Files: the kit's tabs (arrow keys, one tab stop, labelled
+          panels). The header, with the tab list, stays mounted above both
+          panels, so switching never drops focus off the tab you're on. */}
       <Tabs value={view} onValueChange={setView} className="flex-1">
+        {header}
         <TabPanel value="chat">
-          <Conversation key={t.id} topic={t} target={message} header={header} visible={visible} onLeaveTarget={leaveTarget} />
+          <Conversation key={t.id} topic={t} target={message} visible={visible} onLeaveTarget={leaveTarget} />
         </TabPanel>
         <TabPanel value="files">
-          {header}
           <TopicFiles topicId={t.id} />
         </TabPanel>
       </Tabs>
