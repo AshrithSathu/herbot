@@ -48,13 +48,16 @@ export const topicsQuery = queryOptions({
   refetchInterval: 15_000,
 })
 
-export const topicQuery = (id: number) =>
+/** `poll: false` while the topic isn't on screen (a phone showing the agents
+ * list): the query keeps its data but stops asking every 2 s. */
+export const topicQuery = (id: number, { poll = true }: { poll?: boolean } = {}) =>
   queryOptions({
     queryKey: keys.topic(id),
     queryFn: () => getTopic({ data: id }),
     // Small (no messages), so polling is cheap. A changed message count is
-    // what tells the chat log to fetch what's new.
-    refetchInterval: 2_000,
+    // what tells the chat log to fetch what's new. Never in a hidden tab.
+    refetchInterval: poll ? 2_000 : false,
+    refetchIntervalInBackground: false,
   })
 
 /** A topic's history, newest page first; each next page is older. Pages
@@ -103,6 +106,7 @@ export const activityQuery = queryOptions({
   queryKey: keys.activity,
   queryFn: () => listActivity(),
   refetchInterval: 2_000,
+  refetchIntervalInBackground: false,
 })
 
 /** Refresh list and detail markers after a successful acknowledgement. */
