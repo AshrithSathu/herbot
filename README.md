@@ -154,3 +154,7 @@ up to `(N-1)/2` older and `N/2` newer messages (integer division), oldest first,
 with `has_more_before` and `has_more_after`. The limit stays clamped to 1–100;
 a missing or foreign-conversation target returns 404, and combining `around` with a cursor returns 400.
 Panel server failures record the returned explanation with path, status and an E-id.
+
+### Preferred admin name
+
+Set `HERBOT_ADMIN_NAME=Aditya` in `.env` (or the service environment). It controls generated topic instructions and the name in agent message headers without changing Telegram authorization. Empty, missing, or control-character values use `the admin`. Restart Herbot after changing it; existing topic instruction files are regenerated on startup, preserving their purposes. Other legacy panel and tool labels are not yet configurable.

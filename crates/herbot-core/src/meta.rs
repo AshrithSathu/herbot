@@ -25,7 +25,7 @@ pub struct Meta<'a> {
 pub fn wrap(meta: &Meta<'_>, text: &str) -> String {
     let mut header = format!(
         "<herbot-meta>\nfrom: {} (admin, Telegram id {})\nwhere: {}\nkind: {}\nsent: {}\ncaller: {}\n",
-        meta.sender_name,
+        crate::config::admin_name(),
         meta.sender_id,
         meta.place,
         if meta.is_voice {

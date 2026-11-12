@@ -17,7 +17,7 @@ use chrono::{DateTime, Utc};
 /// out, image generation, modes and DeepSearch.
 /// v6 added memory, custom instructions, voice, tasks, conversation actions
 /// and media shortcuts. v7 added X, Grokipedia and topic languages.
-pub const TEMPLATE_VERSION: i32 = 9;
+pub const TEMPLATE_VERSION: i32 = 10;
 
 /// What every agent can do (Grok parity). Feature sections from other
 /// modules are appended in [`feature_sections`].
@@ -98,6 +98,7 @@ pub fn render(
     written_at: DateTime<Utc>,
     is_general: bool,
 ) -> String {
+    let admin_name = crate::config::admin_name();
     let mut text = format!(
         "# {place}\n\
          \n\
@@ -119,7 +120,7 @@ pub fn render(
          Write the actual options for the situation; never copy this example's wording. \
          He sees them as buttons and can tap one or type his own answer.\n",
         date = written_at.format("%Y-%m-%d"),
-        description = description.trim(),
+        description = "{herbot-purpose}",
     );
     text.push('\n');
     text.push_str(ABILITIES);
@@ -133,7 +134,8 @@ pub fn render(
     } else {
         TOPIC_TOOLS
     });
-    text
+    text.replace("Ashrith", &admin_name)
+        .replace("{herbot-purpose}", description.trim())
 }
 
 /// Writes the file atomically and returns its path relative to `root`.
@@ -160,7 +162,7 @@ pub async fn write(
 /// conversation's own description), so new ground rules reach existing
 /// topics. Their threads are told to reread it on the next turn.
 pub async fn refresh_outdated(pool: &sqlx::PgPool, root: &Path) -> Result<usize, RefreshError> {
-    let ids = crate::store::outdated_agents_md(pool, TEMPLATE_VERSION).await?;
+    let ids = crate::store::outdated_agents_md(pool, i32::MAX).await?;
     for &id in &ids {
         let status = crate::store::conversation_status_by_id(pool, id).await?;
         let Some(purpose) = status.purpose.as_deref() else {
