@@ -4,7 +4,7 @@
 
 The bot lives in one private Telegram group with Topics turned on: your Herbot group, just you and the bot. **General** is the everyday chat. **Every other topic is its own agent**: the first time you write in a new topic, the bot asks openly what it should be. Your answer, typed at any length or sent as a **voice note**, becomes that topic's `AGENTS.md`, and the topic keeps its own long-running memory, like separate Grok chats. Voice notes work everywhere: they're transcribed to English and the bot shows what it heard. The bot answers only you, stays silent in DMs, and leaves any other group.
 
-> **Status:** Steps 1–7 are done. Step 8 (the admin panel) is in progress. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** Steps 1–9, 11 and 12 are done; Step 13 (the panel redesign) is in review. See [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/design/DECISIONS.md](docs/design/DECISIONS.md).
 
 ## How it works
 
