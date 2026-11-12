@@ -383,6 +383,8 @@ function useForget(count: number) {
       keeps="Conversations where it came up stay as they are."
       actionLabel="Forget memory"
       keepLabel="Keep the memory"
+      // Undo exists while there's room under the limit; say so truthfully.
+      note={count - 1 < MEMORY_LIMIT ? 'You can undo this right after.' : 'Over the limit, so it can’t be undone here.'}
       guard={{ kind: 'separated' }}
       pending={forget.isPending}
       error={forget.error}

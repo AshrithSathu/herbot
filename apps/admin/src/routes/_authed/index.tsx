@@ -49,6 +49,7 @@ function OverviewPage() {
   }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage])
   const errors = useInfiniteQuery(errorSearchQuery(''))
   const o = overview.data
+  const { stripShown } = useShell()
 
   const needs = useMemo(() => {
     const all = topics.data ?? []
@@ -74,13 +75,17 @@ function OverviewPage() {
       description={
         o ? (
           <>
-            {/* When Telegram is off the shell's strip already says so. */}
-            {o.bot && (
+            {/* When the shell's strip shows, it already says Telegram is off. */}
+            {o.bot ? (
               <>
-                Telegram connected as <UserText>{`@${o.bot}`}</UserText> ·{' '}
+                Telegram connected as <UserText>{`@${o.bot}`}</UserText> · agents
               </>
-            )}
-            {o.bot ? 'agents' : 'Agents'} run on{' '}
+            ) : stripShown ? (
+              'Agents'
+            ) : (
+              'Telegram isn’t connected · agents'
+            )}{' '}
+            run on{' '}
             <span className="font-mono text-[0.92em] whitespace-nowrap">{o.agent}</span>
           </>
         ) : undefined

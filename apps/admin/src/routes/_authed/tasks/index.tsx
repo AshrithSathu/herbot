@@ -15,7 +15,7 @@ import { charCount, exact, when } from '../../../format'
 import { taskCountsQuery, tasksQuery, topicsQuery } from '../../../queries'
 import { Button, Field, Segmented, TextArea, TextInput } from '@/components/hb/controls'
 import { ConfirmDialog, FormDialog } from '@/components/hb/dialogs'
-import { InPlaceEmpty, InPlaceError, ListSkeleton, notify } from '@/components/hb/feedback'
+import { ErrorText, InPlaceEmpty, InPlaceError, ListSkeleton, notify } from '@/components/hb/feedback'
 import { QuietAction, ThreadList } from '@/components/hb/rows'
 import { ShellPage } from '@/components/hb/shell'
 import { MetaLine, StatusDot, taskTone } from '@/components/hb/status'
@@ -315,7 +315,7 @@ function TaskBody({ task }: { task: Task }) {
       {task.last_error && (
         <p className="flex w-full min-w-0 items-baseline gap-1.5 text-[13px] text-destructive">
           <span className="shrink-0 font-medium">Last run failed:</span>
-          <UserText className="min-w-0 font-mono text-[12.5px]">{task.last_error}</UserText>
+          <ErrorText error={task.last_error} lines={1} className="min-w-0 font-mono text-[12.5px]" />
         </p>
       )}
     </div>
