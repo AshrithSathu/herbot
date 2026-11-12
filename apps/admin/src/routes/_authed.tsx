@@ -9,7 +9,9 @@ import { PlusIcon } from 'lucide-react'
 import { logout, type Topic } from '../api'
 import { activityQuery, overviewQuery, sessionQuery, topicsQuery } from '../queries'
 import { AgentList } from '@/components/hb/agent-list'
+import { Button } from '@/components/hb/controls'
 import { StatusStrip } from '@/components/hb/feedback'
+import { NewAgentHost, openNewAgent } from '@/components/new-agent'
 import { AgentsHeader, Shell, useShell } from '@/components/hb/shell'
 
 export const Route = createFileRoute('/_authed')({
@@ -44,10 +46,11 @@ function Layout() {
       signingOut={signOut.isPending}
       topics={topics.data}
       actions={[
-        { id: 'new-agent', label: 'New agent', icon: PlusIcon, run: () => void router.navigate({ to: '/topics' }) },
+        { id: 'new-agent', label: 'New agent', icon: PlusIcon, run: openNewAgent },
       ]}
     >
       <Page />
+      <NewAgentHost />
     </Shell>
   )
 }
@@ -84,7 +87,16 @@ function AgentsPane() {
       isWorking={(t: Topic) => working.has(t.id)}
       // On phones, picking an agent shows its conversation.
       onSelect={(_id: number, _e: MouseEvent<HTMLAnchorElement>) => showMain()}
-      header={<AgentsHeader count={topics.data?.length} />}
+      header={
+        <AgentsHeader
+          count={topics.data?.length}
+          action={
+            <Button size="icon" variant="ghost" aria-label="New agent" title="New agent" onClick={openNewAgent}>
+              <PlusIcon aria-hidden />
+            </Button>
+          }
+        />
+      }
     />
   )
 }
