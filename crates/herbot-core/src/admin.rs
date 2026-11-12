@@ -61,6 +61,7 @@ pub fn router(state: Arc<AdminState>) -> Router {
         .route("/admin/api/conversations", get(conversations))
         .route("/admin/api/conversations/{id}", get(conversation))
         .route("/admin/api/conversations/{id}/messages", get(messages))
+        .route("/admin/api/conversations/{id}/read", post(mark_read))
         .route("/admin/api/conversations/{id}/export", get(export))
         .route("/admin/api/conversations/{id}/feedback", get(feedback))
         .route("/admin/api/conversations/{id}/purpose", put(set_purpose))
@@ -177,6 +178,9 @@ struct ConversationSummary {
     last_activity: Option<DateTime<Utc>>,
     thread_link: Option<String>,
     mode: String,
+    language: String,
+    private_mode: bool,
+    unread: i64,
 }
 
 impl ConversationSummary {
@@ -205,6 +209,9 @@ impl ConversationSummary {
             last_activity: status.last_message_at,
             thread_link: status.thread_link.clone(),
             mode: status.mode.as_str().into(),
+            language: status.language.clone(),
+            private_mode: status.private_mode,
+            unread: status.panel_unread,
         }
     }
 }
@@ -236,6 +243,67 @@ async fn conversations(State(state): State<Arc<AdminState>>, headers: HeaderMap)
             .map(|s| ConversationSummary::of(s, Some(LIST_PURPOSE_CHARS)))
             .collect::<Vec<_>>()),
         Err(e) => db_fail(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadBody {
+    through_message_id: i64,
+}
+
+async fn read_failure(pool: &PgPool, err: sqlx::Error) -> Reply {
+    match crate::errors::record(pool, "admin.read", &err.to_string(), json!({})).await {
+        Ok(error_id) => {
+            tracing::error!(%error_id, error = %err, "panel read marker failed");
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{error_id}: could not mark conversation read; check logs"),
+            )
+        }
+        Err(record_error) => {
+            tracing::error!(error = %record_error, "could not record panel read failure");
+            db_fail(err)
+        }
+    }
+}
+
+async fn mark_read(
+    State(state): State<Arc<AdminState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<ReadBody>,
+) -> Reply {
+    guard!(headers, state);
+    // Validate ownership and existence in the UPDATE: arbitrary future IDs must
+    // never acknowledge replies the panel has not seen.
+    let marker = sqlx::query_scalar::<_, i64>(
+        "UPDATE conversations c
+         SET panel_read_through_message_id = greatest(c.panel_read_through_message_id, $2)
+         WHERE c.id = $1 AND EXISTS (
+             SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND m.id = $2)
+         RETURNING panel_read_through_message_id",
+    )
+    .bind(id)
+    .bind(body.through_message_id)
+    .fetch_optional(&state.pool)
+    .await;
+    match marker {
+        Ok(Some(marker)) => ok(json!({"through_message_id": marker})),
+        Ok(None) => match sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = $1)",
+        )
+        .bind(id)
+        .fetch_one(&state.pool)
+        .await
+        {
+            Ok(true) => fail(
+                StatusCode::BAD_REQUEST,
+                "through_message_id must belong to this conversation",
+            ),
+            Ok(false) => fail(StatusCode::NOT_FOUND, "no such conversation"),
+            Err(e) => read_failure(&state.pool, e).await,
+        },
+        Err(e) => read_failure(&state.pool, e).await,
     }
 }
 

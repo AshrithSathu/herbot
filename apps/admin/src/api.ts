@@ -44,6 +44,10 @@ export interface Topic {
   last_activity: string | null
   mode: string
   thread_link: string | null
+  language: string
+  private_mode: boolean
+  /** Capped at 99. */
+  unread: number
 }
 
 export interface TopicDetail {
@@ -280,7 +284,7 @@ export interface SearchHit {
 }
 export const getActivity = createServerFn({ method: 'GET' })
   .validator((id: number) => id)
-  .handler(async ({ data }) => (await serverSide())<{ in_progress: boolean }>(`/conversations/${data}/activity`))
+  .handler(async ({ data }) => (await serverSide())<Activity>(`/conversations/${data}/activity`))
 export const getFiles = createServerFn({ method: 'GET' })
   .validator((id: number) => id)
   .handler(async ({ data }) => (await serverSide())<Attachment[]>(`/conversations/${data}/files`))
@@ -362,3 +366,25 @@ export const companionReply = createServerFn({ method: 'POST' })
     if (!response.ok) throw new Error(result.error ?? 'Conversation failed')
     return result.reply
   })
+
+export interface Activity { in_progress: boolean }
+export interface ConversationActivity extends Activity { conversation_id: number }
+export interface ReadMarker { through_message_id: number }
+
+export const listActivity = createServerFn({ method: 'GET' }).handler(async () =>
+  (await serverSide())<ConversationActivity[]>('/activity'),
+)
+
+export const markRead = createServerFn({ method: 'POST' })
+  .validator((data: { id: number; through_message_id: number }) => {
+    if (!Number.isSafeInteger(data.id) || data.id < 1 ||
+        !Number.isSafeInteger(data.through_message_id) || data.through_message_id < 1) {
+      throw new Error('Invalid conversation or message ID')
+    }
+    return data
+  })
+  .handler(async ({ data }) =>
+    (await serverSide())<ReadMarker>(`/conversations/${data.id}/read`, {
+      method: 'POST', body: { through_message_id: data.through_message_id },
+    }),
+  )

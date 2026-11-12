@@ -291,3 +291,9 @@ Inventory covers `apps/admin/src`, including shared components and the server bo
 | Hydration / clock / avatar animation (`hooks/use-client.ts`, `ui.tsx`, `components/companion-avatar.tsx`) | Keep external-store hydration, interval clock and animation resource effects. Cleanup owns timers/frames; animation derives from voice phase, without another workflow machine. |
 
 Request failures are never silently retried as writes. Read refreshes may retry; accepted agent turns are not cancelled by page unmount or a reply timeout. Drafts are in-memory and scoped to mounted components, not persisted across reload/sign-out.
+
+### Panel read markers (Step 13)
+
+`conversations.panel_read_through_message_id` is a durable numeric watermark, shared across devices. Migration 0023 marks existing history read (empty conversations start at 0). `POST /admin/api/conversations/{id}/read` with `{through_message_id}` accepts only an existing message in that conversation, atomically advances with `greatest`, and returns the stored watermark. Older or concurrent acknowledgements cannot move it backwards; invalid/future/foreign message IDs are rejected. It survives history deletion and clean slates; new message IDs continue above it. There is no message foreign key to prevent deletion. List and detail expose `unread`, counting at most 99 bot messages above the watermark using a partial index. Admin messages never increment unread.
+
+`GET /admin/api/activity` returns `[{conversation_id, in_progress: true}]` for conversations with queued panel inbox entries or active turn lanes, using the same rule as the retained per-conversation activity endpoint. Idle conversations are omitted; an empty array means no activity. This is a read snapshot, not a new turn state. The typed `activityQuery` polls every 2 seconds; `markReadMutation` refreshes topic list/detail queries on success. No UI consumes these helpers yet.
