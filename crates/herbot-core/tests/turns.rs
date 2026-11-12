@@ -978,7 +978,9 @@ async fn wipes_overtake_running_turns_and_discard_queued_turns(pool: PgPool) {
     };
     for kind in [WipeKind::New, WipeKind::Forget] {
         let runner = FakeRunner {
-            delay: Duration::from_millis(150),
+            // Long enough that a wipe finishing inside its own budget below
+            // can only mean it didn't wait for the run, even on a busy machine.
+            delay: Duration::from_millis(1500),
             ..Default::default()
         };
         // Use a fresh fixture for each kind without sharing conversation IDs.
@@ -1011,7 +1013,7 @@ async fn wipes_overtake_running_turns_and_discard_queued_turns(pool: PgPool) {
         // The agent is mid-run: the clean slate doesn't wait for it.
         let status = store::conversation_status_by_id(&pool, 1).await.unwrap();
         tokio::time::timeout(
-            Duration::from_millis(100),
+            Duration::from_millis(1000),
             wipe::run(&pool, &NoProjects, &dir, &status, kind),
         )
         .await
@@ -1019,7 +1021,7 @@ async fn wipes_overtake_running_turns_and_discard_queued_turns(pool: PgPool) {
         .unwrap();
         // A previously accepted job (including crash replay) cannot recreate the thread.
         lanes.submit(old);
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             while lanes.in_progress(1) {
                 tokio::task::yield_now().await;
             }
