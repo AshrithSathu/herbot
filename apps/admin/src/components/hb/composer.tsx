@@ -319,7 +319,12 @@ export function Composer({
           </span>
         </div>
       </div>
-      <p id="hb-composer-status" role="status" className={cn('min-h-5 px-3 text-[12px]', problem ? 'text-destructive' : 'text-faint')}>
+      <p id="hb-composer-status" role="status" className={cn(
+          'min-h-5 px-3 text-[12px]',
+          // A reason the page gives (Telegram off) is a state, not an error:
+          // muted. Only something you can fix here (too long, a bad file) is red.
+          disabledReason ? 'text-mute' : problem ? 'text-destructive' : 'text-faint',
+        )}>
         {problem ??
           (count > MAX_CHARS * 0.8 ? (
             <span className="tabular-nums @[30rem]/composer:hidden">{(MAX_CHARS - count).toLocaleString('en-GB')} characters left</span>
