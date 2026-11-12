@@ -19,6 +19,7 @@ import { MetaLine } from '@/components/hb/status'
 import { fold } from '@/components/hb/agent-list'
 import { UserText } from '@/components/user-text'
 import { cn } from '@/lib/utils'
+import { useClamped } from '@/lib/use-clamped'
 
 export const Route = createFileRoute('/_authed/memory')({
   loader: ({ context }) => context.queryClient.ensureQueryData(memoriesQuery),
@@ -46,6 +47,21 @@ function MemoryPage() {
   const wanted = fold(useDeferredValue(filter).trim())
   const shown = useMemo(() => (wanted ? all.filter((m) => fold(m.content).includes(wanted)) : all), [all, wanted])
   const [editing, setEditing] = useState<number | null>(null)
+  // Unsaved edits live here, above the virtualised list: a row scrolled out
+  // of view or filtered away unmounts, but its draft survives and returns
+  // with it.
+  const [drafts, setDrafts] = useState<Record<number, string>>({})
+  const setDraft = (id: number, text: string | null) =>
+    setDrafts((d) => {
+      const next = { ...d }
+      if (text == null) delete next[id]
+      else next[id] = text
+      return next
+    })
+  const stopEditing = (id: number) => {
+    setDraft(id, null)
+    setEditing((e) => (e === id ? null : e))
+  }
   const forget = useForget(all.length)
 
   return (
@@ -90,7 +106,16 @@ function MemoryPage() {
                     estimate={130}
                     title={(m) => (
                       <div className="font-normal">
-                        {editing === m.id ? <MemoryEditor memory={m} onDone={() => setEditing(null)} /> : <MemoryText memory={m} />}
+                        {editing === m.id ? (
+                          <MemoryEditor
+                            memory={m}
+                            text={drafts[m.id] ?? m.content}
+                            onText={(t) => setDraft(m.id, t)}
+                            onDone={() => stopEditing(m.id)}
+                          />
+                        ) : (
+                          <MemoryText memory={m} />
+                        )}
                       </div>
                     )}
                     meta={(m) => <MemoryFacts memory={m} topic={m.source_conversation_id == null ? null : (byId.get(m.source_conversation_id) ?? undefined)} />}
@@ -99,8 +124,10 @@ function MemoryPage() {
                         <>
                           <QuietAction onClick={() => setEditing(m.id)} aria-label={`Edit memory #${m.id}`}>
                             <PencilIcon aria-hidden />
-                            Edit
+                            {drafts[m.id] != null ? 'Edit (unsaved)' : 'Edit'}
                           </QuietAction>
+                          {/* Destructive apart from constructive, as in Tasks. */}
+                          <span aria-hidden className="ml-auto" />
                           <QuietAction tone="danger" onClick={() => forget.ask(m)} aria-label={`Forget memory #${m.id}`}>
                             <Trash2Icon aria-hidden />
                             Forget…
@@ -121,16 +148,18 @@ function MemoryPage() {
 }
 
 /** The text: three lines, the rest on request (offered only when the clamp
- * actually hides something). */
+ * measurably hides something, whatever the script). */
 function MemoryText({ memory }: { memory: Memory }) {
   const [open, setOpen] = useState(false)
-  const long = charCount(memory.content) > 220 || memory.content.split('\n').length > 3
+  const [ref, clamped] = useClamped<HTMLDivElement>()
   return (
     <div className="flex flex-col items-start gap-1">
-      <UserText as="p" lines={open ? 'all' : 3} className="text-[15px] leading-relaxed text-ink">
-        {memory.content}
-      </UserText>
-      {long && (
+      <div ref={ref} className="w-full min-w-0">
+        <UserText as="p" lines={open ? 'all' : 3} className="text-[15px] leading-relaxed text-ink">
+          {memory.content}
+        </UserText>
+      </div>
+      {(clamped || open) && (
         <button
           type="button"
           aria-expanded={open}
@@ -254,8 +283,8 @@ function AddMemory({ count }: { count: number }) {
 }
 
 /** Edit in place: Save (⌘/Ctrl+Enter) or Cancel (Escape); errors under the text. */
-function MemoryEditor({ memory, onDone }: { memory: Memory; onDone: () => void }) {
-  const [text, setText] = useState(memory.content)
+function MemoryEditor({ memory, text, onText, onDone }: { memory: Memory; text: string; onText: (t: string) => void; onDone: () => void }) {
+  const setText = onText
   const invalidate = useInvalidate()
   const save = useMutation({
     mutationFn: (content: string) => saveMemory({ data: { id: memory.id, content } }),

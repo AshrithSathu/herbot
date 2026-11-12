@@ -4,18 +4,20 @@
 // counts are exact and "Coming up" really is the soonest (herbot-core allows
 // at most 50 active tasks).
 import { DAYS, describeCron } from '@/lib/cron'
+import { dayTime } from '@/lib/time'
+import { useClamped } from '@/lib/use-clamped'
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute, useNavigate } from '@tanstack/react-router'
 import { HashIcon, MessageCircleIcon, PauseIcon, PlayIcon, PlusIcon, Trash2Icon, ZapIcon } from 'lucide-react'
 import { changeTask, createTask, type Task, type TaskInput, type Topic } from '../../../api'
 import { charCount, exact, when } from '../../../format'
-import { tasksQuery, topicsQuery } from '../../../queries'
+import { taskCountsQuery, tasksQuery, topicsQuery } from '../../../queries'
 import { Button, Field, Segmented, TextArea, TextInput } from '@/components/hb/controls'
 import { ConfirmDialog, FormDialog } from '@/components/hb/dialogs'
 import { InPlaceEmpty, InPlaceError, ListSkeleton, notify } from '@/components/hb/feedback'
 import { QuietAction, ThreadList } from '@/components/hb/rows'
-import { BackToAgents, ShellPage } from '@/components/hb/shell'
+import { ShellPage } from '@/components/hb/shell'
 import { MetaLine, StatusDot, taskTone } from '@/components/hb/status'
 import { TopicPicker } from '@/components/hb/topic-picker'
 import { UserText } from '@/components/user-text'
@@ -117,15 +119,27 @@ function TasksPage() {
   const byId = useMemo(() => new Map((topics.data ?? []).map((t) => [t.id, t])), [topics.data])
   const now = useNow()
   const [creating, setCreating] = useState(false)
-  // Counts are exact once every page is in; until then they say "+".
-  const more = q.hasNextPage ? '+' : ''
+  // Exact counts from herbot-core; failing that, counted here once every
+  // page is in. A partial count would read as a wrong number, so until one
+  // of those is known the choices carry no figure.
+  const complete = !q.hasNextPage
+  const server = useQuery(taskCountsQuery).data
   const counts = useMemo(() => {
+    if (server) {
+      const { active, paused, done, cancelled } = server
+      return { all: active + paused + done + cancelled, active, paused, done, cancelled } as Record<Filter, number>
+    }
     const c: Record<Filter, number> = { all: q.tasks.length, active: 0, paused: 0, done: 0, cancelled: 0 }
     for (const t of q.tasks) c[t.status]++
     return c
-  }, [q.tasks])
+  }, [q.tasks, server])
+  const counted = server != null || complete
   const shown = useMemo(() => (filter === 'all' ? q.tasks : q.tasks.filter((t) => t.status === filter)), [q.tasks, filter])
-  const options = FILTERS.map((f) => ({ value: f, label: `${LABEL[f]} ${exact(counts[f])}${more}`, hint: HINT[f] }))
+  const options = FILTERS.map((f) => ({
+    value: f,
+    label: counted ? `${LABEL[f]} ${exact(counts[f])}` : LABEL[f],
+    hint: counted ? HINT[f] : `${HINT[f]} Counting every task…`,
+  }))
   const newTask = (
     <Button variant="primary" onClick={() => setCreating(true)}>
       <PlusIcon aria-hidden />
@@ -137,7 +151,6 @@ function TasksPage() {
     <ShellPage
       title="Tasks"
       description="Reminders and recurring prompts. Each one runs in its topic, and the agent answers there."
-      back={<BackToAgents />}
       actions={q.tasks.length > 0 ? newTask : undefined}
     >
       {q.isPending ? (
@@ -151,7 +164,7 @@ function TasksPage() {
         </InPlaceEmpty>
       ) : (
         <div className="flex flex-col gap-6">
-          {(filter === 'all' || filter === 'active') && <ComingUp tasks={q.tasks} complete={!q.hasNextPage} byId={byId} now={now} />}
+          {(filter === 'all' || filter === 'active') && <ComingUp tasks={q.tasks} complete={complete} byId={byId} now={now} />}
           <div className="flex flex-col gap-4">
             <Segmented label="Show" value={filter} options={options} onValueChange={setFilter} />
             {shown.length === 0 && !q.hasNextPage ? (
@@ -204,7 +217,7 @@ function ComingUp({ tasks, complete, byId, now }: { tasks: Task[]; complete: boo
       <ol className="flex flex-col border-y border-line">
         {next.map((t) => (
           <li key={t.id} className="flex min-w-0 items-baseline gap-3 border-b border-line py-2 last:border-b-0">
-            <span className="w-[9ch] shrink-0 text-[13px] font-medium text-ink">
+            <span className="w-[12ch] shrink-0 text-[13px] font-medium whitespace-nowrap text-ink tabular-nums">
               {now != null && new Date(t.next_run_at!).getTime() <= now ? (
                 // Past its time: the scheduler should have run it (or will at
                 // its next tick, every 15 s); say so instead of "35 min ago".
@@ -212,12 +225,15 @@ function ComingUp({ tasks, complete, byId, now }: { tasks: Task[]; complete: boo
                   Overdue
                 </span>
               ) : (
-                <Moment iso={t.next_run_at!} now={now} />
+                // Calendar words read faster than "in 19 h" for a schedule.
+                <time dateTime={t.next_run_at!} title={when(t.next_run_at!)} suppressHydrationWarning>
+                  {dayTime(t.next_run_at!, now ?? Date.now())}
+                </time>
               )}
             </span>
             <UserText className="min-w-0 flex-1 text-[14px]">{taskName(t)}</UserText>
-            <span className="hidden max-w-[22ch] min-w-0 text-[12.5px] text-faint sm:block">
-              <TopicLink topic={byId.get(t.conversation_id)} />
+            <span className="hidden w-[22ch] min-w-0 overflow-hidden text-[12.5px] text-faint sm:block">
+              <TopicLink topic={byId.get(t.conversation_id)} className="max-w-full" />
             </span>
           </li>
         ))}
@@ -229,14 +245,17 @@ function ComingUp({ tasks, complete, byId, now }: { tasks: Task[]; complete: boo
 // ---------------------------------------------------------------------------
 // Row parts
 
-function TopicLink({ topic }: { topic: Topic | undefined }) {
+function TopicLink({ topic, className }: { topic: Topic | undefined; className?: string }) {
   if (!topic) return <span className="italic">a deleted topic</span>
   const Icon = topic.is_general ? MessageCircleIcon : HashIcon
   return (
     <Link
       to="/topics/$id"
       params={{ id: topic.id }}
-      className="relative z-[1] inline-flex max-w-[24ch] min-w-0 items-center gap-1 align-bottom text-mute underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 hover:text-ink hover:underline"
+      className={cn(
+        'relative z-[1] inline-flex max-w-[24ch] min-w-0 items-center gap-1 align-bottom text-mute underline-offset-2 before:absolute before:-inset-x-1 before:-inset-y-3 hover:text-ink hover:underline',
+        className,
+      )}
     >
       <Icon aria-hidden className="size-3 shrink-0" />
       <UserText className="min-w-0">{topic.name}</UserText>
@@ -252,31 +271,46 @@ function TaskTitle({ task }: { task: Task }) {
   )
 }
 
+/** Roughly how wide text runs: CJK, Hangul and emoji take about two Latin
+ * widths. Used only where the text sits in another slot (the title) and
+ * can't be measured from here. */
+function visualLength(text: string): number {
+  let n = 0
+  for (const ch of text) n += /[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6]|\p{Extended_Pictographic}/u.test(ch) ? 2 : 1
+  return n
+}
+
 /** The prompt when it says more than the title (two lines, the rest on
- * request), then the last run's failure. */
+ * request), then the last run's failure. When the title *is* the prompt (no
+ * title, one line), the title may be the clipped part: then the body offers
+ * the whole prompt instead of hiding it. */
 function TaskBody({ task }: { task: Task }) {
   const [open, setOpen] = useState(false)
+  const [ref, clamped] = useClamped<HTMLDivElement>()
   const repeatsTitle = !task.title?.trim() && task.prompt.trim() === firstLine(task.prompt)
-  const long = charCount(task.prompt) > 160 || task.prompt.includes('\n')
-  if (repeatsTitle && !task.last_error) return null
+  // Two title lines hold at least ~60 Latin widths even on a phone.
+  const titleMayClip = repeatsTitle && visualLength(task.prompt.trim()) > 60
+  const showPrompt = !repeatsTitle || open
+  const canToggle = repeatsTitle ? titleMayClip : clamped || open
+  if (repeatsTitle && !titleMayClip && !task.last_error) return null
   return (
     <div className="flex flex-col items-start gap-1.5">
-      {!repeatsTitle && (
-        <>
+      {showPrompt && (
+        <div ref={ref} className="w-full min-w-0">
           <UserText as="p" lines={open ? 'all' : 2} className={cn('text-[14px] text-mute', open && 'max-h-80 overflow-y-auto pr-2')}>
             {task.prompt}
           </UserText>
-          {long && (
-            <button
-              type="button"
-              aria-expanded={open}
-              onClick={() => setOpen((o) => !o)}
-              className="relative z-[1] text-[13px] font-medium text-ink underline-offset-2 before:absolute before:-inset-x-2 before:-inset-y-3 hover:underline"
-            >
-              {open ? 'Show less' : `Show the whole prompt (${exact(charCount(task.prompt))} characters)`}
-            </button>
-          )}
-        </>
+        </div>
+      )}
+      {canToggle && (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+          className="relative z-[1] text-[13px] font-medium text-ink underline-offset-2 before:absolute before:-inset-x-2 before:-inset-y-3 hover:underline"
+        >
+          {open ? 'Show less' : `Show the whole prompt (${exact(charCount(task.prompt))} characters)`}
+        </button>
       )}
       {task.last_error && (
         <p className="flex w-full min-w-0 items-baseline gap-1.5 text-[13px] text-destructive">
