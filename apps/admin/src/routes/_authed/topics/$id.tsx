@@ -78,7 +78,8 @@ function TopicPage() {
   }, [tab, setDetailsOpen, navigate])
 
   const setView = (next: 'chat' | 'files') =>
-    void navigate({ search: (s) => ({ ...s, tab: next === 'files' ? 'files' : undefined, message: next === 'files' ? undefined : s.message }), replace: true })
+    // ?message= stays while you look at Files, so coming back keeps your place.
+    void navigate({ search: (s) => ({ ...s, tab: next === 'files' ? 'files' : undefined }), replace: true })
 
   const header = (
     <TopicHeader topic={t}>

@@ -58,17 +58,48 @@ type MessageProps = {
   highlighted?: boolean
 }
 
+/** The code inside a message that is one fenced block (fences dropped). */
+function codeOf(body: string): string {
+  const lines = body.trim().split('\n').slice(1)
+  const fence = body.trim().slice(0, 3)
+  const close = lines.findIndex((l) => l.trim().startsWith(fence))
+  return (close === -1 ? lines : lines.slice(0, close)).join('\n')
+}
+
+/** A search jump's landing: a soft accent halo that fades after ~2 s
+ * (instantly under reduced motion, where transitions are off). */
+function useFlash(on: boolean): boolean {
+  const [flash, setFlash] = useState(on)
+  useEffect(() => {
+    if (!on) return
+    setFlash(true)
+    const t = window.setTimeout(() => setFlash(false), 2000)
+    return () => window.clearTimeout(t)
+  }, [on])
+  return on && flash
+}
+
 export function Message({ message: m, highlighted = false }: MessageProps) {
   const you = !m.from_bot
   const long = isLong(m.body)
   const [open, setOpen] = useState(false)
+  const flash = useFlash(highlighted)
+  const onlyCode = isOnlyCode(m.body)
+  // Copy lives in the meta line, except when the message is one code block
+  // whose own header has Copy. Folded, that header is in the inert preview
+  // and can't be pressed, so the meta line copies the whole code instead.
+  const copy = !you && m.body.trim() ? (!onlyCode ? m.body : long && !open ? codeOf(m.body) : null) : null
   return (
     <article
       // Search results and ?message= jumps land here.
       id={`message-${m.id}`}
       aria-label={`${you ? 'You' : 'Agent'}, ${clock(m.sent_at)}`}
-      data-highlight={highlighted || undefined}
-      className={cn(BUBBLE, you ? 'rounded-br-md bg-accent-soft text-ink' : 'rounded-bl-md bg-pane shadow-raised')}
+      className={cn(
+        BUBBLE,
+        you ? 'rounded-br-md bg-accent-soft text-ink' : 'rounded-bl-md bg-pane shadow-raised',
+        'transition-[box-shadow] duration-700 ease-out',
+        flash && 'shadow-[0_0_0_4px_color-mix(in_srgb,var(--accent-strong)_24%,transparent)]',
+      )}
     >
       {m.is_voice && <p className="mb-1 text-[12px] font-medium text-mute">Voice note · transcript</p>}
       {m.body.trim() &&
@@ -90,7 +121,7 @@ export function Message({ message: m, highlighted = false }: MessageProps) {
       )}
       {m.attachments.length > 0 && <Files files={m.attachments} />}
       <div className="mt-1 flex items-center justify-end gap-1">
-        {!you && m.body.trim() && !isOnlyCode(m.body) && <CopyText text={m.body} />}
+        {copy !== null && <CopyText text={copy} label={onlyCode ? 'Copy code' : undefined} />}
         <time dateTime={m.sent_at} className="text-[11px] text-faint tabular-nums" suppressHydrationWarning>
           {clock(m.sent_at)}
         </time>
@@ -129,7 +160,7 @@ function Files({ files }: { files: Attachment[] }) {
   )
 }
 
-function CopyText({ text }: { text: string }) {
+function CopyText({ text, label = 'Copy' }: { text: string; label?: string }) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
   return (
     <button
@@ -146,7 +177,7 @@ function CopyText({ text }: { text: string }) {
       className="relative inline-flex h-6 items-center gap-1 rounded px-1 text-[11.5px] text-faint before:absolute before:-inset-x-1 before:-inset-y-2 hover:text-ink pointer-coarse:before:-inset-y-3"
     >
       {state === 'copied' ? <CheckIcon aria-hidden className="size-3 text-ok" /> : <CopyIcon aria-hidden className="size-3" />}
-      <span aria-live="polite">{state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : 'Copy'}</span>
+      <span aria-live="polite">{state === 'copied' ? 'Copied' : state === 'failed' ? 'Copy failed' : label}</span>
     </button>
   )
 }

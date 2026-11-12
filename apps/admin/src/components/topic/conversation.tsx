@@ -40,6 +40,12 @@ type Failed = FailedSend & { retrying: boolean }
 const NEAR_BOTTOM = 96
 /** Start loading more this far from either end. */
 const NEAR_EDGE = 600
+
+/** Where you were reading, per topic (and search window), so switching to
+ * Files and back (which remounts the conversation) puts you back. In memory
+ * for the session; at the latest message nothing is kept. */
+type Kept = { id: number; offset: number; tail: number }
+const kept = new Map<string, Kept>()
 /** Messages fetched on each side of a search hit. */
 const AROUND = 40
 
@@ -187,12 +193,67 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
 
   // Opening a topic: at its latest message, before the first paint.
   const opened = useRef(false)
+  const keptKey = `${topicId}:${target ?? 'live'}`
+  const restoring = useRef<Kept | null>(kept.get(keptKey) ?? null)
   useLayoutEffect(() => {
     if (windowed || !live.isSuccess || opened.current) return
     opened.current = true
+    if (restoring.current) {
+      atBottom.current = false
+      setAway(true)
+      restoreTo(restoring.current)
+      // React can unmount and remount effects (development, a cached
+      // route): stop this restore and let the remount start it again.
+      return () => {
+        window.clearTimeout(settleTimer.current)
+        opened.current = false
+      }
+    }
     atBottom.current = true
     toBottom()
-  }, [windowed, live.isSuccess, toBottom])
+  }, [windowed, live.isSuccess, toBottom]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Back from Files: the message you were reading at the same height. Rows
+   * measure over a few frames, so check a few times (bounded). */
+  function restoreTo(k: Kept) {
+    const index = rowsRef.current.findIndex((r) => r.kind === 'message' && r.message.id === k.id)
+    if (index < 0) {
+      restoring.current = null
+      atBottom.current = !windowed
+      if (!windowed) toBottom()
+      return
+    }
+    if (k.tail) {
+      tailRef.current = k.tail
+      setTail(k.tail)
+    }
+    // Like a search jump: scroll to the row until it's mounted, then hold
+    // its height until it stays put for two checks (bounded, ~2.5 s).
+    let tries = 0
+    let steady = 0
+    const step = () => {
+      const box = scroller.current
+      const el = document.getElementById(`message-${k.id}`)
+      if (box && !el) {
+        const offset = virtual.getOffsetForIndex(index, 'start')?.[0]
+        if (offset !== undefined) box.scrollTop = offset - k.offset
+        else virtual.scrollToIndex(index, { align: 'start' })
+        steady = 0
+      } else if (box && el) {
+        // The saved offset is the row's (its <li>), not the bubble inside it.
+        const row = el.closest('li') ?? el
+        const delta = row.getBoundingClientRect().top - box.getBoundingClientRect().top - k.offset
+        if (Math.abs(delta) <= 2) steady++
+        else {
+          box.scrollTop += delta
+          steady = 0
+        }
+      }
+      if (steady >= 2 || ++tries >= 40) restoring.current = null
+      else settleTimer.current = window.setTimeout(step, 60)
+    }
+    settleTimer.current = window.setTimeout(step, 0)
+  }
 
   // Back from a search hit to the live end: fresh newest page, at the bottom.
   const wasWindowed = useRef(windowed)
@@ -256,9 +317,25 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
   const rowsRef = useRef(rows)
   rowsRef.current = rows
   const [missing, setMissing] = useState(false)
+  // A target near the end can't scroll to the top on its own: add just enough
+  // space below the list for it to sit under the header. Only while targeted.
+  const [tail, setTail] = useState(0)
+  const tailRef = useRef(0)
+  tailRef.current = tail
+  useEffect(() => {
+    if (!windowed) setTail(0)
+  }, [windowed])
+  const [flashId, setFlashId] = useState<number | undefined>(undefined)
   useEffect(() => {
     if (!target || !around.isSuccess || jumpedTo.current === target) return
     jumpedTo.current = target
+    if (restoring.current) {
+      // Back from Files to a search window: where you were, no new jump.
+      jumping.current = false
+      restoreTo(restoring.current)
+      return
+    }
+    setFlashId(target)
     const indexOf = () => rowsRef.current.findIndex((r) => r.kind === 'message' && r.message.id === target)
     if (indexOf() < 0) {
       // Deleted since the search, or in another topic: show where it was.
@@ -289,7 +366,19 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
         else virtual.scrollToIndex(index, { align: 'start' })
         steady = 0
       } else {
-        const delta = el.getBoundingClientRect().top - box.getBoundingClientRect().top - 24
+        const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top
+        // Space the list needs below it for the target to reach 24 px.
+        const want = box.scrollTop + top - 24
+        const most = box.scrollHeight - tailRef.current - box.clientHeight
+        const need = Math.max(0, Math.ceil(want - most))
+        if (Math.abs(need - tailRef.current) > 2) {
+          tailRef.current = need
+          setTail(need)
+          steady = 0
+          settleTimer.current = window.setTimeout(settle, 30)
+          return
+        }
+        const delta = top - 24
         if (Math.abs(delta) <= 2) steady++
         else {
           box.scrollTop += delta
@@ -317,7 +406,18 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
   const onScroll = () => {
     const el = scroller.current
     if (!el) return
+    // Putting you back where you were scrolls programmatically: those
+    // scrolls must neither pin you to the bottom nor record a position.
+    if (restoring.current) return
     const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    {
+      const at = !windowed && fromBottom < NEAR_BOTTOM
+      const top = el.scrollTop
+      const first = at ? undefined : virtual.getVirtualItems().find((v) => v.end > top && rowsRef.current[v.index]?.kind === 'message')
+      const row = first ? rowsRef.current[first.index] : undefined
+      if (row?.kind === 'message') kept.set(keptKey, { id: row.message.id, offset: first!.start - top, tail: tailRef.current })
+      else kept.delete(keptKey)
+    }
     if (!windowed) {
       if (fromBottom < NEAR_BOTTOM) {
         atBottom.current = true
@@ -416,15 +516,19 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
   /** Discard, with Undo for a while (the entry comes back where it was). */
   function discard(f: Failed) {
     const at = failedRef.current.findIndex((x) => x.key === f.key)
+    // Removing the entry drops its in-memory files; keep them for the Undo window.
+    const files = filesFor(f.key)
     updateFailed((all) => all.filter((x) => x.key !== f.key))
     notify('Unsent message discarded.', {
-      run: () =>
+      run: () => {
+        rememberFiles(f.key, files)
         updateFailed((all) => {
           if (all.some((x) => x.key === f.key)) return all
           const next = [...all]
           next.splice(Math.min(Math.max(at, 0), next.length), 0, { ...f, retrying: false })
           return next
-        }),
+        })
+      },
     })
   }
 
@@ -476,9 +580,13 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
               <InPlaceEmpty title="No messages yet">
                 {!topic.enabled
                   ? 'This topic is switched off, so it isn’t answering.'
-                  : topic.setup_state === 'ready'
-                    ? 'Say what you need. The agent answers here and in Telegram.'
-                    : 'It doesn’t have a purpose yet: your first message here becomes it.'}
+                  : telegramOff
+                    ? topic.setup_state === 'ready'
+                      ? 'Telegram is off. Once the bot is running, the agent answers what you send here.'
+                      : 'It doesn’t have a purpose yet. Once the bot is running, your first message here becomes it.'
+                    : topic.setup_state === 'ready'
+                      ? 'Say what you need. The agent answers here and in Telegram.'
+                      : 'It doesn’t have a purpose yet: your first message here becomes it.'}
               </InPlaceEmpty>
             ) : (
               <>
@@ -498,11 +606,12 @@ export function Conversation({ topic, target, header, visible = true, onLeaveTar
                         className="absolute inset-x-0 top-0 list-none"
                         style={{ transform: `translateY(${item.start}px)` }}
                       >
-                        <RowView row={row} target={target} older={older} newer={newer} onOlder={() => loadOlder(true)} onNewer={() => loadNewer(true)} onLatest={onLeaveTarget} />
+                        <RowView row={row} target={flashId} older={older} newer={newer} onOlder={() => loadOlder(true)} onNewer={() => loadNewer(true)} onLatest={onLeaveTarget} />
                       </li>
                     )
                   })}
                 </ol>
+                {windowed && tail > 0 && <div aria-hidden style={{ height: tail }} />}
               </>
             )}
             {(failed.length > 0 || working) && (

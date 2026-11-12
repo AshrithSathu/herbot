@@ -115,9 +115,11 @@ function saveDraft(key: string, d: Draft) {
 /** Optional per-message modes, with "auto" reading as the topic's default. */
 function modeOptions(defaultLabel?: string) {
   if (!defaultLabel) return MODES.map((m) => ({ ...m, chip: m.label }))
-  return MODES.map((m) =>
+  // The topic's own mode is the default choice, so it isn't offered twice
+  // ("Default (Think)" and a separate "Think").
+  return MODES.filter((m) => m.id === 'auto' || m.label !== defaultLabel).map((m) =>
     m.id === 'auto'
-      ? { ...m, label: `Topic default (${defaultLabel})`, chip: `Default · ${defaultLabel}`, hint: `This topic's mode, ${defaultLabel}` }
+      ? { ...m, label: `Topic default (${defaultLabel})`, chip: `Default (${defaultLabel})`, hint: `This topic's mode, ${defaultLabel}` }
       : { ...m, chip: m.label },
   )
 }
