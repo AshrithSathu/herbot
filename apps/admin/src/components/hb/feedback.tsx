@@ -35,6 +35,33 @@ export function splitErrorId(message: string): { id: string | null; text: string
   return m ? { id: m[1], text: m[2] } : { id: null, text: message.trim() }
 }
 
+/**
+ * An error as one run of text: the E-id and the reason flow together, joined
+ * by non-breaking spaces, so a wrap never leaves "E-1042 ·" alone at the end
+ * of a line. Clamped like UserText; the full text stays in the title. Use it
+ * for failed sends, dialog errors and row errors.
+ */
+export function ErrorText({ error, lines = 2, className }: { error: Error | string; lines?: 1 | 2 | 3 | 'all'; className?: string }) {
+  const message = typeof error === 'string' ? error : error.message
+  const { id, text } = splitErrorId(message)
+  return (
+    <span
+      title={lines === 'all' ? undefined : message}
+      className={cn(
+        'user-text min-w-0',
+        lines === 1 && 'block truncate',
+        lines === 2 && 'line-clamp-2',
+        lines === 3 && 'line-clamp-3',
+        lines === 'all' && 'whitespace-pre-wrap',
+        className,
+      )}
+    >
+      {id && <span className="font-mono">{`${id}\u00a0·\u00a0`}</span>}
+      <bdi>{text}</bdi>
+    </span>
+  )
+}
+
 type ErrorProps = {
   title: ReactNode
   error: Error | string

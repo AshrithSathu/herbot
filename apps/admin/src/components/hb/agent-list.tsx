@@ -6,7 +6,7 @@ import type { Topic } from '../../api'
 import { cn } from '@/lib/utils'
 import { AGENT_ROW_CSS, AgentRow } from './agent-row'
 import { Button, SearchInput } from './controls'
-import { ListSkeleton } from './feedback'
+import { ErrorText, ListSkeleton } from './feedback'
 import { measureNonZero } from './rows'
 
 /** Case- and accent-insensitive: "cafe" finds "Café". */
@@ -67,7 +67,11 @@ export function AgentList({ topics, pending = false, error, onRetry, activeId, i
         <ListSkeleton rows={9} className="px-3" />
       ) : error ? (
         <div className="flex flex-col items-start gap-2 px-4 py-3 text-[13px]">
-          <p className="text-destructive">Couldn’t load agents. {error.message}</p>
+          {/* A sentence for people; the server's own words as a quiet detail. */}
+          <p className="font-medium text-ink">Couldn’t load the agents.</p>
+          <p className="text-mute">
+            <ErrorText error={error} lines={2} />
+          </p>
           {onRetry && (
             <Button size="sm" onClick={onRetry}>
               Try again

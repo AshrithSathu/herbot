@@ -1,7 +1,9 @@
 // List rows (docs/design/DECISIONS.md, "List rows"):
 // - LedgerTable: one line, aligned columns, tabular figures, for lists you
-//   scan and compare (topics, logs). On phones each row folds to a title
-//   line plus a line underneath.
+//   scan and compare (topics, logs). When its own box is narrower than 40rem
+//   (a phone, or a pane squeezed beside the agents and details panes) each
+//   row folds to a title line plus a line underneath: a container query, so
+//   it follows the space the table actually has, not the window.
 // - ThreadList: two lines (what it is, then what it says), for lists you
 //   read (tasks, memories), with quiet actions that are always visible.
 // Both virtualize against the pane that scrolls them ([data-hb-scroll]) and
@@ -132,8 +134,8 @@ export function LedgerTable<T>({ label, rows, columns, rowKey, selectedKey, alig
   const itemsAlign = align === 'top' ? 'items-start' : 'items-center'
 
   return (
-    <div ref={ref} role="table" data-hb-list aria-label={label} aria-rowcount={rows.length + 1} className={cn('min-w-0', className)}>
-      <div role="rowgroup" className="hidden md:block">
+    <div ref={ref} role="table" data-hb-list aria-label={label} aria-rowcount={rows.length + 1} className={cn('@container min-w-0', className)}>
+      <div role="rowgroup" className="hidden @min-[40rem]:block">
         <div
           role="row"
           className="grid items-end gap-x-4 border-b border-line px-3 pb-2 text-[11px] font-medium tracking-[0.06em] text-mute uppercase"
@@ -167,7 +169,7 @@ export function LedgerTable<T>({ label, rows, columns, rowKey, selectedKey, alig
               {/* Desktop: aligned columns. */}
               <div
                 className={cn(
-                  'relative hidden min-h-11 gap-x-4 px-3 py-2 transition-[background-color] duration-150 ease-out md:grid',
+                  'relative hidden min-h-11 gap-x-4 px-3 py-2 transition-[background-color] duration-150 ease-out @min-[40rem]:grid',
                   itemsAlign,
                   !selected && 'hover:bg-sunken',
                 )}
@@ -185,7 +187,7 @@ export function LedgerTable<T>({ label, rows, columns, rowKey, selectedKey, alig
               </div>
               {/* Phones: the title line with its aside, then the cells below
                   sharing lines as space allows. */}
-              <div className="relative flex flex-col gap-1 px-1 py-3 md:hidden">
+              <div className="relative flex flex-col gap-1 px-1 py-3 @min-[40rem]:hidden">
                 <div className={cn('flex min-w-0 gap-3', align === 'top' ? 'items-start' : 'items-baseline')}>
                   <div className={cn('flex min-w-0 flex-1 gap-2 text-[15px]', align === 'top' ? 'items-start' : 'items-baseline')}>
                     {title.map((c) => (
@@ -210,7 +212,7 @@ export function LedgerTable<T>({ label, rows, columns, rowKey, selectedKey, alig
                   </div>
                 )}
               </div>
-              {more !== null && <div className="relative px-1 pb-4 md:px-3">{more}</div>}
+              {more !== null && <div className="relative px-1 pb-4 @min-[40rem]:px-3">{more}</div>}
             </div>
           )
         })}
@@ -228,7 +230,7 @@ export function ExpandToggle({ open, onToggle, label, className }: { open: boole
       onClick={onToggle}
       aria-expanded={open}
       aria-label={label}
-      className={cn('relative z-[1] grid size-8 place-items-center rounded-md text-mute hover:bg-sunken hover:text-ink pointer-coarse:size-11', className)}
+      className={cn("relative z-[1] grid size-8 place-items-center rounded-md text-mute before:absolute before:-inset-1 before:content-[''] hover:bg-sunken hover:text-ink pointer-coarse:size-11 pointer-coarse:before:inset-0", className)}
     >
       <ChevronDownIcon aria-hidden className={cn('size-4 transition-transform duration-150 ease-out motion-reduce:transition-none', open && 'rotate-180')} />
     </button>
@@ -288,7 +290,7 @@ export function ThreadList<T>({ label, items, itemKey, title, aside, body, meta,
               className="absolute inset-x-0 top-0"
               style={{ transform: `translateY(${v.start - virtual.options.scrollMargin}px)` }}
             >
-              <article className="relative flex flex-col gap-1.5 border-b border-line px-1 py-3.5 md:px-3">
+              <article className="relative flex flex-col gap-1.5 border-b border-line py-3.5">
                 <div className="flex min-w-0 items-baseline gap-3">
                   <div className="min-w-0 flex-1 text-[15px] font-medium">{title(item)}</div>
                   {aside && <div className="shrink-0">{aside(item)}</div>}
@@ -321,7 +323,8 @@ export function QuietAction({ children, pending = false, tone = 'default', disab
       disabled={disabled || pending}
       aria-busy={pending || undefined}
       className={cn(
-        'relative z-[1] inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium transition-[background-color,color,scale] duration-150 ease-out active:scale-[0.96] disabled:opacity-50 pointer-coarse:h-11 [&_svg]:size-3.5',
+        // 32px to look at, 40px to hit on desktop (::before), 44px on touch.
+        "relative z-[1] inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-[13px] font-medium transition-[background-color,color,scale] duration-150 ease-out before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] active:scale-[0.96] disabled:text-faint pointer-coarse:h-11 pointer-coarse:before:inset-y-0 [&_svg]:size-3.5",
         tone === 'danger' ? 'text-destructive hover:bg-destructive-soft' : 'text-mute hover:bg-sunken hover:text-ink',
         className,
       )}

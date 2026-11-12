@@ -3,27 +3,31 @@
 // on phones), light buttons, labels above fields, destructive actions as
 // quiet red text that always confirm elsewhere.
 import { useId, useRef, type ComponentProps, type ReactNode } from 'react'
-import { Slot } from 'radix-ui'
+import { Slot, Tabs as TabsPrimitive } from 'radix-ui'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { ChevronDownIcon, LoaderIcon, SearchIcon, XIcon } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/utils'
 
 const button = cva(
-  'inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg text-[14px] font-medium whitespace-nowrap transition-[background-color,color,box-shadow,scale] duration-150 ease-out outline-none select-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-pane active:scale-[0.96] disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0',
+  // The hit area is bigger than the visual: an invisible ::before reaches
+  // 40px on desktop (Polish), and touch screens get 44px boxes outright.
+  // Disabled reads as a muted token, never as opacity (which fails contrast
+  // on some surfaces and passes on others).
+  "relative inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg text-[14px] font-medium whitespace-nowrap transition-[background-color,color,box-shadow,scale] duration-150 ease-out outline-none select-none before:absolute before:content-[''] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-pane active:scale-[0.96] disabled:pointer-events-none disabled:text-faint [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        primary: 'bg-accent-strong text-accent-ink hover:bg-[color-mix(in_oklch,var(--accent-strong)_88%,black)]',
+        primary: 'bg-accent-strong text-accent-ink hover:bg-[color-mix(in_oklch,var(--accent-strong)_88%,black)] disabled:bg-sunken disabled:shadow-[inset_0_0_0_var(--hair)_var(--line)]',
         secondary: 'bg-sunken text-ink shadow-[inset_0_0_0_var(--hair)_var(--line)] hover:bg-[color-mix(in_oklch,var(--sunken)_92%,var(--ink))]',
         ghost: 'text-mute hover:bg-sunken hover:text-ink',
         /** Quiet red text: the action is always confirmed in a dialog. */
         danger: 'text-destructive hover:bg-destructive-soft',
       },
       size: {
-        sm: 'h-8 px-2.5 pointer-coarse:h-11',
-        md: 'h-9 px-3.5 pointer-coarse:h-11',
-        icon: 'size-9 pointer-coarse:size-11',
+        sm: 'h-8 px-2.5 before:inset-x-0 before:-inset-y-1 pointer-coarse:h-11 pointer-coarse:before:inset-y-0',
+        md: 'h-9 px-3.5 before:inset-x-0 before:-inset-y-0.5 pointer-coarse:h-11 pointer-coarse:before:inset-y-0',
+        icon: 'size-9 before:-inset-0.5 pointer-coarse:size-11 pointer-coarse:before:inset-0',
       },
     },
     defaultVariants: { variant: 'secondary', size: 'md' },
@@ -110,7 +114,7 @@ export function Field({ label, id, hint, error, warning, counter, children, clas
 }
 
 const control =
-  'w-full min-w-0 rounded-lg bg-sunken px-3 text-base text-ink shadow-[inset_0_0_0_var(--hair)_var(--line)] outline-none transition-[box-shadow] duration-150 ease-out placeholder:text-faint focus-visible:shadow-[inset_0_0_0_1px_var(--mute)] aria-invalid:shadow-[inset_0_0_0_1px_var(--destructive)] disabled:opacity-60 pointer-fine:text-[14px]'
+  'w-full min-w-0 rounded-lg bg-sunken px-3 text-base text-ink shadow-[inset_0_0_0_var(--hair)_var(--line)] outline-none transition-[box-shadow] duration-150 ease-out placeholder:text-faint focus-visible:shadow-[inset_0_0_0_1px_var(--mute)] aria-invalid:shadow-[inset_0_0_0_1px_var(--destructive)] disabled:text-faint pointer-fine:text-[14px]'
 
 export function TextInput({ className, ...props }: ComponentProps<'input'>) {
   return <input className={cn(control, 'h-10', className)} {...props} />
@@ -171,11 +175,12 @@ export function Segmented<V extends string>({ label, value, options, onValueChan
               onClick={() => onValueChange(o.value)}
               className={cn(
                 // Weight never changes with selection: colour and surface only.
-                'h-8 min-w-0 flex-1 truncate rounded-md px-2 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-150 ease-out focus-visible:ring-2 focus-visible:ring-ring',
+                "relative h-8 min-w-0 flex-1 rounded-md px-2 text-[13px] font-medium transition-[background-color,color,box-shadow] duration-150 ease-out before:absolute before:inset-x-0 before:-inset-y-1 before:content-[''] focus-visible:ring-2 focus-visible:ring-ring disabled:text-faint pointer-coarse:h-11 pointer-coarse:before:inset-y-0",
                 on ? 'bg-pane text-ink shadow-raised' : 'text-mute hover:text-ink',
               )}
             >
-              {o.label}
+              {/* Truncation lives inside: on the button it would clip the hit area. */}
+              <span className="block truncate">{o.label}</span>
             </button>
           )
         })}
@@ -287,5 +292,56 @@ export function SearchInput({ label, value, onValueChange, className, id, onKeyD
         </button>
       )}
     </div>
+  )
+}
+
+/**
+ * Tabs that behave like tabs (Radix): ←/→ move between them (Home/End to the
+ * ends), only the selected tab is in the Tab order, and each tab labels its
+ * panel. Controlled with `value` + `onValueChange` (keep it in the URL).
+ * 40px tall to point at, 44px on touch; the selected tab is ink with a 2px
+ * rule, unselected ones are muted, and weight never changes.
+ *
+ *   <Tabs value={tab} onValueChange={setTab}>
+ *     <TabList label="Topic views"><Tab value="chat">Chat</Tab><Tab value="files">Files</Tab></TabList>
+ *     <TabPanel value="chat">…</TabPanel>
+ *   </Tabs>
+ */
+export function Tabs<V extends string>({ value, onValueChange, children, className }: { value: V; onValueChange: (value: V) => void; children: ReactNode; className?: string }) {
+  return (
+    <TabsPrimitive.Root value={value} onValueChange={(v) => onValueChange(v as V)} className={cn('flex min-h-0 min-w-0 flex-col', className)}>
+      {children}
+    </TabsPrimitive.Root>
+  )
+}
+
+export function TabList({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
+  return (
+    <TabsPrimitive.List aria-label={label} className={cn('flex min-w-0 shrink-0 items-stretch gap-1', className)}>
+      {children}
+    </TabsPrimitive.List>
+  )
+}
+
+export function Tab({ value, children, className }: { value: string; children: ReactNode; className?: string }) {
+  return (
+    <TabsPrimitive.Trigger
+      value={value}
+      className={cn(
+        'relative inline-flex h-10 items-center gap-1.5 rounded-md px-3 text-[13.5px] font-medium text-mute outline-none transition-[color,background-color] duration-150 ease-out hover:text-ink focus-visible:ring-2 focus-visible:ring-ring data-[state=active]:text-ink pointer-coarse:h-11',
+        "after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:rounded-full after:bg-transparent after:content-[''] data-[state=active]:after:bg-ink",
+        className,
+      )}
+    >
+      {children}
+    </TabsPrimitive.Trigger>
+  )
+}
+
+export function TabPanel({ value, children, className }: { value: string; children: ReactNode; className?: string }) {
+  return (
+    <TabsPrimitive.Content value={value} tabIndex={-1} className={cn('flex min-h-0 min-w-0 flex-1 flex-col outline-none', className)}>
+      {children}
+    </TabsPrimitive.Content>
   )
 }
